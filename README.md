@@ -10,8 +10,6 @@
 
 <p align="center">
   <a href="https://github.com/vitali87/pr-split/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vitali87/pr-split" alt="License"></a>
-  <a href="https://pypi.org/project/pr-split/"><img src="https://img.shields.io/pypi/v/pr-split" alt="PyPI"></a>
-  <a href="https://pypi.org/project/pr-split/"><img src="https://img.shields.io/pypi/pyversions/pr-split" alt="Python"></a>
 </p>
 
 ## How it works
