@@ -1,6 +1,6 @@
 [project]
 name = "pr-split"
-version = "0.1.0"
+version = "0.1.1"
 description = "Decompose large PRs into a DAG of small, reviewable stacked PRs"
 requires-python = ">=3.12"
 dependencies = [
