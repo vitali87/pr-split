@@ -27,6 +27,7 @@ from .git_ops import (
     fetch_fork_branch,
     fetch_fork_pr,
     is_worktree_clean,
+    merge_base,
     push_branch,
 )
 from .git_ops.prs import close_pr, create_pr
@@ -86,17 +87,18 @@ def _present_plan(groups: list[Group], max_loc: int) -> None:
     table = Table(title="Split Plan")
     table.add_column("ID")
     table.add_column("Title")
-    table.add_column("LOC", justify="right")
+    table.add_column("Diff", justify="right")
     table.add_column("Depends On")
     table.add_column("Files")
 
     for group in groups:
         files = ", ".join(a.file_path for a in group.assignments)
         deps = ", ".join(group.depends_on) if group.depends_on else ""
+        diff_str = f"+{group.estimated_added}/-{group.estimated_removed}"
         table.add_row(
             group.id,
             group.title,
-            str(group.estimated_loc),
+            diff_str,
             deps,
             files,
         )
@@ -111,6 +113,7 @@ def _create_branches_and_commits(
     dag: PlanDAG,
     parsed_diff: ParsedDiff,
     base_branch: str,
+    merge_base_ref: str,
     *,
     author: str | None = None,
 ) -> list[BranchRecord]:
@@ -134,7 +137,7 @@ def _create_branches_and_commits(
                     merge_base_parents=parent_branches,
                 )
             elif not parents:
-                branch_name = create_group_branch(group_id, base_branch)
+                branch_name = create_group_branch(group_id, merge_base_ref)
                 record = BranchRecord(
                     group_id=group_id,
                     branch_name=branch_name,
@@ -149,7 +152,7 @@ def _create_branches_and_commits(
                     base_branch=parent_branch,
                 )
 
-            materialized = materialize_group_files(parsed_diff, group, base_branch)
+            materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
             for file_path, content in materialized.items():
                 p = Path(file_path)
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -214,7 +217,7 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
 def split(
     dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
-    max_loc: Annotated[int, typer.Option(help="Max lines of code per sub-PR")] = DEFAULT_MAX_LOC,
+    max_loc: Annotated[int, typer.Option(help="Soft limit on diff lines per sub-PR")] = DEFAULT_MAX_LOC,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
 ) -> None:
     author: str | None = None
@@ -265,8 +268,11 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     original_branch = dev_branch
-    checkout_branch(base)
-    branch_records = _create_branches_and_commits(groups, dag, parsed_diff, base, author=author)
+    merge_base_ref = merge_base(base, dev_branch)
+    checkout_branch(merge_base_ref)
+    branch_records = _create_branches_and_commits(
+        groups, dag, parsed_diff, base, merge_base_ref, author=author
+    )
     pr_records = _push_and_create_prs(groups, dag, branch_records)
 
     checkout_branch(original_branch)

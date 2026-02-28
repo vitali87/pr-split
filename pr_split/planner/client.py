@@ -21,6 +21,7 @@ from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, LLMError
 from ..schemas import Group, GroupAssignment
 from .chunker import (
+    assign_uncovered_hunks,
     build_chunk_diff_from_hunks,
     build_chunk_stats_from_hunks,
     build_hunk_sequence,
@@ -284,6 +285,9 @@ def _plan_split_chunked(
             )
         )
 
+    auto_assigned = assign_uncovered_hunks(accumulated, parsed_diff)
+    if auto_assigned:
+        logger.warning(logs.UNCOVERED_HUNKS_FIXED.format(count=auto_assigned))
     recompute_estimated_loc(accumulated, parsed_diff)
     return accumulated
 

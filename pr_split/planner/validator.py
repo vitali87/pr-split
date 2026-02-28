@@ -72,7 +72,12 @@ def validate_loc_bounds(groups: list[Group], max_loc: int) -> list[str]:
     warnings: list[str] = []
     for group in groups:
         if group.estimated_loc > max_loc:
-            msg = logs.LOC_SOFT_WARN.format(group=group.id, loc=group.estimated_loc, limit=max_loc)
+            msg = logs.LOC_SOFT_WARN.format(
+                group=group.id,
+                added=group.estimated_added,
+                removed=group.estimated_removed,
+                limit=max_loc,
+            )
             logger.warning(msg)
             warnings.append(msg)
     return warnings

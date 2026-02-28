@@ -20,6 +20,8 @@ class Group(BaseModel):
     depends_on: list[str] = Field(default_factory=list)
     assignments: list[GroupAssignment] = Field(default_factory=list)
     estimated_loc: int = 0
+    estimated_added: int = 0
+    estimated_removed: int = 0
     expected_patch: str = ""
     expected_patch_sha256: str = ""
 

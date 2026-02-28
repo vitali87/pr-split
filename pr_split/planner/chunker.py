@@ -5,9 +5,10 @@ from collections import defaultdict
 from loguru import logger
 
 from .. import logs
+from ..constants import AssignmentType
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg
-from ..schemas import Group
+from ..schemas import Group, GroupAssignment
 from ..types_defs import DiffStats, FileSummary, HunkRef
 
 DEFAULT_TOKEN_RATIO = 0.25
@@ -111,7 +112,8 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> lis
         file_hunk_counts[pf.path] = len(pf)
 
     for group in groups:
-        loc = 0
+        added = 0
+        removed = 0
         for assignment in group.assignments:
             max_idx = file_hunk_counts.get(assignment.file_path, 0)
             for idx in assignment.hunk_indices:
@@ -127,10 +129,61 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> lis
                     continue
                 for pf in parsed_diff.patch_set:
                     if pf.path == assignment.file_path:
-                        loc += pf[idx].added + pf[idx].removed
+                        added += pf[idx].added
+                        removed += pf[idx].removed
                         break
-        group.estimated_loc = loc
+        group.estimated_added = added
+        group.estimated_removed = removed
+        group.estimated_loc = added + removed
     return groups
+
+
+def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
+    assigned: set[tuple[str, int]] = set()
+    for group in groups:
+        for assignment in group.assignments:
+            for idx in assignment.hunk_indices:
+                assigned.add((assignment.file_path, idx))
+
+    all_hunks: list[tuple[str, int]] = []
+    for pf in parsed_diff.patch_set:
+        for i in range(len(pf)):
+            all_hunks.append((pf.path, i))
+
+    unassigned = [(f, i) for f, i in all_hunks if (f, i) not in assigned]
+    if not unassigned:
+        return 0
+
+    file_groups: dict[str, Group] = {}
+    for group in groups:
+        for assignment in group.assignments:
+            if assignment.file_path not in file_groups:
+                file_groups[assignment.file_path] = group
+
+    largest = max(groups, key=lambda g: len(g.assignments))
+
+    for file_path, hunk_idx in unassigned:
+        target = file_groups.get(file_path, largest)
+        existing_assignment = None
+        for a in target.assignments:
+            if a.file_path == file_path:
+                existing_assignment = a
+                break
+        if existing_assignment:
+            existing_assignment.hunk_indices.append(hunk_idx)
+        else:
+            target.assignments.append(
+                GroupAssignment(
+                    file_path=file_path,
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[hunk_idx],
+                )
+            )
+        logger.warning(
+            logs.HUNK_AUTO_ASSIGNED.format(file=file_path, index=hunk_idx, group=target.id)
+        )
+
+    return len(unassigned)
 
 
 def format_group_catalog(groups: list[Group]) -> str:

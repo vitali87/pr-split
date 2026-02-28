@@ -23,6 +23,9 @@ from .branches import (
     is_worktree_clean as is_worktree_clean,
 )
 from .branches import (
+    merge_base as merge_base,
+)
+from .branches import (
     push_branch as push_branch,
 )
 from .branches import (

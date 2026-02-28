@@ -82,6 +82,10 @@ def get_commit_sha(ref: str) -> str:
     return run_git("rev-parse", ref)
 
 
+def merge_base(ref_a: str, ref_b: str) -> str:
+    return run_git("merge-base", ref_a, ref_b)
+
+
 def create_group_branch(group_id: str, base: str) -> str:
     branch_name = f"{BRANCH_PREFIX}{group_id}"
     logger.info(logs.CREATING_BRANCH.format(branch=branch_name, base=base))

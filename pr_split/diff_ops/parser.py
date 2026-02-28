@@ -14,7 +14,7 @@ from ..types_defs import DiffStats, FileSummary, HunkInfo
 def extract_diff(dev_branch: str, base_branch: str) -> str:
     logger.info(logs.EXTRACTING_DIFF.format(base=base_branch, dev=dev_branch))
     result = subprocess.run(
-        ["git", "diff", f"{base_branch}..{dev_branch}"],
+        ["git", "diff", f"{base_branch}...{dev_branch}"],
         capture_output=True,
         text=True,
     )
