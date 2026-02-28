@@ -29,7 +29,8 @@ def branch_exists(branch: str) -> bool:
 
 
 def is_worktree_clean() -> bool:
-    return run_git("status", "--porcelain") == ""
+    output = run_git("status", "--porcelain")
+    return all(line.startswith("??") for line in output.splitlines())
 
 
 def current_branch() -> str:
