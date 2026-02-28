@@ -153,7 +153,7 @@ def _create_branches_and_commits(
             logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
             commit_sha = commit_files(
                 list(materialized.keys()),
-                f"{group.title}\n\n{group.description}",
+                group.title,
             )
             record.commit_sha = commit_sha
 
