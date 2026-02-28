@@ -39,6 +39,7 @@ class SplitPlan(BaseModel):
     max_loc: int
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
+    author: str | None = None
 
 
 class BranchRecord(BaseModel):

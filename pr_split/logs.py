@@ -19,3 +19,18 @@ CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
+FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
+FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
+AUTHOR_PRESERVED = "Preserving author: {author}"
+COUNTING_TOKENS = "Counting input tokens ({model})"
+TOKEN_COUNT = "Token count: {tokens} (limit: {limit})"
+DIFF_TOO_LARGE = (
+    "Diff exceeds context window ({tokens} tokens > {limit} limit), switching to chunked mode"
+)
+CALIBRATING_CHUNKS = (
+    "Overhead: {overhead} tokens, diff budget per chunk: {budget} tokens,"
+    " ratio: {ratio:.4f} tokens/char"
+)
+CHUNKED_MODE = "Using chunked processing ({chunks} chunks, {hunks} total hunks)"
+CHUNK_SENDING = "Sending chunk {index}/{total} ({hunks} hunks, ~{tokens} tokens)"
+CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups} total"

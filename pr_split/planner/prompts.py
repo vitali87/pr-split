@@ -117,12 +117,35 @@ Full diff:
 {full_diff}\
 """
 
-_SUMMARY_USER_PROMPT_TEMPLATE = """\
-Below are the file-level summaries for a large diff. Propose an initial grouping \
-plan based on these summaries. Individual hunks will be assigned in a follow-up.
+_CHUNK_FIRST_USER_PROMPT_TEMPLATE = """\
+Below is chunk 1 of {total_chunks} from a large diff. This is the first chunk; \
+create initial groups and assign all hunks in this chunk.
 
-File summary:
-{file_summary}\
+File summary (this chunk only):
+{file_summary}
+
+Diff (this chunk only):
+{chunk_diff}\
+"""
+
+_CHUNK_CONTINUATION_USER_PROMPT_TEMPLATE = """\
+Below is chunk {chunk_index} of {total_chunks} from a large diff. \
+Previous chunks have already been assigned to groups.
+
+Existing groups from previous chunks:
+{group_catalog}
+
+Assign the hunks below to existing groups or create new groups as needed. \
+When assigning to an existing group, reuse its exact ID. When creating new \
+groups, use new IDs that do not conflict with existing ones. Only return groups \
+that received assignments from THIS chunk (do not repeat groups with no new \
+assignments).
+
+File summary (this chunk only):
+{file_summary}
+
+Diff (this chunk only):
+{chunk_diff}\
 """
 
 
@@ -167,7 +190,25 @@ def build_user_prompt(diff_stats: DiffStats, full_diff: str) -> str:
     )
 
 
-def build_summary_user_prompt(diff_stats: DiffStats) -> str:
-    return _SUMMARY_USER_PROMPT_TEMPLATE.format(
-        file_summary=_format_file_summary(diff_stats),
+def build_chunk_first_prompt(chunk_stats: DiffStats, chunk_diff: str, total_chunks: int) -> str:
+    return _CHUNK_FIRST_USER_PROMPT_TEMPLATE.format(
+        total_chunks=total_chunks,
+        file_summary=_format_file_summary(chunk_stats),
+        chunk_diff=chunk_diff,
+    )
+
+
+def build_chunk_continuation_prompt(
+    chunk_stats: DiffStats,
+    chunk_diff: str,
+    chunk_index: int,
+    total_chunks: int,
+    group_catalog: str,
+) -> str:
+    return _CHUNK_CONTINUATION_USER_PROMPT_TEMPLATE.format(
+        chunk_index=chunk_index,
+        total_chunks=total_chunks,
+        group_catalog=group_catalog,
+        file_summary=_format_file_summary(chunk_stats),
+        chunk_diff=chunk_diff,
     )

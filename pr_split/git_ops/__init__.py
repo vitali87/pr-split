@@ -38,5 +38,11 @@ from .prs import (
     create_pr as create_pr,
 )
 from .prs import (
+    fetch_fork_branch as fetch_fork_branch,
+)
+from .prs import (
+    fetch_fork_pr as fetch_fork_pr,
+)
+from .prs import (
     list_pr_split_prs as list_pr_split_prs,
 )

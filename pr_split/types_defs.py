@@ -23,6 +23,20 @@ class FileSummary(TypedDict):
     hunk_count: int
 
 
+class ForkPRInfo(TypedDict):
+    pr_number: int | None
+    local_ref: str
+    base_branch: str
+    author: str
+    fork_full_name: str
+
+
+class HunkRef(NamedTuple):
+    file_path: str
+    hunk_index: int
+    token_estimate: int
+
+
 class DiffStats(TypedDict):
     total_files: int
     total_added: int

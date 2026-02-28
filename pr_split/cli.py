@@ -24,6 +24,8 @@ from .git_ops import (
     create_group_branch,
     create_merge_base_branch,
     delete_branch,
+    fetch_fork_branch,
+    fetch_fork_pr,
     is_worktree_clean,
     push_branch,
 )
@@ -39,6 +41,7 @@ from .schemas import (
     PRRecord,
     SplitPlan,
 )
+from .types_defs import ForkPRInfo
 
 app = typer.Typer(name="pr-split", help="Decompose large PRs into reviewable stacked PRs")
 console = Console()
@@ -108,6 +111,8 @@ def _create_branches_and_commits(
     dag: PlanDAG,
     parsed_diff: ParsedDiff,
     base_branch: str,
+    *,
+    author: str | None = None,
 ) -> list[BranchRecord]:
     branch_records: list[BranchRecord] = []
     branch_map: dict[str, str] = {}
@@ -154,6 +159,7 @@ def _create_branches_and_commits(
             commit_sha = commit_files(
                 list(materialized.keys()),
                 group.title,
+                author=author,
             )
             record.commit_sha = commit_sha
 
@@ -194,13 +200,41 @@ def _push_and_create_prs(
     return pr_records
 
 
+def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
+    cleaned = dev_branch.lstrip("#")
+    if cleaned.isdigit():
+        return fetch_fork_pr(int(cleaned))
+    if ":" in dev_branch:
+        user, branch = dev_branch.split(":", 1)
+        return fetch_fork_branch(user, branch)
+    return None
+
+
 @app.command()
 def split(
-    dev_branch: Annotated[str, typer.Argument(help="Development branch to split")],
+    dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
     max_loc: Annotated[int, typer.Option(help="Max lines of code per sub-PR")] = DEFAULT_MAX_LOC,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
 ) -> None:
+    author: str | None = None
+    fork_info: ForkPRInfo | None = None
+
+    if not branch_exists(dev_branch):
+        if not check_gh_auth():
+            console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
+            raise typer.Exit(1)
+        if not is_worktree_clean():
+            console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
+            raise typer.Exit(1)
+        fork_info = _resolve_fork_ref(dev_branch)
+        if not fork_info:
+            console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
+            raise typer.Exit(1)
+        dev_branch = fork_info["local_ref"]
+        base = fork_info["base_branch"]
+        author = fork_info["author"]
+
     _validate_inputs(dev_branch, base)
 
     raw_diff = extract_diff(dev_branch, base)
@@ -232,7 +266,7 @@ def split(
 
     original_branch = dev_branch
     checkout_branch(base)
-    branch_records = _create_branches_and_commits(groups, dag, parsed_diff, base)
+    branch_records = _create_branches_and_commits(groups, dag, parsed_diff, base, author=author)
     pr_records = _push_and_create_prs(groups, dag, branch_records)
 
     checkout_branch(original_branch)
@@ -244,6 +278,7 @@ def split(
             max_loc=max_loc,
             priority=priority,
             groups=groups,
+            author=author,
         ),
         git_state=GitState(
             branches=branch_records,

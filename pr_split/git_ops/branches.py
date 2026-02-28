@@ -55,13 +55,14 @@ def merge_branch(source: str) -> None:
         ) from exc
 
 
-def commit_files(file_paths: list[str], message: str) -> str:
+def commit_files(file_paths: list[str], message: str, *, author: str | None = None) -> str:
     run_git("add", "--", *file_paths)
+    author_args = ("--author", author) if author else ()
     try:
-        run_git("commit", "-m", message)
+        run_git("commit", "-m", message, *author_args)
     except GitOperationError:
         run_git("add", "-u")
-        run_git("commit", "-m", message)
+        run_git("commit", "-m", message, *author_args)
     return run_git("rev-parse", "HEAD")
 
 
