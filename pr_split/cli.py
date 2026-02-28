@@ -231,6 +231,7 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     original_branch = dev_branch
+    checkout_branch(base)
     branch_records = _create_branches_and_commits(groups, dag, parsed_diff, base)
     pr_records = _push_and_create_prs(groups, dag, branch_records)
 

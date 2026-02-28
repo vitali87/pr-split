@@ -84,6 +84,9 @@ def get_commit_sha(ref: str) -> str:
 def create_group_branch(group_id: str, base: str) -> str:
     branch_name = f"{BRANCH_PREFIX}{group_id}"
     logger.info(logs.CREATING_BRANCH.format(branch=branch_name, base=base))
+    if branch_exists(branch_name):
+        checkout_branch(base)
+        run_git("branch", "-D", branch_name)
     checkout_new_branch(branch_name, base)
     return branch_name
 
@@ -93,6 +96,9 @@ def create_merge_base_branch(group_id: str, parent_branches: list[str]) -> str:
     logger.info(
         logs.CREATING_MERGE_BASE.format(branch=branch_name, parents=", ".join(parent_branches))
     )
+    if branch_exists(branch_name):
+        checkout_branch(parent_branches[0])
+        run_git("branch", "-D", branch_name)
     checkout_new_branch(branch_name, parent_branches[0])
     for parent in parent_branches[1:]:
         merge_branch(parent)
