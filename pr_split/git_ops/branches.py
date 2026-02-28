@@ -55,9 +55,13 @@ def merge_branch(source: str) -> None:
         ) from exc
 
 
-def commit_all(message: str) -> str:
-    run_git("add", "-A")
-    run_git("commit", "-m", message)
+def commit_files(file_paths: list[str], message: str) -> str:
+    run_git("add", "--", *file_paths)
+    try:
+        run_git("commit", "-m", message)
+    except GitOperationError:
+        run_git("add", "--", *file_paths)
+        run_git("commit", "-m", message)
     return run_git("rev-parse", "HEAD")
 
 

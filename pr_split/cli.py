@@ -20,7 +20,7 @@ from .git_ops import (
     branch_exists,
     check_gh_auth,
     checkout_branch,
-    commit_all,
+    commit_files,
     create_group_branch,
     create_merge_base_branch,
     delete_branch,
@@ -151,7 +151,10 @@ def _create_branches_and_commits(
                 p.write_text(content)
 
             logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
-            commit_sha = commit_all(f"{group.title}\n\n{group.description}")
+            commit_sha = commit_files(
+                list(materialized.keys()),
+                f"{group.title}\n\n{group.description}",
+            )
             record.commit_sha = commit_sha
 
             branch_map[group_id] = branch_name

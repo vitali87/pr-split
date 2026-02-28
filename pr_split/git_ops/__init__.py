@@ -8,7 +8,7 @@ from .branches import (
     checkout_new_branch as checkout_new_branch,
 )
 from .branches import (
-    commit_all as commit_all,
+    commit_files as commit_files,
 )
 from .branches import (
     create_group_branch as create_group_branch,
