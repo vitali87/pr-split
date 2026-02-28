@@ -60,7 +60,7 @@ def commit_files(file_paths: list[str], message: str) -> str:
     try:
         run_git("commit", "-m", message)
     except GitOperationError:
-        run_git("add", "--", *file_paths)
+        run_git("add", "-u")
         run_git("commit", "-m", message)
     return run_git("rev-parse", "HEAD")
 
