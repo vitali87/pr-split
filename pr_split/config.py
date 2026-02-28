@@ -1,3 +1,4 @@
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 from .constants import CLAUDE_MODEL, DEFAULT_MAX_LOC, Priority
@@ -6,7 +7,10 @@ from .constants import CLAUDE_MODEL, DEFAULT_MAX_LOC, Priority
 class Settings(BaseSettings):
     model_config = {"env_prefix": "PR_SPLIT_"}
 
-    anthropic_api_key: str = ""
+    anthropic_api_key: str = Field(
+        default="",
+        validation_alias="ANTHROPIC_API_KEY",
+    )
     claude_model: str = CLAUDE_MODEL
     max_loc: int = DEFAULT_MAX_LOC
     priority: Priority = Priority.ORTHOGONAL
