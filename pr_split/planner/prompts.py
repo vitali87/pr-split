@@ -82,12 +82,17 @@ be split further.
 5. PR titles MUST follow conventional commits format: \
 type(optional-scope): description. Allowed types: feat, fix, refactor, test, \
 docs, chore, style, perf, ci, build, revert.
-6. For whole_file assignments, set assignment_type to "whole_file" and \
+6. Hunk indices are PER-FILE and 0-based. Each hunk in the diff is labeled \
+with [hunk_index=N]. Use exactly those values. A file with 3 hunks has \
+indices 0, 1, 2. Do NOT use global sequential numbers across files.
+7. For whole_file assignments, set assignment_type to "whole_file" and \
 hunk_indices to a list of ALL hunk indices for that file.
-7. For partial file assignments, set assignment_type to "partial_hunks" and \
+8. For partial file assignments, set assignment_type to "partial_hunks" and \
 list only the specific hunk indices.
-8. estimated_loc should reflect the sum of added + removed lines for the \
+9. estimated_loc should reflect the sum of added + removed lines for the \
 assigned hunks.
+10. Only assign hunks that appear in the diff provided. Do NOT assign hunks \
+for files not present in the diff.
 
 {priority_instructions}
 """
@@ -118,8 +123,11 @@ Full diff:
 """
 
 _CHUNK_FIRST_USER_PROMPT_TEMPLATE = """\
-Below is chunk 1 of {total_chunks} from a large diff. This is the first chunk; \
-create initial groups and assign all hunks in this chunk.
+Below is chunk 1 of {total_chunks} from a large diff. You will receive the \
+remaining {remaining_chunks} chunk(s) one at a time after this. Create broad, \
+coarse groups that future hunks can be assigned to. Prefer fewer, larger groups \
+over many small ones since more hunks from the same features/modules will arrive \
+in later chunks. Only assign hunks you can see in the diff below.
 
 File summary (this chunk only):
 {file_summary}
@@ -135,11 +143,13 @@ Previous chunks have already been assigned to groups.
 Existing groups from previous chunks:
 {group_catalog}
 
-Assign the hunks below to existing groups or create new groups as needed. \
-When assigning to an existing group, reuse its exact ID. When creating new \
-groups, use new IDs that do not conflict with existing ones. Only return groups \
-that received assignments from THIS chunk (do not repeat groups with no new \
-assignments).
+IMPORTANT: Strongly prefer assigning hunks to existing groups listed above. \
+A hunk belongs to an existing group if it touches the same feature, module, \
+or concern. Only create a new group when a hunk clearly does not fit ANY \
+existing group. When assigning to an existing group, reuse its exact ID. \
+When creating new groups, use new IDs that do not conflict with existing ones. \
+Only return groups that received assignments from THIS chunk (do not repeat \
+groups with no new assignments).
 
 File summary (this chunk only):
 {file_summary}
@@ -160,8 +170,14 @@ def _format_file_summary(diff_stats: DiffStats) -> str:
         if fs["is_renamed"]:
             flags.append("renamed")
         flag_str = f" [{', '.join(flags)}]" if flags else ""
+        hunk_count = fs["hunk_count"]
+        if hunk_count > 0:
+            idx_range = f"indices 0..{hunk_count - 1}"
+        else:
+            idx_range = "no hunks"
         lines.append(
-            f"  {fs['path']}: +{fs['added']}/-{fs['removed']} ({fs['hunk_count']} hunks){flag_str}"
+            f"  {fs['path']}: +{fs['added']}/-{fs['removed']}"
+            f" ({hunk_count} hunks, {idx_range}){flag_str}"
         )
     header = (
         f"Total: {diff_stats['total_files']} files, "
@@ -190,9 +206,14 @@ def build_user_prompt(diff_stats: DiffStats, full_diff: str) -> str:
     )
 
 
-def build_chunk_first_prompt(chunk_stats: DiffStats, chunk_diff: str, total_chunks: int) -> str:
+def build_chunk_first_prompt(
+    chunk_stats: DiffStats,
+    chunk_diff: str,
+    total_chunks: int,
+) -> str:
     return _CHUNK_FIRST_USER_PROMPT_TEMPLATE.format(
         total_chunks=total_chunks,
+        remaining_chunks=total_chunks - 1,
         file_summary=_format_file_summary(chunk_stats),
         chunk_diff=chunk_diff,
     )

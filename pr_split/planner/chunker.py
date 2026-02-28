@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 
+from loguru import logger
+
+from .. import logs
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg
 from ..schemas import Group
@@ -59,10 +62,10 @@ def build_chunk_diff_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRef
     for pf in parsed_diff.patch_set:
         if pf.path not in file_hunks:
             continue
-        indices = file_hunks[pf.path]
+        indices = sorted(file_hunks[pf.path])
         header = f"--- {pf.source_file}\n+++ {pf.target_file}\n"
-        hunk_texts = [str(pf[i]) for i in sorted(indices)]
-        parts.append(header + "".join(hunk_texts))
+        labeled_hunks = [f"[hunk_index={i}]\n{pf[i]}" for i in indices]
+        parts.append(header + "".join(labeled_hunks))
     return "\n".join(parts)
 
 
@@ -103,14 +106,28 @@ def build_chunk_stats_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRe
 
 
 def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
+    file_hunk_counts: dict[str, int] = {}
+    for pf in parsed_diff.patch_set:
+        file_hunk_counts[pf.path] = len(pf)
+
     for group in groups:
         loc = 0
         for assignment in group.assignments:
+            max_idx = file_hunk_counts.get(assignment.file_path, 0)
             for idx in assignment.hunk_indices:
+                if idx >= max_idx:
+                    logger.warning(
+                        logs.INVALID_HUNK_INDEX.format(
+                            group=group.id,
+                            file=assignment.file_path,
+                            index=idx,
+                            max=max_idx - 1,
+                        )
+                    )
+                    continue
                 for pf in parsed_diff.patch_set:
                     if pf.path == assignment.file_path:
-                        hunk = pf[idx]
-                        loc += hunk.added + hunk.removed
+                        loc += pf[idx].added + pf[idx].removed
                         break
         group.estimated_loc = loc
     return groups
@@ -123,6 +140,7 @@ def format_group_catalog(groups: list[Group]) -> str:
         deps = f" (depends on: {', '.join(group.depends_on)})" if group.depends_on else ""
         lines.append(f"Group {group.id}: {group.title}{deps}")
         lines.append(f"  Description: {group.description}")
-        lines.append(f"  Files: {', '.join(file_paths)}")
+        lines.append(f"  Files ({len(file_paths)}): {', '.join(file_paths)}")
+        lines.append(f"  Assignments: {len(group.assignments)}, ~{group.estimated_loc} LOC")
         lines.append("")
     return "\n".join(lines)

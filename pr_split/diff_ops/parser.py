@@ -86,6 +86,15 @@ class ParsedDiff:
                 ]
         return []
 
+    @property
+    def labeled_diff(self) -> str:
+        parts: list[str] = []
+        for pf in self.patch_set:
+            header = f"--- {pf.source_file}\n+++ {pf.target_file}\n"
+            labeled_hunks = [f"[hunk_index={i}]\n{hunk}" for i, hunk in enumerate(pf)]
+            parts.append(header + "".join(labeled_hunks))
+        return "\n".join(parts)
+
     def hunk_content(self, path: str, index: int) -> str:
         for pf in self.patch_set:
             if pf.path == path:

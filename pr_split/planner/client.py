@@ -9,6 +9,7 @@ from loguru import logger
 from .. import logs
 from ..config import Settings
 from ..constants import (
+    CHUNK_RETRY_LIMIT,
     CHUNK_TARGET_RATIO,
     CONTEXT_1M_BETA,
     LLM_TIMEOUT_SECONDS,
@@ -42,6 +43,8 @@ _TOOL_DEF = anthropic.types.ToolParam(
     input_schema=SPLIT_TOOL_SCHEMA,
 )
 
+STOP_REASON_TOOL_USE = "tool_use"
+
 
 class RawAssignment(TypedDict):
     file_path: str
@@ -65,8 +68,24 @@ class RawToolOutput(TypedDict):
 def _extract_raw_output(block_input: dict[str, object]) -> list[RawGroup]:
     groups = block_input.get("groups")
     if not isinstance(groups, list):
-        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="missing 'groups' in tool output"))
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(
+                detail=f"missing 'groups' in tool output (keys: {list(block_input.keys())})"
+            )
+        )
     return groups  # type: ignore[return-value]
+
+
+def _log_truncation(response: object) -> None:
+    stop_reason = getattr(response, "stop_reason", "unknown")
+    keys: list[str] = []
+    for block in getattr(response, "content", []):
+        if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
+            keys = list(block.input.keys())
+            break
+    logger.warning(
+        logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys)
+    )
 
 
 def _count_tokens(
@@ -107,10 +126,40 @@ def _call_claude(
         )
     except anthropic.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    if response.stop_reason != STOP_REASON_TOOL_USE:
+        _log_truncation(response)
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool_use block in response"))
+
+
+def _call_chunk_with_retry(
+    system: str,
+    user: str,
+    *,
+    api_key: str,
+    model: str,
+    chunk_index: int,
+    total_chunks: int,
+) -> list[Group]:
+    last_error: LLMError | None = None
+    for attempt in range(1, CHUNK_RETRY_LIMIT + 1):
+        try:
+            raw = _call_claude(system=system, user=user, api_key=api_key, model=model)
+            return _parse_groups(raw)
+        except LLMError as exc:
+            last_error = exc
+            if attempt < CHUNK_RETRY_LIMIT:
+                logger.warning(
+                    logs.CHUNK_RETRY.format(
+                        index=chunk_index,
+                        total=total_chunks,
+                        attempt=attempt,
+                        error=str(exc),
+                    )
+                )
+    raise last_error  # type: ignore[misc]
 
 
 def _parse_groups(raw: RawToolOutput) -> list[Group]:
@@ -211,13 +260,14 @@ def _plan_split_chunked(
                 chunk_stats, chunk_diff, chunk_index, total_chunks, catalog
             )
 
-        raw = _call_claude(
+        chunk_groups = _call_chunk_with_retry(
             system=system,
             user=user,
             api_key=settings.anthropic_api_key,
             model=settings.claude_model,
+            chunk_index=chunk_index,
+            total_chunks=total_chunks,
         )
-        chunk_groups = _parse_groups(raw)
 
         prev_count = len(accumulated)
         if chunk_index == 1:
@@ -253,7 +303,7 @@ def plan_split(
     )
 
     system = build_system_prompt(settings.priority, settings.max_loc)
-    user = build_user_prompt(diff_stats, parsed_diff.raw_diff)
+    user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.claude_model))
     token_count = _count_tokens(
