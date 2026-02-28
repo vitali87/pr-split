@@ -7,6 +7,7 @@ from loguru import logger
 
 from .. import logs
 from ..config import Settings
+from ..constants import CONTEXT_1M_BETA
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, LLMError
 from ..schemas import Group, GroupAssignment
@@ -43,9 +44,9 @@ def _call_claude(
 ) -> RawToolOutput:
     client = anthropic.Anthropic(api_key=api_key)
     try:
-        response = client.messages.create(
+        response = client.beta.messages.create(
             model=model,
-            max_tokens=8192,
+            max_tokens=16384,
             system=system,
             messages=[{"role": "user", "content": user}],
             tools=[
@@ -56,6 +57,7 @@ def _call_claude(
                 }
             ],
             tool_choice={"type": "tool", "name": tool_name},
+            betas=[CONTEXT_1M_BETA],
         )
     except anthropic.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
