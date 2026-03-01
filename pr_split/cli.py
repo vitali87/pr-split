@@ -22,8 +22,8 @@ from .git_ops import (
     checkout_branch,
     commit_files,
     create_group_branch,
-    create_merge_base_branch,
     delete_branch,
+    derive_split_namespace,
     fetch_fork_branch,
     fetch_fork_pr,
     is_worktree_clean,
@@ -68,6 +68,29 @@ def _render_dag(groups: list[Group]) -> str:
     return capture.get()
 
 
+def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
+    roots = [g for g in groups if not g.depends_on]
+    lines: list[str] = []
+
+    def _add_children(parent_id: str, prefix: str) -> None:
+        children = [g for g in groups if parent_id in g.depends_on]
+        for i, child in enumerate(children):
+            is_last = i == len(children) - 1
+            connector = "\u2514\u2500\u2500" if is_last else "\u251c\u2500\u2500"
+            marker = "  <-- this PR" if child.id == current_id else ""
+            lines.append(f"{prefix}{connector} {child.id}: {child.title}{marker}")
+            extension = "    " if is_last else "\u2502   "
+            _add_children(child.id, prefix + extension)
+
+    for root in roots:
+        marker = "  <-- this PR" if root.id == current_id else ""
+        lines.append(f"{root.id}: {root.title}{marker}")
+        _add_children(root.id, "")
+
+    tree_block = "\n".join(lines)
+    return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
+
+
 def _validate_inputs(dev_branch: str, base: str) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
@@ -110,91 +133,64 @@ def _present_plan(groups: list[Group], max_loc: int) -> None:
 
 def _create_branches_and_commits(
     groups: list[Group],
-    dag: PlanDAG,
     parsed_diff: ParsedDiff,
     base_branch: str,
     merge_base_ref: str,
+    namespace: str,
     *,
     author: str | None = None,
 ) -> list[BranchRecord]:
     branch_records: list[BranchRecord] = []
-    branch_map: dict[str, str] = {}
 
-    for batch in dag.iter_ready():
-        for group_id in batch:
-            group = next(g for g in groups if g.id == group_id)
-            parents = dag.parents(group_id)
+    for group in groups:
+        branch_name = create_group_branch(group.id, merge_base_ref, namespace)
+        record = BranchRecord(
+            group_id=group.id,
+            branch_name=branch_name,
+            base_branch=base_branch,
+        )
 
-            if dag.is_merge_node(group_id):
-                parent_branches = [branch_map[p] for p in parents]
-                merge_base_name = create_merge_base_branch(group_id, parent_branches)
-                branch_name = create_group_branch(group_id, merge_base_name)
-                record = BranchRecord(
-                    group_id=group_id,
-                    branch_name=branch_name,
-                    base_branch=merge_base_name,
-                    merge_base_branch=merge_base_name,
-                    merge_base_parents=parent_branches,
-                )
-            elif not parents:
-                branch_name = create_group_branch(group_id, merge_base_ref)
-                record = BranchRecord(
-                    group_id=group_id,
-                    branch_name=branch_name,
-                    base_branch=base_branch,
-                )
-            else:
-                parent_branch = branch_map[parents[0]]
-                branch_name = create_group_branch(group_id, parent_branch)
-                record = BranchRecord(
-                    group_id=group_id,
-                    branch_name=branch_name,
-                    base_branch=parent_branch,
-                )
+        materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
+        for file_path, content in materialized.items():
+            p = Path(file_path)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
 
-            materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
-            for file_path, content in materialized.items():
-                p = Path(file_path)
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content)
-
-            logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
-            commit_sha = commit_files(
-                list(materialized.keys()),
-                group.title,
-                author=author,
-            )
-            record.commit_sha = commit_sha
-
-            branch_map[group_id] = branch_name
-            branch_records.append(record)
+        logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
+        commit_sha = commit_files(
+            list(materialized.keys()),
+            group.title,
+            author=author,
+        )
+        record.commit_sha = commit_sha
+        branch_records.append(record)
 
     return branch_records
 
 
 def _push_and_create_prs(
     groups: list[Group],
-    dag: PlanDAG,
     branch_records: list[BranchRecord],
 ) -> list[PRRecord]:
     pr_records: list[PRRecord] = []
     record_map = {r.group_id: r for r in branch_records}
 
-    for group_id in dag.topological_order():
-        group = next(g for g in groups if g.id == group_id)
-        record = record_map[group_id]
+    for group in groups:
+        record = record_map[group.id]
 
         push_branch(record.branch_name)
         logger.info(logs.CREATING_PR.format(group=group.id))
+        dag_md = _render_dag_markdown(groups, group.id)
+        body = f"{group.description}\n\n{dag_md}"
         pr_number, pr_url = create_pr(
             head=record.branch_name,
             base=record.base_branch,
             title=group.title,
-            body=group.description,
+            body=body,
         )
         pr_records.append(
             PRRecord(
-                group_id=group_id,
+                group_id=group.id,
                 pr_number=pr_number,
                 pr_url=pr_url,
             )
@@ -220,6 +216,7 @@ def split(
     max_loc: Annotated[int, typer.Option(help="Soft limit on diff lines per sub-PR")] = DEFAULT_MAX_LOC,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
 ) -> None:
+    dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
 
@@ -268,12 +265,13 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     original_branch = dev_branch
+    namespace = derive_split_namespace(dev_branch_arg)
     merge_base_ref = merge_base(base, dev_branch)
     checkout_branch(merge_base_ref)
     branch_records = _create_branches_and_commits(
-        groups, dag, parsed_diff, base, merge_base_ref, author=author
+        groups, parsed_diff, base, merge_base_ref, namespace, author=author
     )
-    pr_records = _push_and_create_prs(groups, dag, branch_records)
+    pr_records = _push_and_create_prs(groups, branch_records)
 
     checkout_branch(original_branch)
 

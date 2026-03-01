@@ -5,7 +5,9 @@ import subprocess
 from loguru import logger
 
 from .. import logs
-from ..constants import BRANCH_PREFIX, MERGE_BASE_PREFIX
+import re
+
+from ..constants import BRANCH_PREFIX
 from ..exceptions import ErrorMsg, GitOperationError
 
 
@@ -68,7 +70,7 @@ def commit_files(file_paths: list[str], message: str, *, author: str | None = No
 
 def push_branch(branch: str) -> None:
     logger.info(logs.PUSHING_BRANCH.format(branch=branch))
-    run_git("push", "-u", "origin", branch)
+    run_git("push", "--force-with-lease", "-u", "origin", branch)
 
 
 def delete_branch(branch: str, *, remote: bool = False) -> None:
@@ -86,8 +88,17 @@ def merge_base(ref_a: str, ref_b: str) -> str:
     return run_git("merge-base", ref_a, ref_b)
 
 
-def create_group_branch(group_id: str, base: str) -> str:
-    branch_name = f"{BRANCH_PREFIX}{group_id}"
+def derive_split_namespace(dev_branch_arg: str) -> str:
+    if ":" in dev_branch_arg:
+        raw = dev_branch_arg.split(":", 1)[1]
+    else:
+        raw = dev_branch_arg.lstrip("#")
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", raw)
+    return sanitized.strip("-")
+
+
+def create_group_branch(group_id: str, base: str, namespace: str) -> str:
+    branch_name = f"{BRANCH_PREFIX}{namespace}/{group_id}"
     logger.info(logs.CREATING_BRANCH.format(branch=branch_name, base=base))
     if branch_exists(branch_name):
         checkout_branch(base)
@@ -96,8 +107,8 @@ def create_group_branch(group_id: str, base: str) -> str:
     return branch_name
 
 
-def create_merge_base_branch(group_id: str, parent_branches: list[str]) -> str:
-    branch_name = f"{MERGE_BASE_PREFIX}{group_id}"
+def create_merge_base_branch(group_id: str, parent_branches: list[str], namespace: str) -> str:
+    branch_name = f"{BRANCH_PREFIX}{namespace}/base-{group_id}"
     logger.info(
         logs.CREATING_MERGE_BASE.format(branch=branch_name, parents=", ".join(parent_branches))
     )
