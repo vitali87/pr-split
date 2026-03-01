@@ -79,7 +79,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ANTHROPIC_API_KEY` | (required) | Anthropic API key |
-| `PR_SPLIT_CLAUDE_MODEL` | `claude-sonnet-4-6` | Claude model to use |
+| `PR_SPLIT_CLAUDE_MODEL` | `claude-opus-4-6` | Claude model to use |
 | `PR_SPLIT_MAX_LOC` | `400` | Default soft limit on diff lines |
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 
