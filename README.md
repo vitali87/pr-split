@@ -47,13 +47,13 @@ pr-split split feature-branch --base main
 ### Split a fork PR by number
 
 ```bash
-pr-split split '#162' --base main
+pr-split split '#42' --base main
 ```
 
 ### Split a fork PR by user:branch
 
 ```bash
-pr-split split qdrddr:add-cmd-question --base main
+pr-split split someuser:feature-branch --base main
 ```
 
 ### Options
