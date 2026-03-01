@@ -5,7 +5,7 @@
 <h1 align="center">pr-split</h1>
 
 <p align="center">
-  Decompose large PRs into a DAG of small, reviewable stacked PRs.
+  Decompose large PRs into a DAG of small, reviewable stacked PRs
 </p>
 
 <p align="center">
