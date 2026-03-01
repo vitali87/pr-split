@@ -100,7 +100,8 @@ def _log_truncation(response: object) -> None:
 
 
 def _count_tokens_anthropic(
-    texts: list[str],
+    system: str,
+    user: str,
     *,
     api_key: str,
     model: str,
@@ -108,8 +109,8 @@ def _count_tokens_anthropic(
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.count_tokens(
         model=model,
-        system=texts[0],
-        messages=[{"role": "user", "content": texts[1]}],
+        system=system,
+        messages=[{"role": "user", "content": user}],
         tools=[_ANTHROPIC_TOOL_DEF],
     )
     return response.input_tokens
@@ -123,12 +124,14 @@ def _count_tokens_openai(texts: list[str], *, model: str) -> int:
     return sum(len(enc.encode(t)) for t in texts)
 
 
-def _count_tokens(texts: list[str], *, settings: Settings) -> int:
+def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
     match settings.provider:
         case Provider.ANTHROPIC:
-            return _count_tokens_anthropic(texts, api_key=settings.api_key, model=settings.model)
+            return _count_tokens_anthropic(
+                system, user, api_key=settings.api_key, model=settings.model
+            )
         case Provider.OPENAI:
-            return _count_tokens_openai(texts, model=settings.model)
+            return _count_tokens_openai([system, user], model=settings.model)
 
 
 def _call_anthropic(
@@ -178,7 +181,12 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     if not tool_calls:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call in response"))
     raw_args = tool_calls[0].function.arguments
-    parsed = json.loads(raw_args)
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError as exc:
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(detail=f"failed to parse tool arguments: {exc}")
+        ) from exc
     return RawToolOutput(groups=_extract_raw_output(parsed))
 
 
@@ -273,7 +281,7 @@ def _plan_split_chunked(
     system: str,
     full_token_count: int,
 ) -> list[Group]:
-    overhead = _count_tokens([system, "."], settings=settings)
+    overhead = _count_tokens(system, ".", settings=settings)
     chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
     diff_budget = chunk_limit - overhead - MAX_OUTPUT_TOKENS
     token_ratio = _compute_token_ratio(full_token_count, overhead, parsed_diff)
@@ -361,7 +369,7 @@ def plan_split(
     user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
-    token_count = _count_tokens([system, user], settings=settings)
+    token_count = _count_tokens(system, user, settings=settings)
     effective_limit = settings.max_context_tokens - MAX_OUTPUT_TOKENS
     logger.info(logs.TOKEN_COUNT.format(tokens=token_count, limit=effective_limit))
 
