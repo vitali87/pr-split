@@ -1,6 +1,6 @@
 EXTRACTING_DIFF = "Extracting diff between {base} and {dev}"
 DIFF_STATS = "Diff: {files} files, +{added}/-{removed} lines ({loc} LOC)"
-SENDING_TO_LLM = "Sending diff to Claude for analysis ({model})"
+SENDING_TO_LLM = "Sending diff to LLM for analysis ({model})"
 LLM_RESPONSE_RECEIVED = "Received split plan with {count} groups"
 VALIDATING_PLAN = "Validating split plan"
 VALIDATION_PASSED = "Plan validation passed"
@@ -35,13 +35,11 @@ CHUNKED_MODE = "Using chunked processing ({chunks} chunks, {hunks} total hunks)"
 CHUNK_SENDING = "Sending chunk {index}/{total} ({hunks} hunks, ~{tokens} tokens)"
 CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups} total"
 LLM_OUTPUT_TRUNCATED = (
-    "LLM output truncated (stop_reason: {stop_reason}),"
-    " keys in partial output: {keys}"
+    "LLM output truncated (stop_reason: {stop_reason}), keys in partial output: {keys}"
 )
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
-    "Group '{group}': invalid hunk index {index} for {file} (max: {max}),"
-    " skipping"
+    "Group '{group}': invalid hunk index {index} for {file} (max: {max}), skipping"
 )
 HUNK_AUTO_ASSIGNED = "Auto-assigned uncovered hunk {file}[{index}] to group '{group}'"
 UNCOVERED_HUNKS_FIXED = "Auto-assigned {count} uncovered hunk(s) to existing groups"

@@ -213,7 +213,9 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
 def split(
     dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
-    max_loc: Annotated[int, typer.Option(help="Soft limit on diff lines per sub-PR")] = DEFAULT_MAX_LOC,
+    max_loc: Annotated[
+        int, typer.Option(help="Soft limit on diff lines per sub-PR")
+    ] = DEFAULT_MAX_LOC,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
 ) -> None:
     dev_branch_arg = dev_branch

@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import re
 import subprocess
 
 from loguru import logger
 
 from .. import logs
-import re
-
 from ..constants import BRANCH_PREFIX
 from ..exceptions import ErrorMsg, GitOperationError
 

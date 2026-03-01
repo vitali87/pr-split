@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 from typing import TypedDict
 
 import anthropic
+import openai
+import tiktoken
 from anthropic.types.beta import BetaToolUseBlock
 from loguru import logger
 
@@ -13,9 +16,9 @@ from ..constants import (
     CHUNK_TARGET_RATIO,
     CONTEXT_1M_BETA,
     LLM_TIMEOUT_SECONDS,
-    MAX_CONTEXT_TOKENS,
     MAX_OUTPUT_TOKENS,
     AssignmentType,
+    Provider,
 )
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, LLMError
@@ -38,11 +41,20 @@ from .prompts import (
     build_user_prompt,
 )
 
-_TOOL_DEF = anthropic.types.ToolParam(
+_ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
     description="Propose a plan to split the diff into groups",
     input_schema=SPLIT_TOOL_SCHEMA,
 )
+
+_OPENAI_TOOL_DEF = {
+    "type": "function",
+    "function": {
+        "name": SPLIT_TOOL_NAME,
+        "description": "Propose a plan to split the diff into groups",
+        "parameters": SPLIT_TOOL_SCHEMA,
+    },
+}
 
 STOP_REASON_TOOL_USE = "tool_use"
 
@@ -84,14 +96,11 @@ def _log_truncation(response: object) -> None:
         if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
             keys = list(block.input.keys())
             break
-    logger.warning(
-        logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys)
-    )
+    logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
 
 
-def _count_tokens(
-    system: str,
-    user: str,
+def _count_tokens_anthropic(
+    texts: list[str],
     *,
     api_key: str,
     model: str,
@@ -99,14 +108,30 @@ def _count_tokens(
     client = anthropic.Anthropic(api_key=api_key)
     response = client.messages.count_tokens(
         model=model,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        tools=[_TOOL_DEF],
+        system=texts[0],
+        messages=[{"role": "user", "content": texts[1]}],
+        tools=[_ANTHROPIC_TOOL_DEF],
     )
     return response.input_tokens
 
 
-def _call_claude(
+def _count_tokens_openai(texts: list[str], *, model: str) -> int:
+    try:
+        enc = tiktoken.encoding_for_model(model)
+    except KeyError:
+        enc = tiktoken.get_encoding("o200k_base")
+    return sum(len(enc.encode(t)) for t in texts)
+
+
+def _count_tokens(texts: list[str], *, settings: Settings) -> int:
+    match settings.provider:
+        case Provider.ANTHROPIC:
+            return _count_tokens_anthropic(texts, api_key=settings.api_key, model=settings.model)
+        case Provider.OPENAI:
+            return _count_tokens_openai(texts, model=settings.model)
+
+
+def _call_anthropic(
     system: str,
     user: str,
     *,
@@ -120,7 +145,7 @@ def _call_claude(
             max_tokens=MAX_OUTPUT_TOKENS,
             system=system,
             messages=[{"role": "user", "content": user}],
-            tools=[_TOOL_DEF],
+            tools=[_ANTHROPIC_TOOL_DEF],
             tool_choice={"type": "tool", "name": SPLIT_TOOL_NAME},
             betas=[CONTEXT_1M_BETA],
             timeout=LLM_TIMEOUT_SECONDS,
@@ -135,19 +160,48 @@ def _call_claude(
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool_use block in response"))
 
 
+def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    client = openai.OpenAI(api_key=settings.api_key)
+    response = client.chat.completions.create(
+        model=settings.model,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        tools=[_OPENAI_TOOL_DEF],
+        tool_choice={
+            "type": "function",
+            "function": {"name": SPLIT_TOOL_NAME},
+        },
+    )
+    tool_calls = response.choices[0].message.tool_calls
+    if not tool_calls:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call in response"))
+    raw_args = tool_calls[0].function.arguments
+    parsed = json.loads(raw_args)
+    return RawToolOutput(groups=_extract_raw_output(parsed))
+
+
+def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    match settings.provider:
+        case Provider.ANTHROPIC:
+            return _call_anthropic(system, user, api_key=settings.api_key, model=settings.model)
+        case Provider.OPENAI:
+            return _call_openai(system, user, settings=settings)
+
+
 def _call_chunk_with_retry(
     system: str,
     user: str,
     *,
-    api_key: str,
-    model: str,
+    settings: Settings,
     chunk_index: int,
     total_chunks: int,
 ) -> list[Group]:
     last_error: LLMError | None = None
     for attempt in range(1, CHUNK_RETRY_LIMIT + 1):
         try:
-            raw = _call_claude(system=system, user=user, api_key=api_key, model=model)
+            raw = _call_llm(system=system, user=user, settings=settings)
             return _parse_groups(raw)
         except LLMError as exc:
             last_error = exc
@@ -219,10 +273,8 @@ def _plan_split_chunked(
     system: str,
     full_token_count: int,
 ) -> list[Group]:
-    overhead = _count_tokens(
-        system, ".", api_key=settings.anthropic_api_key, model=settings.claude_model
-    )
-    chunk_limit = int(MAX_CONTEXT_TOKENS * CHUNK_TARGET_RATIO)
+    overhead = _count_tokens([system, "."], settings=settings)
+    chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
     diff_budget = chunk_limit - overhead - MAX_OUTPUT_TOKENS
     token_ratio = _compute_token_ratio(full_token_count, overhead, parsed_diff)
 
@@ -264,8 +316,7 @@ def _plan_split_chunked(
         chunk_groups = _call_chunk_with_retry(
             system=system,
             user=user,
-            api_key=settings.anthropic_api_key,
-            model=settings.claude_model,
+            settings=settings,
             chunk_index=chunk_index,
             total_chunks=total_chunks,
         )
@@ -309,11 +360,9 @@ def plan_split(
     system = build_system_prompt(settings.priority, settings.max_loc)
     user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)
 
-    logger.info(logs.COUNTING_TOKENS.format(model=settings.claude_model))
-    token_count = _count_tokens(
-        system, user, api_key=settings.anthropic_api_key, model=settings.claude_model
-    )
-    effective_limit = MAX_CONTEXT_TOKENS - MAX_OUTPUT_TOKENS
+    logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
+    token_count = _count_tokens([system, user], settings=settings)
+    effective_limit = settings.max_context_tokens - MAX_OUTPUT_TOKENS
     logger.info(logs.TOKEN_COUNT.format(tokens=token_count, limit=effective_limit))
 
     if token_count > effective_limit:
@@ -322,13 +371,8 @@ def plan_split(
         logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
         return groups
 
-    logger.info(logs.SENDING_TO_LLM.format(model=settings.claude_model))
-    raw = _call_claude(
-        system=system,
-        user=user,
-        api_key=settings.anthropic_api_key,
-        model=settings.claude_model,
-    )
+    logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
+    raw = _call_llm(system=system, user=user, settings=settings)
     groups = _parse_groups(raw)
     recompute_estimated_loc(groups, parsed_diff)
     logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
