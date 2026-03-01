@@ -17,6 +17,11 @@ class PRState(StrEnum):
     MERGED = "merged"
 
 
+class Provider(StrEnum):
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+
+
 BRANCH_PREFIX = "pr-split/"
 MERGE_BASE_PREFIX = "pr-split/base-"
 PLAN_DIR = ".pr-split"
@@ -24,9 +29,11 @@ PLAN_FILE = ".pr-split/plan.json"
 DEFAULT_MAX_LOC = 400
 PR_REF_PREFIX = "refs/pr-split/pr-"
 FORK_REF_PREFIX = "refs/pr-split/fork-"
-CLAUDE_MODEL = "claude-opus-4-6"
+DEFAULT_MODEL = "claude-opus-4-6"
+OPENAI_MODEL = "gpt-5.2"
 CONTEXT_1M_BETA = "context-1m-2025-08-07"
-MAX_CONTEXT_TOKENS = 1_000_000
+ANTHROPIC_MAX_CONTEXT_TOKENS = 1_000_000
+OPENAI_MAX_CONTEXT_TOKENS = 400_000
 MAX_OUTPUT_TOKENS = 128_000
 LLM_TIMEOUT_SECONDS = 600
 CHUNK_TARGET_RATIO = 2 / 3
