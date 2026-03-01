@@ -12,6 +12,10 @@
   <a href="https://github.com/vitali87/pr-split/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vitali87/pr-split" alt="License"></a>
 </p>
 
+## Why pr-split?
+
+Vibe coding with AI assistants can produce massive PRs that no one wants to review. A 2,000 line PR with changes across dozens of files is a review bottleneck: teammates skim it, rubber stamp it, or just ignore it. `pr-split` turns that monolith into a stack of focused, bite-sized PRs your team can actually review with confidence. Each sub-PR has a clear purpose, minimal scope, and explicit dependencies, so reviewers know exactly what changed and why.
+
 ## How it works
 
 `pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
