@@ -99,16 +99,10 @@ def _log_truncation(response: object) -> None:
     logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
 
 
-def _count_tokens_anthropic(
-    system: str,
-    user: str,
-    *,
-    api_key: str,
-    model: str,
-) -> int:
-    client = anthropic.Anthropic(api_key=api_key)
+def _count_tokens_anthropic(system: str, user: str, *, settings: Settings) -> int:
+    client = anthropic.Anthropic(api_key=settings.api_key)
     response = client.messages.count_tokens(
-        model=model,
+        model=settings.model,
         system=system,
         messages=[{"role": "user", "content": user}],
         tools=[_ANTHROPIC_TOOL_DEF],
@@ -127,24 +121,16 @@ def _count_tokens_openai(texts: list[str], *, model: str) -> int:
 def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
     match settings.provider:
         case Provider.ANTHROPIC:
-            return _count_tokens_anthropic(
-                system, user, api_key=settings.api_key, model=settings.model
-            )
+            return _count_tokens_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _count_tokens_openai([system, user], model=settings.model)
 
 
-def _call_anthropic(
-    system: str,
-    user: str,
-    *,
-    api_key: str,
-    model: str,
-) -> RawToolOutput:
-    client = anthropic.Anthropic(api_key=api_key)
+def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    client = anthropic.Anthropic(api_key=settings.api_key)
     try:
         response = client.beta.messages.create(
-            model=model,
+            model=settings.model,
             max_tokens=MAX_OUTPUT_TOKENS,
             system=system,
             messages=[{"role": "user", "content": user}],
@@ -165,18 +151,23 @@ def _call_anthropic(
 
 def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput:
     client = openai.OpenAI(api_key=settings.api_key)
-    response = client.chat.completions.create(
-        model=settings.model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        tools=[_OPENAI_TOOL_DEF],
-        tool_choice={
-            "type": "function",
-            "function": {"name": SPLIT_TOOL_NAME},
-        },
-    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=[_OPENAI_TOOL_DEF],
+            tool_choice={
+                "type": "function",
+                "function": {"name": SPLIT_TOOL_NAME},
+            },
+        )
+    except openai.APIError as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    if not response.choices:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no choices in response"))
     tool_calls = response.choices[0].message.tool_calls
     if not tool_calls:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call in response"))
@@ -193,7 +184,7 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
     match settings.provider:
         case Provider.ANTHROPIC:
-            return _call_anthropic(system, user, api_key=settings.api_key, model=settings.model)
+            return _call_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _call_openai(system, user, settings=settings)
 
