@@ -36,6 +36,19 @@ class Settings(BaseSettings):
                     self.model = DEFAULT_MODEL
                 case Provider.OPENAI:
                     self.model = OPENAI_MODEL
+                case _:
+                    raise NotImplementedError(f"No default model for provider '{self.provider}'")
+        return self
+
+    @model_validator(mode="after")
+    def check_api_key_is_present(self):
+        match self.provider:
+            case Provider.ANTHROPIC:
+                if not self.anthropic_api_key:
+                    raise ValueError("ANTHROPIC_API_KEY must be set when provider is 'anthropic'")
+            case Provider.OPENAI:
+                if not self.openai_api_key:
+                    raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
         return self
 
     @property
@@ -45,6 +58,8 @@ class Settings(BaseSettings):
                 return self.anthropic_api_key
             case Provider.OPENAI:
                 return self.openai_api_key
+            case _:
+                raise NotImplementedError(f"Provider '{self.provider}' is not supported")
 
     @property
     def max_context_tokens(self) -> int:
@@ -53,3 +68,5 @@ class Settings(BaseSettings):
                 return ANTHROPIC_MAX_CONTEXT_TOKENS
             case Provider.OPENAI:
                 return OPENAI_MAX_CONTEXT_TOKENS
+            case _:
+                raise NotImplementedError(f"Provider '{self.provider}' is not supported")
