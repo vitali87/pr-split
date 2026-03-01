@@ -16,9 +16,7 @@
 
 `pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to Claude for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
 
-<p align="center">
-  <img src="pr-split.png" alt="pr-split system design" width="700">
-</p>
+<img src="pr-split.png" alt="pr-split system design" width="100%">
 
 ## Installation
 
