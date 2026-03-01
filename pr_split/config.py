@@ -49,6 +49,8 @@ class Settings(BaseSettings):
             case Provider.OPENAI:
                 if not self.openai_api_key:
                     raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
+            case _:
+                raise NotImplementedError(f"API key check not implemented for provider '{self.provider}'")
         return self
 
     @property
