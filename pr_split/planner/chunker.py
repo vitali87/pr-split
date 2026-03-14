@@ -135,11 +135,9 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
 
 
 def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
-    assigned: set[tuple[str, int]] = set()
-    for group in groups:
-        for assignment in group.assignments:
-            for idx in assignment.hunk_indices:
-                assigned.add((assignment.file_path, idx))
+    assigned = {
+        (a.file_path, idx) for g in groups for a in g.assignments for idx in a.hunk_indices
+    }
 
     all_hunks = [(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))]
 
