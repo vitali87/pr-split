@@ -6,12 +6,12 @@ import subprocess
 from loguru import logger
 
 from .. import logs
-from ..constants import BRANCH_PREFIX, FORK_REF_PREFIX, PR_REF_PREFIX
+from ..constants import FORK_REF_PREFIX, PR_REF_PREFIX
 from ..exceptions import ErrorMsg, GitOperationError
 from ..types_defs import ForkPRInfo
 
 
-def run_gh(*args: str) -> str:
+def _run_gh(*args: str) -> str:
     result = subprocess.run(
         ["gh", *args],
         capture_output=True,
@@ -24,7 +24,7 @@ def run_gh(*args: str) -> str:
 
 def check_gh_auth() -> bool:
     try:
-        run_gh("auth", "status")
+        _run_gh("auth", "status")
     except GitOperationError:
         return False
     return True
@@ -32,7 +32,7 @@ def check_gh_auth() -> bool:
 
 def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
     try:
-        output = run_gh(
+        output = _run_gh(
             "pr",
             "create",
             "--base",
@@ -53,7 +53,7 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
 
 
 def close_pr(pr_number: int) -> None:
-    run_gh("pr", "close", str(pr_number))
+    _run_gh("pr", "close", str(pr_number))
     logger.info(logs.PR_CLOSED.format(number=pr_number))
 
 
@@ -61,7 +61,7 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     from .branches import run_git
 
     try:
-        raw = run_gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}")
+        raw = _run_gh("api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}")
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number)) from exc
 
@@ -106,10 +106,10 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
 def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
     from .branches import run_git
 
-    repo_name = run_gh("api", "repos/{owner}/{repo}", "--jq", ".name")
+    repo_name = _run_gh("api", "repos/{owner}/{repo}", "--jq", ".name")
 
     try:
-        raw = run_gh("api", f"repos/{user}/{repo_name}")
+        raw = _run_gh("api", f"repos/{user}/{repo_name}")
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.FORK_FETCH_FAILED(user=user, branch=branch, detail=str(exc))
@@ -132,7 +132,7 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
     author = run_git("log", "-1", "--format=%aN <%aE>", local_ref)
     logger.info(logs.AUTHOR_PRESERVED.format(author=author))
 
-    base_branch = run_gh("api", "repos/{owner}/{repo}", "--jq", ".default_branch")
+    base_branch = _run_gh("api", "repos/{owner}/{repo}", "--jq", ".default_branch")
 
     return ForkPRInfo(
         pr_number=None,
@@ -141,20 +141,3 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
         author=author,
         fork_full_name=fork_full_name,
     )
-
-
-def list_pr_split_prs() -> list[tuple[int, str]]:
-    output = run_gh(
-        "pr",
-        "list",
-        "--json",
-        "number,url,headRefName",
-        "--limit",
-        "200",
-    )
-    items: list[dict[str, str | int]] = json.loads(output) if output else []
-    return [
-        (int(item["number"]), str(item["url"]))
-        for item in items
-        if str(item["headRefName"]).startswith(BRANCH_PREFIX)
-    ]

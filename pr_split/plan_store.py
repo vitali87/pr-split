@@ -5,16 +5,15 @@ from loguru import logger
 from . import logs
 from .constants import PLAN_DIR, PLAN_FILE
 from .exceptions import ErrorMsg, PRSplitError
-from .schemas import BranchRecord, GitState, PlanFile, PRRecord
+from .schemas import PlanFile
 
 
-def save_plan(plan_file: PlanFile) -> Path:
+def save_plan(plan_file: PlanFile) -> None:
     path = Path(PLAN_DIR)
     path.mkdir(parents=True, exist_ok=True)
     plan_path = Path(PLAN_FILE)
     plan_path.write_text(plan_file.model_dump_json(indent=2))
     logger.info(logs.SAVING_PLAN.format(path=plan_path))
-    return plan_path
 
 
 def load_plan() -> PlanFile:
@@ -28,21 +27,3 @@ def load_plan() -> PlanFile:
 
 def plan_exists() -> bool:
     return Path(PLAN_FILE).exists()
-
-
-def update_git_state(git_state: GitState) -> None:
-    plan_file = load_plan()
-    plan_file.git_state = git_state
-    save_plan(plan_file)
-
-
-def add_branch_record(record: BranchRecord) -> None:
-    plan_file = load_plan()
-    plan_file.git_state.branches.append(record)
-    save_plan(plan_file)
-
-
-def add_pr_record(record: PRRecord) -> None:
-    plan_file = load_plan()
-    plan_file.git_state.prs.append(record)
-    save_plan(plan_file)

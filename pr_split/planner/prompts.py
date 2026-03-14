@@ -162,13 +162,11 @@ Diff (this chunk only):
 def _format_file_summary(diff_stats: DiffStats) -> str:
     lines: list[str] = []
     for fs in diff_stats["file_summaries"]:
-        flags: list[str] = []
-        if fs["is_new"]:
-            flags.append("new")
-        if fs["is_deleted"]:
-            flags.append("deleted")
-        if fs["is_renamed"]:
-            flags.append("renamed")
+        flags = [
+            f
+            for f, c in [("new", fs["is_new"]), ("deleted", fs["is_deleted"]), ("renamed", fs["is_renamed"])]
+            if c
+        ]
         flag_str = f" [{', '.join(flags)}]" if flags else ""
         hunk_count = fs["hunk_count"]
         if hunk_count > 0:
@@ -187,15 +185,16 @@ def _format_file_summary(diff_stats: DiffStats) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+_PRIORITY_MAP = {
+    Priority.ORTHOGONAL: _PRIORITY_ORTHOGONAL,
+    Priority.LOGICAL: _PRIORITY_LOGICAL,
+}
+
+
 def build_system_prompt(priority: Priority, max_loc: int) -> str:
-    match priority:
-        case Priority.ORTHOGONAL:
-            priority_instructions = _PRIORITY_ORTHOGONAL
-        case Priority.LOGICAL:
-            priority_instructions = _PRIORITY_LOGICAL
     return _SYSTEM_PROMPT_TEMPLATE.format(
         max_loc=max_loc,
-        priority_instructions=priority_instructions,
+        priority_instructions=_PRIORITY_MAP[priority],
     )
 
 

@@ -12,7 +12,7 @@ from ..schemas import Group
 from .parser import ParsedDiff
 
 
-def get_base_file_content(file_path: str, ref: str) -> str:
+def _get_base_file_content(file_path: str, ref: str) -> str:
     result = subprocess.run(
         ["git", "show", f"{ref}:{file_path}"],
         capture_output=True,
@@ -38,13 +38,10 @@ def apply_hunks(base_content: str, patch_file: PatchedFile, assigned_indices: li
 
 def materialize_group_files(parsed_diff: ParsedDiff, group: Group, ref: str) -> dict[str, str]:
     logger.info(logs.MATERIALIZING_FILES.format(count=len(group.assignments), group=group.id))
+    pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
     result: dict[str, str] = {}
     for assignment in group.assignments:
-        patch_file = None
-        for pf in parsed_diff.patch_set:
-            if pf.path == assignment.file_path:
-                patch_file = pf
-                break
+        patch_file = pf_map.get(assignment.file_path)
         if patch_file is None:
             continue
         if patch_file.is_added_file:
@@ -64,7 +61,7 @@ def materialize_group_files(parsed_diff: ParsedDiff, group: Group, ref: str) -> 
             if target_lines:
                 result[assignment.file_path] += "\n"
             continue
-        base_content = get_base_file_content(assignment.file_path, ref)
+        base_content = _get_base_file_content(assignment.file_path, ref)
         match assignment.assignment_type:
             case AssignmentType.WHOLE_FILE:
                 indices = list(range(len(patch_file)))

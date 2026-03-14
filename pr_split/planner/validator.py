@@ -17,10 +17,7 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
                 key = (assignment.file_path, idx)
                 assigned.setdefault(key, []).append(group.id)
 
-    all_hunks: set[tuple[str, int]] = set()
-    for pf in parsed_diff.patch_set:
-        for i in range(len(pf)):
-            all_hunks.add((pf.path, i))
+    all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
 
     for key in all_hunks:
         if key not in assigned:
@@ -89,11 +86,8 @@ def validate_plan(
     dag: PlanDAG,
     max_loc: int,
 ) -> list[str]:
-    logger.info(logs.VALIDATING_PLAN)
     dag.validate_acyclic()
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
     validate_no_conflicts(groups, dag)
-    warnings = validate_loc_bounds(groups, max_loc)
-    logger.info(logs.VALIDATION_PASSED)
-    return warnings
+    return validate_loc_bounds(groups, max_loc)
