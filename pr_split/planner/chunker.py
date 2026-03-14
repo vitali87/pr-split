@@ -139,9 +139,8 @@ def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
         (a.file_path, idx) for g in groups for a in g.assignments for idx in a.hunk_indices
     }
 
-    all_hunks = [(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))]
-
-    unassigned = [h for h in all_hunks if h not in assigned]
+    all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
+    unassigned = sorted(all_hunks - assigned)
     if not unassigned:
         return 0
 
