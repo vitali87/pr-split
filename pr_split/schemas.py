@@ -49,8 +49,6 @@ class BranchRecord(BaseModel):
     branch_name: str
     base_branch: str
     commit_sha: str = ""
-    merge_base_branch: str | None = None
-    merge_base_parents: list[str] | None = None
 
 
 class PRRecord(BaseModel):

@@ -14,8 +14,6 @@ from ..config import Settings
 from ..constants import (
     CHUNK_RETRY_LIMIT,
     CHUNK_TARGET_RATIO,
-    CONTEXT_1M_BETA,
-    LLM_TIMEOUT_SECONDS,
     MAX_OUTPUT_TOKENS,
     AssignmentType,
     Provider,
@@ -56,29 +54,27 @@ _OPENAI_TOOL_DEF = {
     },
 }
 
-STOP_REASON_TOOL_USE = "tool_use"
 
-
-class RawAssignment(TypedDict):
+class _RawAssignment(TypedDict):
     file_path: str
     assignment_type: str
     hunk_indices: list[int]
 
 
-class RawGroup(TypedDict):
+class _RawGroup(TypedDict):
     id: str
     title: str
     description: str
     depends_on: list[str]
-    assignments: list[RawAssignment]
+    assignments: list[_RawAssignment]
     estimated_loc: int
 
 
 class RawToolOutput(TypedDict):
-    groups: list[RawGroup]
+    groups: list[_RawGroup]
 
 
-def _extract_raw_output(block_input: dict[str, object]) -> list[RawGroup]:
+def _extract_raw_output(block_input: dict[str, object]) -> list[_RawGroup]:
     groups = block_input.get("groups")
     if not isinstance(groups, list):
         raise LLMError(
@@ -87,16 +83,6 @@ def _extract_raw_output(block_input: dict[str, object]) -> list[RawGroup]:
             )
         )
     return groups  # type: ignore[return-value]
-
-
-def _log_truncation(response: object) -> None:
-    stop_reason = getattr(response, "stop_reason", "unknown")
-    keys: list[str] = []
-    for block in getattr(response, "content", []):
-        if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
-            keys = list(block.input.keys())
-            break
-    logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
 
 
 def _count_tokens_anthropic(system: str, user: str, *, settings: Settings) -> int:
@@ -136,13 +122,19 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
             messages=[{"role": "user", "content": user}],
             tools=[_ANTHROPIC_TOOL_DEF],
             tool_choice={"type": "tool", "name": SPLIT_TOOL_NAME},
-            betas=[CONTEXT_1M_BETA],
-            timeout=LLM_TIMEOUT_SECONDS,
+            betas=["context-1m-2025-08-07"],
+            timeout=600,
         )
     except anthropic.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
-    if response.stop_reason != STOP_REASON_TOOL_USE:
-        _log_truncation(response)
+    if response.stop_reason != "tool_use":
+        stop_reason = getattr(response, "stop_reason", "unknown")
+        keys: list[str] = []
+        for block in getattr(response, "content", []):
+            if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
+                keys = list(block.input.keys())
+                break
+        logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
@@ -254,18 +246,6 @@ def _merge_chunk_groups(accumulated: list[Group], chunk_groups: list[Group]) -> 
     return list(acc_map.values())
 
 
-def _compute_token_ratio(
-    full_token_count: int,
-    overhead_tokens: int,
-    parsed_diff: ParsedDiff,
-) -> float:
-    diff_tokens = full_token_count - overhead_tokens
-    diff_chars = len(parsed_diff.raw_diff)
-    if diff_chars <= 0:
-        return 0.25
-    return diff_tokens / diff_chars
-
-
 def _plan_split_chunked(
     parsed_diff: ParsedDiff,
     settings: Settings,
@@ -275,7 +255,8 @@ def _plan_split_chunked(
     overhead = _count_tokens(system, ".", settings=settings)
     chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
     diff_budget = chunk_limit - overhead - MAX_OUTPUT_TOKENS
-    token_ratio = _compute_token_ratio(full_token_count, overhead, parsed_diff)
+    diff_chars = len(parsed_diff.raw_diff)
+    token_ratio = (full_token_count - overhead) / diff_chars if diff_chars > 0 else 0.25
 
     logger.info(
         logs.CALIBRATING_CHUNKS.format(overhead=overhead, budget=diff_budget, ratio=token_ratio)
@@ -347,14 +328,6 @@ def plan_split(
     settings: Settings,
 ) -> list[Group]:
     diff_stats = parsed_diff.stats
-    logger.info(
-        logs.DIFF_STATS.format(
-            files=diff_stats["total_files"],
-            added=diff_stats["total_added"],
-            removed=diff_stats["total_removed"],
-            loc=diff_stats["total_loc"],
-        )
-    )
 
     system = build_system_prompt(settings.priority, settings.max_loc)
     user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)

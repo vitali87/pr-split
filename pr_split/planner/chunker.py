@@ -11,11 +11,11 @@ from ..exceptions import ErrorMsg
 from ..schemas import Group, GroupAssignment
 from ..types_defs import DiffStats, FileSummary, HunkRef
 
-DEFAULT_TOKEN_RATIO = 0.25
+_DEFAULT_TOKEN_RATIO = 0.25
 
 
 def build_hunk_sequence(
-    parsed_diff: ParsedDiff, token_ratio: float = DEFAULT_TOKEN_RATIO
+    parsed_diff: ParsedDiff, token_ratio: float = _DEFAULT_TOKEN_RATIO
 ) -> list[HunkRef]:
     sequence: list[HunkRef] = []
     for pf in parsed_diff.patch_set:
@@ -106,10 +106,9 @@ def build_chunk_stats_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRe
     )
 
 
-def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
-    file_hunk_counts: dict[str, int] = {}
-    for pf in parsed_diff.patch_set:
-        file_hunk_counts[pf.path] = len(pf)
+def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> None:
+    pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
+    file_hunk_counts = {path: len(pf) for path, pf in pf_map.items()}
 
     for group in groups:
         added = 0
@@ -127,15 +126,12 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> lis
                         )
                     )
                     continue
-                for pf in parsed_diff.patch_set:
-                    if pf.path == assignment.file_path:
-                        added += pf[idx].added
-                        removed += pf[idx].removed
-                        break
+                if pf := pf_map.get(assignment.file_path):
+                    added += pf[idx].added
+                    removed += pf[idx].removed
         group.estimated_added = added
         group.estimated_removed = removed
         group.estimated_loc = added + removed
-    return groups
 
 
 def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
@@ -145,12 +141,9 @@ def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
             for idx in assignment.hunk_indices:
                 assigned.add((assignment.file_path, idx))
 
-    all_hunks: list[tuple[str, int]] = []
-    for pf in parsed_diff.patch_set:
-        for i in range(len(pf)):
-            all_hunks.append((pf.path, i))
+    all_hunks = [(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))]
 
-    unassigned = [(f, i) for f, i in all_hunks if (f, i) not in assigned]
+    unassigned = [h for h in all_hunks if h not in assigned]
     if not unassigned:
         return 0
 
@@ -164,11 +157,9 @@ def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
 
     for file_path, hunk_idx in unassigned:
         target = file_groups.get(file_path, largest)
-        existing_assignment = None
-        for a in target.assignments:
-            if a.file_path == file_path:
-                existing_assignment = a
-                break
+        existing_assignment = next(
+            (a for a in target.assignments if a.file_path == file_path), None
+        )
         if existing_assignment:
             existing_assignment.hunk_indices.append(hunk_idx)
         else:

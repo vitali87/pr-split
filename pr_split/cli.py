@@ -106,7 +106,7 @@ def _validate_inputs(dev_branch: str, base: str) -> None:
         raise typer.Exit(1)
 
 
-def _present_plan(groups: list[Group], max_loc: int) -> None:
+def _present_plan(groups: list[Group]) -> None:
     table = Table(title="Split Plan")
     table.add_column("ID")
     table.add_column("Title")
@@ -262,11 +262,10 @@ def split(
     logger.success(logs.VALIDATION_PASSED)
 
     logger.info(logs.PRESENTING_PLAN)
-    _present_plan(groups, max_loc)
+    _present_plan(groups)
 
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
-    original_branch = dev_branch
     namespace = derive_split_namespace(dev_branch_arg)
     merge_base_ref = merge_base(base, dev_branch)
     checkout_branch(merge_base_ref)
@@ -275,7 +274,7 @@ def split(
     )
     pr_records = _push_and_create_prs(groups, branch_records)
 
-    checkout_branch(original_branch)
+    checkout_branch(dev_branch)
 
     plan_file = PlanFile(
         plan=SplitPlan(
