@@ -8,9 +8,9 @@ from pr_split.constants import (
     PLAN_DIR,
     PLAN_FILE,
     AssignmentType,
-    PRState,
     Priority,
     Provider,
+    PRState,
 )
 
 

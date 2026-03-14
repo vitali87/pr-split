@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from pr_split.constants import AssignmentType, PRState, Priority
+from pr_split.constants import Priority, PRState
 from pr_split.schemas import (
     BranchRecord,
     GitState,
     Group,
-    GroupAssignment,
     PlanFile,
     PRRecord,
     SplitPlan,

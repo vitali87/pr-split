@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from pr_split.constants import AssignmentType
 from pr_split.exceptions import LLMError
 from pr_split.planner.client import (
@@ -9,8 +11,6 @@ from pr_split.planner.client import (
     _parse_groups,
 )
 from pr_split.schemas import Group, GroupAssignment
-
-import pytest
 
 
 class TestExtractRawOutput:
