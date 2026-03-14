@@ -1,10 +1,13 @@
 from __future__ import annotations
 
-from pr_split.constants import Priority, PRState
+import hashlib
+
+from pr_split.constants import AssignmentType, Priority, PRState
 from pr_split.schemas import (
     BranchRecord,
     GitState,
     Group,
+    GroupAssignment,
     PlanFile,
     PRRecord,
     SplitPlan,
@@ -110,3 +113,30 @@ class TestGroupPatchHashEdge:
             expected_patch="content", expected_patch_sha256="custom_hash",
         )
         assert g.expected_patch_sha256 == "custom_hash"
+
+
+class TestGroupPatchHashExtended:
+    def test_compute_patch_hash_sha256(self) -> None:
+        g = Group(id="pr-1", title="t", description="d", expected_patch="diff content")
+        expected = hashlib.sha256(b"diff content").hexdigest()
+        assert g.compute_patch_hash() == expected
+
+
+class TestGroupAssignmentModelExtended:
+    def test_default_hunk_indices_empty(self) -> None:
+        a = GroupAssignment(
+            file_path="f.py",
+            assignment_type=AssignmentType.WHOLE_FILE,
+        )
+        assert a.hunk_indices == []
+
+    def test_assignment_serialization(self) -> None:
+        a = GroupAssignment(
+            file_path="f.py",
+            assignment_type=AssignmentType.PARTIAL_HUNKS,
+            hunk_indices=[1, 3, 5],
+        )
+        d = a.model_dump()
+        assert d["file_path"] == "f.py"
+        assert d["assignment_type"] == "partial_hunks"
+        assert d["hunk_indices"] == [1, 3, 5]

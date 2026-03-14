@@ -66,3 +66,16 @@ class TestForkPRInfo:
             "fork_full_name": "user/repo",
         }
         assert info["pr_number"] is None
+
+
+class TestHunkRefExtended:
+    def test_hashable(self) -> None:
+        ref = HunkRef(file_path="a.py", hunk_index=0, token_estimate=50)
+        assert hash(ref) is not None
+        s = {ref}
+        assert ref in s
+
+    def test_equality(self) -> None:
+        r1 = HunkRef(file_path="a.py", hunk_index=0, token_estimate=50)
+        r2 = HunkRef(file_path="a.py", hunk_index=0, token_estimate=50)
+        assert r1 == r2
