@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from pr_split.exceptions import (
     DiffParseError,
     ErrorMsg,
@@ -72,3 +74,15 @@ class TestExceptionHierarchy:
 
     def test_prsplit_error_is_exception(self) -> None:
         assert issubclass(PRSplitError, Exception)
+
+
+class TestErrorMsgExtended:
+    def test_pr_create_failed(self) -> None:
+        result = ErrorMsg.PR_CREATE_FAILED(group="my-branch", detail="rate limited")
+        assert "rate limited" in result
+
+
+class TestExceptionRaiseCatch:
+    def test_can_be_raised_and_caught(self) -> None:
+        with pytest.raises(PRSplitError):
+            raise GitOperationError("test")

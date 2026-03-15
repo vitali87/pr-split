@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from pr_split.constants import Priority
@@ -75,3 +78,21 @@ class TestPlanStore:
         loaded = load_plan()
         assert len(loaded.git_state.branches) == 1
         assert loaded.git_state.branches[0].commit_sha == "abc123"
+
+
+class TestPlanStoreJson:
+    def test_saved_file_is_valid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.chdir(tmp_path)
+        plan_file = PlanFile(
+            plan=SplitPlan(
+                dev_branch="dev",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.LOGICAL,
+                groups=[],
+            ),
+        )
+        save_plan(plan_file)
+        raw = json.loads((tmp_path / ".pr-split" / "plan.json").read_text())
+        assert "plan" in raw
+        assert raw["plan"]["priority"] == "logical"

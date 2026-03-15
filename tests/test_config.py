@@ -63,3 +63,15 @@ class TestSettingsMaxContextTokens:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
         s = Settings(provider=Provider.OPENAI)
         assert s.max_context_tokens == OPENAI_MAX_CONTEXT_TOKENS
+
+
+class TestSettingsEmptyKeyValidation:
+    def test_empty_string_key_raises_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+            Settings(provider=Provider.ANTHROPIC)
+
+    def test_empty_string_key_raises_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+            Settings(provider=Provider.OPENAI)

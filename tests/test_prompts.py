@@ -126,3 +126,9 @@ class TestBuildChunkContinuationPrompt:
         assert "chunk 3 of 5" in result
         assert "group catalog text" in result
         assert "chunk diff" in result
+
+
+class TestBuildSystemPromptExtended:
+    def test_returns_nonempty_string(self) -> None:
+        result = build_system_prompt(Priority.ORTHOGONAL, 400)
+        assert len(result) > 100

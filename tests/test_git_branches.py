@@ -8,6 +8,8 @@ import pytest
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     branch_exists,
+    checkout_branch,
+    checkout_new_branch,
     commit_files,
     create_group_branch,
     delete_branch,
@@ -169,3 +171,60 @@ class TestCreateGroupBranch:
         mock_run_git.return_value = ""
         create_group_branch("pr-1", "abc123", "my-feat")
         mock_run_git.assert_called_once_with("branch", "-D", "pr-split/my-feat/pr-1")
+
+
+class TestRunGitExtended:
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_strips_trailing_whitespace(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="  result  \n\n", stderr=""
+        )
+        assert run_git("status") == "result"
+
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_empty_stderr_on_failure(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=1, stdout="", stderr=""
+        )
+        with pytest.raises(GitOperationError):
+            run_git("fail")
+
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_multiple_args_forwarded(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="ok", stderr=""
+        )
+        run_git("commit", "-m", "message", "--author", "Test <t@t.com>")
+        call_args = mock_run.call_args[0][0]
+        assert call_args == ["git", "commit", "-m", "message", "--author", "Test <t@t.com>"]
+
+
+class TestIsWorktreeCleanExtended:
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_staged_file_is_dirty(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = "A  new_file.py"
+        assert is_worktree_clean() is False
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_deleted_file_is_dirty(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = " D deleted.py"
+        assert is_worktree_clean() is False
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_renamed_file_is_dirty(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = "R  old.py -> new.py"
+        assert is_worktree_clean() is False
+
+
+class TestCheckoutWrappers:
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_checkout_new_branch_args(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = ""
+        checkout_new_branch("feature/x", "abc123")
+        mock_git.assert_called_once_with("checkout", "-b", "feature/x", "abc123")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_checkout_branch_args(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = ""
+        checkout_branch("main")
+        mock_git.assert_called_once_with("checkout", "main")

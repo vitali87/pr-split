@@ -241,3 +241,57 @@ class TestFormatGroupCatalog:
         groups = [_group("g1", [_ga("a.py", [0])])]
         result = format_group_catalog(groups)
         assert "depends on" not in result
+
+
+class TestChunkHunksExtended:
+    def test_single_hunk_per_chunk_when_tight(self) -> None:
+        refs = [
+            HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=90)
+            for i in range(3)
+        ]
+        result = chunk_hunks(refs, 100)
+        assert len(result) == 3
+        assert all(len(c) == 1 for c in result)
+
+    def test_many_small_hunks_pack_efficiently(self) -> None:
+        refs = [
+            HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=10)
+            for i in range(10)
+        ]
+        result = chunk_hunks(refs, 100)
+        assert len(result) == 1
+        assert len(result[0]) == 10
+
+
+class TestFormatGroupCatalogExtended:
+    def test_includes_group_id_and_title(self) -> None:
+        g = Group(id="pr-1", title="feat: auth", description="Auth module")
+        result = format_group_catalog([g])
+        assert "pr-1" in result
+        assert "feat: auth" in result
+
+    def test_includes_file_paths(self) -> None:
+        g = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="auth.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                ),
+                GroupAssignment(
+                    file_path="models.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                ),
+            ],
+        )
+        result = format_group_catalog([g])
+        assert "auth.py" in result
+        assert "models.py" in result
+
+    def test_empty_groups(self) -> None:
+        result = format_group_catalog([])
+        assert result == ""

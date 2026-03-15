@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass
+from functools import cached_property
 
 from loguru import logger
 from unidiff import PatchSet
@@ -40,7 +41,7 @@ class ParsedDiff:
     def file_paths(self) -> list[str]:
         return [pf.path for pf in self.patch_set]
 
-    @property
+    @cached_property
     def stats(self) -> DiffStats:
         file_summaries: list[FileSummary] = []
         total_added = 0

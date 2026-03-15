@@ -5,12 +5,15 @@ from pr_split.constants import (
     CHUNK_RETRY_LIMIT,
     CHUNK_TARGET_RATIO,
     DEFAULT_MAX_LOC,
+    FORK_REF_PREFIX,
+    MAX_OUTPUT_TOKENS,
     PLAN_DIR,
     PLAN_FILE,
+    PR_REF_PREFIX,
     AssignmentType,
-    PRState,
     Priority,
     Provider,
+    PRState,
 )
 
 
@@ -57,3 +60,12 @@ class TestConstants:
         assert CHUNK_TARGET_RATIO > 0
         assert CHUNK_TARGET_RATIO < 1
         assert CHUNK_RETRY_LIMIT >= 1
+
+
+class TestConstantsExtended:
+    def test_ref_prefixes(self) -> None:
+        assert PR_REF_PREFIX.startswith("refs/")
+        assert FORK_REF_PREFIX.startswith("refs/")
+
+    def test_max_output_tokens_positive(self) -> None:
+        assert MAX_OUTPUT_TOKENS > 0

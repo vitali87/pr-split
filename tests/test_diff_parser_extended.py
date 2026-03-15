@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from pr_split.diff_ops.parser import parse_diff
+import subprocess
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from pr_split.diff_ops.parser import extract_diff, parse_diff
+from pr_split.exceptions import GitOperationError
 
 SAMPLE_DIFF = (
     "diff --git a/hello.py b/hello.py\n"
@@ -73,3 +79,47 @@ class TestFileSummaryFlags:
         assert utils_summary["is_new"] is False
         assert utils_summary["is_deleted"] is False
         assert utils_summary["is_renamed"] is False
+
+
+EXTRACT_DIFF_SAMPLE = """\
+diff --git a/hello.py b/hello.py
+new file mode 100644
+--- /dev/null
++++ b/hello.py
+@@ -0,0 +1,3 @@
++def hello():
++    return "hello"
++
+"""
+
+
+class TestExtractDiffSubprocess:
+    @patch("pr_split.diff_ops.parser.subprocess.run")
+    def test_extract_diff_success(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE, stderr=""
+        )
+        result = extract_diff("feature", "main")
+        assert result == EXTRACT_DIFF_SAMPLE
+        mock_run.assert_called_once_with(
+            ["git", "diff", "main...feature"],
+            capture_output=True,
+            text=True,
+        )
+
+    @patch("pr_split.diff_ops.parser.subprocess.run")
+    def test_extract_diff_failure(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "diff"],
+            returncode=1,
+            stdout="",
+            stderr="fatal: bad revision",
+        )
+        with pytest.raises(GitOperationError, match="bad revision"):
+            extract_diff("bad-branch", "main")
+
+
+class TestRawDiffPreserved:
+    def test_raw_diff_preserved(self) -> None:
+        parsed = parse_diff(EXTRACT_DIFF_SAMPLE)
+        assert parsed.raw_diff == EXTRACT_DIFF_SAMPLE

@@ -172,6 +172,14 @@ class TestMaterializeGroupFilesNewFile:
         assert result == {}
 
 
+class TestGetBaseFileContentExtended:
+    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    def test_empty_file_returns_empty(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        result = _get_base_file_content("empty.py", "abc123")
+        assert result == ""
+
+
 class TestMaterializeGroupFilesExisting:
     @patch("pr_split.diff_ops.reconstructor._get_base_file_content")
     def test_whole_file_existing(self, mock_base: MagicMock) -> None:
