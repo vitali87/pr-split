@@ -44,7 +44,7 @@ from .schemas import (
 )
 from .types_defs import ForkPRInfo
 
-app = typer.Typer(name="pr-split", help="Decompose large PRs into reviewable stacked PRs")
+app = typer.Typer(name="pr-split", help="Decompose large PRs into reviewable dependency-ordered PRs")
 console = Console()
 
 
