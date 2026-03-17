@@ -5,7 +5,7 @@
 <h1 align="center">pr-split</h1>
 
 <p align="center">
-  Decompose large PRs into a DAG of small, reviewable stacked PRs
+  Decompose large PRs into a DAG of small, reviewable PRs
 </p>
 
 <p align="center">
@@ -14,7 +14,7 @@
 
 ## Why pr-split?
 
-Vibe coding with AI assistants can produce massive PRs that no one wants to review. A 2,000 line PR with changes across dozens of files is a review bottleneck: teammates skim it, rubber stamp it, or just ignore it. `pr-split` turns that monolith into a stack of focused, bite-sized PRs your team can actually review with confidence. Each sub-PR has a clear purpose, minimal scope, and explicit dependencies, so reviewers know exactly what changed and why.
+Vibe coding with AI assistants can produce massive PRs that no one wants to review. A 2,000 line PR with changes across dozens of files is a review bottleneck: teammates skim it, rubber stamp it, or just ignore it. `pr-split` turns that monolith into a set of focused, bite-sized PRs your team can actually review with confidence. Each sub-PR has a clear purpose, minimal scope, and explicit dependencies, so reviewers know exactly what changed and why.
 
 ## How it works
 

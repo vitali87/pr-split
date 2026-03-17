@@ -68,7 +68,7 @@ _SYSTEM_PROMPT_TEMPLATE = """\
 You are a senior software engineer specializing in pull request decomposition.
 
 Your task: given a unified diff, split it into a set of small, reviewable groups \
-that can be submitted as stacked pull requests.
+that can be submitted as dependency-ordered pull requests.
 
 Rules:
 1. Every hunk in the diff MUST be assigned to exactly one group. No hunk may be \
