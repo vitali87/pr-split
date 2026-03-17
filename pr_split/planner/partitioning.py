@@ -182,7 +182,6 @@ def _group_units_cp_sat(
 
     group_slots = len(units)
     max_total_loc = max(settings.max_loc, sum(unit.loc for unit in units), 1)
-    edges = _build_affinity_edges(units, settings.priority)
 
     model = cp_model.CpModel()
     x = {
@@ -212,23 +211,37 @@ def _group_units_cp_sat(
     for group_idx in range(group_slots - 1):
         model.Add(y[group_idx] >= y[group_idx + 1])
 
-    colocated_vars: list[tuple[int, object]] = []
-    for left, right, weight in edges:
-        same_group_terms = []
-        for group_idx in range(group_slots):
-            pair_var = model.NewBoolVar(f"pair_{left}_{right}_{group_idx}")
-            model.Add(pair_var <= x[(left, group_idx)])
-            model.Add(pair_var <= x[(right, group_idx)])
-            model.Add(pair_var >= x[(left, group_idx)] + x[(right, group_idx)] - 1)
-            same_group_terms.append(pair_var)
-        same_group = model.NewBoolVar(f"same_{left}_{right}")
-        model.Add(sum(same_group_terms) == same_group)
-        colocated_vars.append((weight, same_group))
+    pair_terms: list[tuple[int, int, object]] = []
+    for left in range(len(units)):
+        for right in range(left + 1, len(units)):
+            affinity = _affinity_score(units[left], units[right], settings.priority)
+            same_group_terms = []
+            for group_idx in range(group_slots):
+                pair_var = model.NewBoolVar(f"pair_{left}_{right}_{group_idx}")
+                model.Add(pair_var <= x[(left, group_idx)])
+                model.Add(pair_var <= x[(right, group_idx)])
+                model.Add(pair_var >= x[(left, group_idx)] + x[(right, group_idx)] - 1)
+                same_group_terms.append(pair_var)
+            same_group = model.NewBoolVar(f"same_{left}_{right}")
+            model.Add(sum(same_group_terms) == same_group)
+            is_cross_file = int(units[left].file_path != units[right].file_path)
+            pair_terms.append((affinity, is_cross_file, same_group))
+
+    overflow_weight = 1_000
+    group_weight = 200 if settings.priority == Priority.LOGICAL else 250
+    cross_file_penalty = 0 if settings.priority == Priority.LOGICAL else 400
+    affinity_divisor = 5 if settings.priority == Priority.LOGICAL else 10
 
     model.Minimize(
-        1_000 * sum(y)
-        + 50 * sum(overflow)
-        - sum(weight * same_group for weight, same_group in colocated_vars)
+        group_weight * sum(y)
+        + overflow_weight * sum(overflow)
+        + cross_file_penalty
+        * sum(same_group for _, is_cross_file, same_group in pair_terms if is_cross_file)
+        - sum(
+            (affinity // affinity_divisor) * same_group
+            for affinity, _, same_group in pair_terms
+            if affinity > 0
+        )
     )
 
     solver = cp_model.CpSolver()

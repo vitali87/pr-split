@@ -69,6 +69,14 @@ class TestSettingsApiKeyValidation:
         s = Settings(partition_strategy=PartitionStrategy.GRAPH)
         assert s.partition_strategy == PartitionStrategy.GRAPH
 
+    def test_cp_sat_partition_does_not_require_api_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(partition_strategy=PartitionStrategy.CP_SAT)
+        assert s.partition_strategy == PartitionStrategy.CP_SAT
+
 
 class TestSettingsMaxContextTokens:
     def test_anthropic_max_context(self, monkeypatch: pytest.MonkeyPatch) -> None:

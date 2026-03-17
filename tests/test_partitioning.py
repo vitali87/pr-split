@@ -5,7 +5,6 @@ import pytest
 from pr_split.config import Settings
 from pr_split.constants import PartitionStrategy, Priority
 from pr_split.diff_ops.parser import parse_diff
-from pr_split.exceptions import PRSplitError
 from pr_split.planner.partitioning import build_partition_units, partition_diff
 
 SAMPLE_DIFF = """\
@@ -99,18 +98,13 @@ class TestPartitionDiffGraph:
 
 
 class TestPartitionDiffCpSat:
-    def test_missing_ortools_raises_clean_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_cp_sat_backend_returns_groups(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("ortools.sat.python.cp_model")
         parsed = parse_diff(SAMPLE_DIFF)
         settings = _settings(
             monkeypatch,
             max_loc=10,
             partition_strategy=PartitionStrategy.CP_SAT,
         )
-        try:
-            import ortools  # noqa: F401
-        except ImportError:
-            with pytest.raises(PRSplitError, match="ortools"):
-                partition_diff(parsed, settings)
-        else:
-            groups = partition_diff(parsed, settings)
-            assert groups
+        groups = partition_diff(parsed, settings)
+        assert groups
