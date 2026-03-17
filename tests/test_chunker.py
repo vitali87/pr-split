@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from pr_split.constants import AssignmentType
+from pr_split.constants import AssignmentType, ChunkStrategy
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.planner.chunker import (
     assign_uncovered_hunks,
@@ -10,6 +10,8 @@ from pr_split.planner.chunker import (
     build_chunk_stats_from_hunks,
     build_hunk_sequence,
     chunk_hunks,
+    chunk_hunks_dynamic_programming,
+    chunk_hunks_greedy,
     format_group_catalog,
     recompute_estimated_loc,
 )
@@ -129,6 +131,40 @@ class TestChunkHunks:
         refs = [HunkRef("a.py", 0, 50), HunkRef("b.py", 0, 50)]
         chunks = chunk_hunks(refs, 100)
         assert len(chunks) == 1
+
+    def test_strategy_override_uses_greedy(self) -> None:
+        refs = [
+            HunkRef("a.py", 0, 30),
+            HunkRef("b.py", 0, 60),
+            HunkRef("b.py", 1, 40),
+        ]
+        greedy = chunk_hunks(refs, 100, ChunkStrategy.GREEDY)
+        dp = chunk_hunks(refs, 100, ChunkStrategy.DYNAMIC_PROGRAMMING)
+        assert [ref.file_path for ref in greedy[0]] == ["a.py", "b.py"]
+        assert [ref.file_path for ref in dp[-1]] == ["b.py", "b.py"]
+
+
+class TestChunkHunksDynamicProgramming:
+    def test_prefers_not_to_split_same_file(self) -> None:
+        refs = [
+            HunkRef("a.py", 0, 30),
+            HunkRef("b.py", 0, 60),
+            HunkRef("b.py", 1, 40),
+        ]
+        chunks = chunk_hunks_dynamic_programming(refs, 100)
+        assert len(chunks) == 2
+        assert [ref.file_path for ref in chunks[0]] == ["a.py"]
+        assert [ref.file_path for ref in chunks[1]] == ["b.py", "b.py"]
+
+    def test_greedy_helper_retains_previous_behavior(self) -> None:
+        refs = [
+            HunkRef("a.py", 0, 30),
+            HunkRef("b.py", 0, 60),
+            HunkRef("b.py", 1, 40),
+        ]
+        chunks = chunk_hunks_greedy(refs, 100)
+        assert len(chunks) == 2
+        assert [ref.file_path for ref in chunks[0]] == ["a.py", "b.py"]
 
 
 class TestBuildChunkDiffFromHunks:

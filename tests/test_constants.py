@@ -4,13 +4,17 @@ from pr_split.constants import (
     BRANCH_PREFIX,
     CHUNK_RETRY_LIMIT,
     CHUNK_TARGET_RATIO,
+    DEFAULT_CHUNK_STRATEGY,
     DEFAULT_MAX_LOC,
+    DEFAULT_PARTITION_STRATEGY,
     FORK_REF_PREFIX,
     MAX_OUTPUT_TOKENS,
     PLAN_DIR,
     PLAN_FILE,
     PR_REF_PREFIX,
     AssignmentType,
+    ChunkStrategy,
+    PartitionStrategy,
     Priority,
     Provider,
     PRState,
@@ -30,6 +34,19 @@ class TestPriority:
     def test_values(self) -> None:
         assert Priority.ORTHOGONAL == "orthogonal"
         assert Priority.LOGICAL == "logical"
+
+
+class TestChunkStrategy:
+    def test_values(self) -> None:
+        assert ChunkStrategy.GREEDY == "greedy"
+        assert ChunkStrategy.DYNAMIC_PROGRAMMING == "dynamic_programming"
+
+
+class TestPartitionStrategy:
+    def test_values(self) -> None:
+        assert PartitionStrategy.LLM == "llm"
+        assert PartitionStrategy.GRAPH == "graph"
+        assert PartitionStrategy.CP_SAT == "cp_sat"
 
 
 class TestPRState:
@@ -55,6 +72,10 @@ class TestConstants:
 
     def test_default_max_loc(self) -> None:
         assert DEFAULT_MAX_LOC == 400
+
+    def test_default_strategies(self) -> None:
+        assert DEFAULT_CHUNK_STRATEGY == ChunkStrategy.DYNAMIC_PROGRAMMING
+        assert DEFAULT_PARTITION_STRATEGY == PartitionStrategy.LLM
 
     def test_chunk_constants(self) -> None:
         assert CHUNK_TARGET_RATIO > 0

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
-from pr_split.constants import AssignmentType
+from pr_split.config import Settings
+from pr_split.constants import AssignmentType, PartitionStrategy, Provider
+from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import LLMError
 from pr_split.planner.client import (
     RawToolOutput,
     _extract_raw_output,
     _merge_chunk_groups,
     _parse_groups,
+    plan_split,
 )
 from pr_split.schemas import Group, GroupAssignment
 
@@ -206,3 +211,46 @@ class TestMergeChunkGroupsExtended:
         result = _merge_chunk_groups([g1], [g1_update, g2])
         assert len(result) == 2
         assert len(result[0].assignments) == 1
+
+
+class TestPlanSplitBackendSelection:
+    @patch("pr_split.planner.client.partition_diff")
+    @patch("pr_split.planner.client.score_plan")
+    def test_graph_backend_uses_partition_diff(
+        self,
+        mock_score,
+        mock_partition,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        parsed = parse_diff(
+            """\
+diff --git a/a.py b/a.py
+new file mode 100644
+--- /dev/null
++++ b/a.py
+@@ -0,0 +1 @@
++x
+"""
+        )
+        mock_partition.return_value = [Group(id="pr-1", title="t", description="d")]
+        mock_score.return_value = type(
+            "Metrics",
+            (),
+            {
+                "total_groups": 1,
+                "max_group_loc": 1,
+                "loc_overflow": 0,
+                "dag_width": 1,
+                "dag_depth": 1,
+                "file_scatter": 0,
+                "objective": 1,
+            },
+        )()
+        settings = Settings(
+            provider=Provider.ANTHROPIC,
+            partition_strategy=PartitionStrategy.GRAPH,
+        )
+        groups = plan_split(parsed, settings)
+        assert len(groups) == 1
+        mock_partition.assert_called_once()

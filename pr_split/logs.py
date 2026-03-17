@@ -24,6 +24,8 @@ FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
 COUNTING_TOKENS = "Counting input tokens ({model})"
 TOKEN_COUNT = "Token count: {tokens} (limit: {limit})"
+PLANNING_WITH_BACKEND = "Planning split with backend '{backend}'"
+CHUNK_STRATEGY_SELECTED = "Using chunking strategy '{strategy}'"
 DIFF_TOO_LARGE = (
     "Diff exceeds context window ({tokens} tokens > {limit} limit), switching to chunked mode"
 )
@@ -43,3 +45,7 @@ INVALID_HUNK_INDEX = (
 )
 HUNK_AUTO_ASSIGNED = "Auto-assigned uncovered hunk {file}[{index}] to group '{group}'"
 UNCOVERED_HUNKS_FIXED = "Auto-assigned {count} uncovered hunk(s) to existing groups"
+PLAN_METRICS = (
+    "Plan metrics: groups={groups}, max_group_loc={max_loc}, overflow={overflow}, "
+    "width={width}, depth={depth}, scatter={scatter}, objective={objective}"
+)

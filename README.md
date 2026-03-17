@@ -36,7 +36,7 @@ pip install pr-split
 
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend
 
 ## Usage
 
@@ -65,6 +65,8 @@ pr-split split someuser:feature-branch --base main
 | `--base` | `main` | Base branch for the diff |
 | `--max-loc` | `400` | Soft limit on diff lines per sub-PR |
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
+| `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
+| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
 
 ### Other commands
 
@@ -88,6 +90,17 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider) |
 | `PR_SPLIT_MAX_LOC` | `400` | Default soft limit on diff lines |
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
+| `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
+| `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+
+## Planning backends
+
+`pr-split` now separates two optimization layers:
+
+- **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
+- **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
+
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package to be installed in the runtime environment.
 
 ## What it does
 
@@ -96,7 +109,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 3. Validates the plan: full coverage (every hunk assigned exactly once), no cycles, no merge conflicts between independent groups
 4. Shows you the plan (table + dependency tree) and asks for confirmation
 5. Creates branches, commits, pushes, and opens GitHub PRs in topological order
-6. For diffs exceeding the model's context window, automatically chunks the diff and processes sequentially, carrying forward the group catalog across chunks
+6. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
 
 ## License
 
