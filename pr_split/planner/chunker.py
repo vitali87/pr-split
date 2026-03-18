@@ -12,6 +12,9 @@ from ..schemas import Group, GroupAssignment
 from ..types_defs import DiffStats, FileSummary, HunkRef
 
 _DEFAULT_TOKEN_RATIO = 0.25
+_DP_CHUNK_BASE_COST = 100.0
+_DP_FILE_MIX_PENALTY = 50.0
+_DP_SAME_FILE_BOUNDARY_PENALTY = 10_000.0
 
 
 def build_hunk_sequence(
@@ -65,7 +68,7 @@ def _chunk_boundary_penalty(hunk_sequence: list[HunkRef], boundary_index: int) -
     left = hunk_sequence[boundary_index]
     right = hunk_sequence[boundary_index + 1]
     if left.file_path == right.file_path:
-        return 10_000.0
+        return _DP_SAME_FILE_BOUNDARY_PENALTY
     return 0.0
 
 
@@ -101,9 +104,9 @@ def chunk_hunks_dynamic_programming(
                 break
 
             files.add(href.file_path)
-            file_mix_penalty = max(0, len(files) - 1) * 50.0
+            file_mix_penalty = max(0, len(files) - 1) * _DP_FILE_MIX_PENALTY
             chunk_cost = (
-                100.0
+                _DP_CHUNK_BASE_COST
                 + _chunk_slack_penalty(used_tokens, token_budget)
                 + file_mix_penalty
                 + _chunk_boundary_penalty(hunk_sequence, end - 1)

@@ -6,14 +6,18 @@ import sys
 import pytest
 
 from pr_split.config import Settings
-from pr_split.constants import PartitionStrategy, Priority
+from pr_split.constants import AssignmentType, PartitionStrategy, Priority
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PRSplitError
 from pr_split.graph import PlanDAG
-from pr_split.planner.partitioning import partition_diff
+from pr_split.planner.partitioning import (
+    _derive_merge_order_dependencies,
+    _test_pair_bonus,
+    partition_diff,
+)
 from pr_split.planner.scoring import score_plan
 from pr_split.planner.validator import validate_plan
-from pr_split.schemas import Group
+from pr_split.schemas import Group, GroupAssignment
 
 UNRELATED_DIFF = """\
 diff --git a/a.py b/a.py
@@ -279,3 +283,46 @@ def test_partitioning_matrix(
     metrics = score_plan(groups, max_loc)
     assert metrics.total_groups == expected_groups
     assert metrics.loc_overflow == 0
+
+
+class TestPartitioningHeuristics:
+    def test_test_pair_bonus_matches_test_prefix_and_suffix(self) -> None:
+        assert _test_pair_bonus("tests/test_auth.py", "src/auth.py") == 40
+        assert _test_pair_bonus("src/auth_test.py", "src/auth.py") == 40
+
+    def test_test_pair_bonus_avoids_false_positive_substrings(self) -> None:
+        assert _test_pair_bonus("src/latest.py", "src/late.py") == 0
+        assert _test_pair_bonus("src/contest.py", "src/con.py") == 0
+
+    def test_merge_order_dependencies_ignore_group_creation_order(self) -> None:
+        groups = [
+            Group(
+                id="pr-2",
+                title="later",
+                description="later hunk",
+                assignments=[
+                    GroupAssignment(
+                        file_path="src/app.py",
+                        assignment_type=AssignmentType.PARTIAL_HUNKS,
+                        hunk_indices=[1],
+                    )
+                ],
+            ),
+            Group(
+                id="pr-1",
+                title="earlier",
+                description="earlier hunk",
+                assignments=[
+                    GroupAssignment(
+                        file_path="src/app.py",
+                        assignment_type=AssignmentType.PARTIAL_HUNKS,
+                        hunk_indices=[0],
+                    )
+                ],
+            ),
+        ]
+
+        _derive_merge_order_dependencies(groups)
+
+        assert groups[0].depends_on == ["pr-1"]
+        assert groups[1].depends_on == []

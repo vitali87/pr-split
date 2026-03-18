@@ -15,6 +15,21 @@ if TYPE_CHECKING:
     from ..config import Settings
     from ..diff_ops import ParsedDiff
 
+_TEST_PAIR_BONUS = 40
+_AFFINITY_SAME_FILE = 500
+_AFFINITY_SHARED_DIR_MULTIPLIER = 25
+_AFFINITY_SAME_SUFFIX = 10
+_AFFINITY_ORTHOGONAL_PENALTY = 20
+_AFFINITY_LOGICAL_SHARED_DIR_BONUS = 10
+_GRAPH_ORTHOGONAL_FILE_PENALTY = 25.0
+_CP_SAT_OVERFLOW_WEIGHT = 1_000
+_CP_SAT_GROUP_WEIGHT_LOGICAL = 200
+_CP_SAT_GROUP_WEIGHT_ORTHOGONAL = 250
+_CP_SAT_CROSS_FILE_PENALTY_LOGICAL = 0
+_CP_SAT_CROSS_FILE_PENALTY_ORTHOGONAL = 400
+_CP_SAT_AFFINITY_DIVISOR_LOGICAL = 5
+_CP_SAT_AFFINITY_DIVISOR_ORTHOGONAL = 10
+
 
 @dataclass(frozen=True)
 class PartitionUnit:
@@ -77,29 +92,33 @@ def _shared_dir_depth(path_a: str, path_b: str) -> int:
     return depth
 
 
+def _normalize_test_stem(path: str) -> tuple[str, bool]:
+    stem = PurePosixPath(path).stem
+    normalized = stem.removeprefix("test_").removesuffix("_test")
+    return normalized, normalized != stem
+
+
 def _test_pair_bonus(path_a: str, path_b: str) -> int:
-    stem_a = PurePosixPath(path_a).stem.removesuffix("_test")
-    stem_b = PurePosixPath(path_b).stem.removesuffix("_test")
-    names_match = stem_a == stem_b
-    has_test_name = "test" in PurePosixPath(path_a).stem or "test" in PurePosixPath(path_b).stem
-    return 40 if names_match and has_test_name else 0
+    stem_a, is_test_a = _normalize_test_stem(path_a)
+    stem_b, is_test_b = _normalize_test_stem(path_b)
+    return _TEST_PAIR_BONUS if (is_test_a ^ is_test_b) and stem_a == stem_b else 0
 
 
 def _affinity_score(unit_a: PartitionUnit, unit_b: PartitionUnit, priority: Priority) -> int:
     if unit_a.file_path == unit_b.file_path:
-        return 500
+        return _AFFINITY_SAME_FILE
 
     score = 0
     shared_depth = _shared_dir_depth(unit_a.file_path, unit_b.file_path)
-    score += shared_depth * 25
+    score += shared_depth * _AFFINITY_SHARED_DIR_MULTIPLIER
     if PurePosixPath(unit_a.file_path).suffix == PurePosixPath(unit_b.file_path).suffix:
-        score += 10
+        score += _AFFINITY_SAME_SUFFIX
     score += _test_pair_bonus(unit_a.file_path, unit_b.file_path)
 
     if priority == Priority.ORTHOGONAL:
-        score = max(0, score - 20)
+        score = max(0, score - _AFFINITY_ORTHOGONAL_PENALTY)
     else:
-        score += 10 if shared_depth else 0
+        score += _AFFINITY_LOGICAL_SHARED_DIR_BONUS if shared_depth else 0
 
     return score
 
@@ -131,7 +150,7 @@ def _group_units_graph(
                 )
                 fill_bonus = candidate_unit.loc / max(1, settings.max_loc)
                 file_penalty = (
-                    25.0
+                    _GRAPH_ORTHOGONAL_FILE_PENALTY
                     if settings.priority == Priority.ORTHOGONAL
                     and candidate_unit.file_path not in current_files
                     else 0.0
@@ -227,10 +246,22 @@ def _group_units_cp_sat(
             is_cross_file = int(units[left].file_path != units[right].file_path)
             pair_terms.append((affinity, is_cross_file, same_group))
 
-    overflow_weight = 1_000
-    group_weight = 200 if settings.priority == Priority.LOGICAL else 250
-    cross_file_penalty = 0 if settings.priority == Priority.LOGICAL else 400
-    affinity_divisor = 5 if settings.priority == Priority.LOGICAL else 10
+    overflow_weight = _CP_SAT_OVERFLOW_WEIGHT
+    group_weight = (
+        _CP_SAT_GROUP_WEIGHT_LOGICAL
+        if settings.priority == Priority.LOGICAL
+        else _CP_SAT_GROUP_WEIGHT_ORTHOGONAL
+    )
+    cross_file_penalty = (
+        _CP_SAT_CROSS_FILE_PENALTY_LOGICAL
+        if settings.priority == Priority.LOGICAL
+        else _CP_SAT_CROSS_FILE_PENALTY_ORTHOGONAL
+    )
+    affinity_divisor = (
+        _CP_SAT_AFFINITY_DIVISOR_LOGICAL
+        if settings.priority == Priority.LOGICAL
+        else _CP_SAT_AFFINITY_DIVISOR_ORTHOGONAL
+    )
 
     model.Minimize(
         group_weight * sum(y)
@@ -341,11 +372,10 @@ def _has_alternative_path(dep_map: dict[str, set[str]], source: str, target: str
 
 def _derive_merge_order_dependencies(groups: list[Group]) -> None:
     file_occurrences: dict[str, list[tuple[int, str]]] = defaultdict(list)
-    for group_index, group in enumerate(groups):
+    for group in groups:
         for assignment in group.assignments:
             min_hunk = min(assignment.hunk_indices, default=0)
-            ordering_key = group_index * 10_000 + min_hunk
-            file_occurrences[assignment.file_path].append((ordering_key, group.id))
+            file_occurrences[assignment.file_path].append((min_hunk, group.id))
 
     dep_map = {group.id: set(group.depends_on) for group in groups}
     for occurrences in file_occurrences.values():
