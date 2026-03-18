@@ -16,7 +16,10 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ruff>=0.9.0"]
-test = ["pytest>=8.3.0"]
+test = [
+    "ortools>=9.15.6755",
+    "pytest>=8.3.0",
+]
 
 [project.scripts]
 pr-split = "pr_split.cli:app"
@@ -37,6 +40,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "ortools>=9.15.6755",
     "pytest-cov>=7.0.0",
     "ty>=0.0.19",
 ]

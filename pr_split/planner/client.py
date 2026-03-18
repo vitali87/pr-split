@@ -16,10 +16,11 @@ from ..constants import (
     CHUNK_TARGET_RATIO,
     MAX_OUTPUT_TOKENS,
     AssignmentType,
+    PartitionStrategy,
     Provider,
 )
 from ..diff_ops import ParsedDiff
-from ..exceptions import ErrorMsg, LLMError
+from ..exceptions import ErrorMsg, LLMError, PRSplitError
 from ..schemas import Group, GroupAssignment
 from .chunker import (
     assign_uncovered_hunks,
@@ -30,6 +31,7 @@ from .chunker import (
     format_group_catalog,
     recompute_estimated_loc,
 )
+from .partitioning import partition_diff
 from .prompts import (
     SPLIT_TOOL_NAME,
     SPLIT_TOOL_SCHEMA,
@@ -38,6 +40,7 @@ from .prompts import (
     build_system_prompt,
     build_user_prompt,
 )
+from .scoring import score_plan
 
 _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
@@ -261,9 +264,10 @@ def _plan_split_chunked(
     logger.info(
         logs.CALIBRATING_CHUNKS.format(overhead=overhead, budget=diff_budget, ratio=token_ratio)
     )
+    logger.info(logs.CHUNK_STRATEGY_SELECTED.format(strategy=settings.chunk_strategy))
 
     hunk_sequence = build_hunk_sequence(parsed_diff, token_ratio)
-    chunks = chunk_hunks(hunk_sequence, diff_budget)
+    chunks = chunk_hunks(hunk_sequence, diff_budget, settings.chunk_strategy)
     total_chunks = len(chunks)
 
     logger.info(logs.CHUNKED_MODE.format(chunks=total_chunks, hunks=len(hunk_sequence)))
@@ -323,7 +327,7 @@ def _plan_split_chunked(
     return accumulated
 
 
-def plan_split(
+def _plan_split_with_llm(
     parsed_diff: ParsedDiff,
     settings: Settings,
 ) -> list[Group]:
@@ -348,4 +352,34 @@ def plan_split(
     groups = _parse_groups(raw)
     recompute_estimated_loc(groups, parsed_diff)
     logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
+    return groups
+
+
+def plan_split(
+    parsed_diff: ParsedDiff,
+    settings: Settings,
+) -> list[Group]:
+    logger.info(logs.PLANNING_WITH_BACKEND.format(backend=settings.partition_strategy))
+    match settings.partition_strategy:
+        case PartitionStrategy.LLM:
+            groups = _plan_split_with_llm(parsed_diff, settings)
+        case PartitionStrategy.GRAPH | PartitionStrategy.CP_SAT:
+            groups = partition_diff(parsed_diff, settings)
+        case _:
+            raise PRSplitError(
+                f"Unsupported partition strategy '{settings.partition_strategy}'"
+            )
+
+    metrics = score_plan(groups, settings.max_loc)
+    logger.info(
+        logs.PLAN_METRICS.format(
+            groups=metrics.total_groups,
+            max_loc=metrics.max_group_loc,
+            overflow=metrics.loc_overflow,
+            width=metrics.dag_width,
+            depth=metrics.dag_depth,
+            scatter=metrics.file_scatter,
+            objective=metrics.objective,
+        )
+    )
     return groups

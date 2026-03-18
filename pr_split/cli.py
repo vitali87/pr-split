@@ -13,7 +13,16 @@ from rich.tree import Tree
 
 from . import logs
 from .config import Settings
-from .constants import DEFAULT_MAX_LOC, PLAN_DIR, Priority
+from .constants import (
+    DEFAULT_CHUNK_STRATEGY,
+    DEFAULT_CP_SAT_TIMEOUT_SECONDS,
+    DEFAULT_MAX_LOC,
+    DEFAULT_PARTITION_STRATEGY,
+    PLAN_DIR,
+    ChunkStrategy,
+    PartitionStrategy,
+    Priority,
+)
 from .diff_ops import ParsedDiff, extract_diff, materialize_group_files, parse_diff
 from .exceptions import ErrorMsg, PRSplitError
 from .git_ops import (
@@ -217,6 +226,15 @@ def split(
         int, typer.Option(help="Soft limit on diff lines per sub-PR")
     ] = DEFAULT_MAX_LOC,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    chunk_strategy: Annotated[
+        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+    ] = DEFAULT_CHUNK_STRATEGY,
+    partition_strategy: Annotated[
+        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
+    ] = DEFAULT_PARTITION_STRATEGY,
+    cp_sat_timeout: Annotated[
+        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+    ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
 ) -> None:
     dev_branch_arg = dev_branch
     author: str | None = None
@@ -251,7 +269,13 @@ def split(
         )
     )
 
-    settings = Settings(max_loc=max_loc, priority=priority)
+    settings = Settings(
+        max_loc=max_loc,
+        cp_sat_timeout=cp_sat_timeout,
+        priority=priority,
+        chunk_strategy=chunk_strategy,
+        partition_strategy=partition_strategy,
+    )
     groups = plan_split(parsed_diff, settings)
 
     logger.info(logs.VALIDATING_PLAN)

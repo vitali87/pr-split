@@ -5,13 +5,16 @@ from collections import defaultdict
 from loguru import logger
 
 from .. import logs
-from ..constants import AssignmentType
+from ..constants import AssignmentType, ChunkStrategy
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg
 from ..schemas import Group, GroupAssignment
 from ..types_defs import DiffStats, FileSummary, HunkRef
 
 _DEFAULT_TOKEN_RATIO = 0.25
+_DP_CHUNK_BASE_COST = 100.0
+_DP_FILE_MIX_PENALTY = 50.0
+_DP_SAME_FILE_BOUNDARY_PENALTY = 10_000.0
 
 
 def build_hunk_sequence(
@@ -27,7 +30,7 @@ def build_hunk_sequence(
     return sequence
 
 
-def chunk_hunks(hunk_sequence: list[HunkRef], token_budget: int) -> list[list[HunkRef]]:
+def chunk_hunks_greedy(hunk_sequence: list[HunkRef], token_budget: int) -> list[list[HunkRef]]:
     chunks: list[list[HunkRef]] = []
     current: list[HunkRef] = []
     current_tokens = 0
@@ -52,6 +55,92 @@ def chunk_hunks(hunk_sequence: list[HunkRef], token_budget: int) -> list[list[Hu
     if current:
         chunks.append(current)
     return chunks
+
+
+def _chunk_slack_penalty(used_tokens: int, token_budget: int) -> float:
+    slack = max(0, token_budget - used_tokens)
+    return (slack * slack) / max(1, token_budget)
+
+
+def _chunk_boundary_penalty(hunk_sequence: list[HunkRef], boundary_index: int) -> float:
+    if boundary_index >= len(hunk_sequence) - 1:
+        return 0.0
+    left = hunk_sequence[boundary_index]
+    right = hunk_sequence[boundary_index + 1]
+    if left.file_path == right.file_path:
+        return _DP_SAME_FILE_BOUNDARY_PENALTY
+    return 0.0
+
+
+def chunk_hunks_dynamic_programming(
+    hunk_sequence: list[HunkRef], token_budget: int
+) -> list[list[HunkRef]]:
+    if not hunk_sequence:
+        return []
+
+    for href in hunk_sequence:
+        if href.token_estimate > token_budget:
+            raise ValueError(
+                ErrorMsg.HUNK_TOO_LARGE(
+                    file=href.file_path,
+                    index=href.hunk_index,
+                    tokens=href.token_estimate,
+                    budget=token_budget,
+                )
+            )
+
+    n = len(hunk_sequence)
+    best_cost = [float("inf")] * (n + 1)
+    previous_cut = [-1] * (n + 1)
+    best_cost[0] = 0.0
+
+    for end in range(1, n + 1):
+        used_tokens = 0
+        files: set[str] = set()
+        for start in range(end, 0, -1):
+            href = hunk_sequence[start - 1]
+            used_tokens += href.token_estimate
+            if used_tokens > token_budget:
+                break
+
+            files.add(href.file_path)
+            file_mix_penalty = max(0, len(files) - 1) * _DP_FILE_MIX_PENALTY
+            chunk_cost = (
+                _DP_CHUNK_BASE_COST
+                + _chunk_slack_penalty(used_tokens, token_budget)
+                + file_mix_penalty
+                + _chunk_boundary_penalty(hunk_sequence, end - 1)
+            )
+            candidate_cost = best_cost[start - 1] + chunk_cost
+            if candidate_cost < best_cost[end]:
+                best_cost[end] = candidate_cost
+                previous_cut[end] = start - 1
+
+    chunks: list[list[HunkRef]] = []
+    cursor = n
+    while cursor > 0:
+        cut = previous_cut[cursor]
+        if cut < 0:
+            raise ValueError("failed to reconstruct dynamic-programming chunk plan")
+        chunks.append(hunk_sequence[cut:cursor])
+        cursor = cut
+
+    chunks.reverse()
+    return chunks
+
+
+def chunk_hunks(
+    hunk_sequence: list[HunkRef],
+    token_budget: int,
+    strategy: ChunkStrategy = ChunkStrategy.DYNAMIC_PROGRAMMING,
+) -> list[list[HunkRef]]:
+    match strategy:
+        case ChunkStrategy.GREEDY:
+            return chunk_hunks_greedy(hunk_sequence, token_budget)
+        case ChunkStrategy.DYNAMIC_PROGRAMMING:
+            return chunk_hunks_dynamic_programming(hunk_sequence, token_budget)
+        case _:
+            raise ValueError(f"Unknown chunk strategy '{strategy}'")
 
 
 def build_chunk_diff_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRef]) -> str:

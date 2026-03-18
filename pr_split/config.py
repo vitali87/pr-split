@@ -3,10 +3,15 @@ from pydantic_settings import BaseSettings
 
 from .constants import (
     ANTHROPIC_MAX_CONTEXT_TOKENS,
+    DEFAULT_CHUNK_STRATEGY,
+    DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
     DEFAULT_MODEL,
+    DEFAULT_PARTITION_STRATEGY,
     OPENAI_MAX_CONTEXT_TOKENS,
     OPENAI_MODEL,
+    ChunkStrategy,
+    PartitionStrategy,
     Priority,
     Provider,
 )
@@ -26,7 +31,10 @@ class Settings(BaseSettings):
     provider: Provider = Provider.ANTHROPIC
     model: str = ""
     max_loc: int = DEFAULT_MAX_LOC
+    cp_sat_timeout: float = DEFAULT_CP_SAT_TIMEOUT_SECONDS
     priority: Priority = Priority.ORTHOGONAL
+    chunk_strategy: ChunkStrategy = DEFAULT_CHUNK_STRATEGY
+    partition_strategy: PartitionStrategy = DEFAULT_PARTITION_STRATEGY
 
     @model_validator(mode="after")
     def set_default_model(self):
@@ -42,6 +50,8 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def check_api_key_is_present(self):
+        if self.partition_strategy != PartitionStrategy.LLM:
+            return self
         match self.provider:
             case Provider.ANTHROPIC:
                 if not self.anthropic_api_key:
@@ -50,7 +60,9 @@ class Settings(BaseSettings):
                 if not self.openai_api_key:
                     raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
             case _:
-                raise NotImplementedError(f"API key check not implemented for provider '{self.provider}'")
+                raise NotImplementedError(
+                    f"API key check not implemented for provider '{self.provider}'"
+                )
         return self
 
     @property
