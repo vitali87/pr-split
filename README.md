@@ -102,6 +102,8 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 
 The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package to be installed in the runtime environment.
 
+For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
+
 ## What it does
 
 1. Extracts the merge-base diff between your branch and the base (same view as GitHub's PR page)
