@@ -37,6 +37,7 @@ BRANCH_PREFIX = "pr-split/"
 PLAN_DIR = ".pr-split"
 PLAN_FILE = ".pr-split/plan.json"
 DEFAULT_MAX_LOC = 400
+DEFAULT_CP_SAT_TIMEOUT_SECONDS = 15.0
 DEFAULT_CHUNK_STRATEGY = ChunkStrategy.DYNAMIC_PROGRAMMING
 DEFAULT_PARTITION_STRATEGY = PartitionStrategy.LLM
 PR_REF_PREFIX = "refs/pr-split/pr-"

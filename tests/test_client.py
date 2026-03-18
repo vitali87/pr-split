@@ -7,7 +7,7 @@ import pytest
 from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
-from pr_split.exceptions import LLMError
+from pr_split.exceptions import LLMError, PRSplitError
 from pr_split.planner.client import (
     RawToolOutput,
     _extract_raw_output,
@@ -254,3 +254,23 @@ new file mode 100644
         groups = plan_split(parsed, settings)
         assert len(groups) == 1
         mock_partition.assert_called_once()
+
+    def test_unsupported_partition_strategy_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        parsed = parse_diff(
+            """\
+diff --git a/a.py b/a.py
+new file mode 100644
+--- /dev/null
++++ b/a.py
+@@ -0,0 +1 @@
++x
+"""
+        )
+        settings = Settings(provider=Provider.ANTHROPIC)
+        settings.partition_strategy = "invalid"
+
+        with pytest.raises(PRSplitError, match="Unsupported partition strategy"):
+            plan_split(parsed, settings)

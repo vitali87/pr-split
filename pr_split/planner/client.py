@@ -20,7 +20,7 @@ from ..constants import (
     Provider,
 )
 from ..diff_ops import ParsedDiff
-from ..exceptions import ErrorMsg, LLMError
+from ..exceptions import ErrorMsg, LLMError, PRSplitError
 from ..schemas import Group, GroupAssignment
 from .chunker import (
     assign_uncovered_hunks,
@@ -365,6 +365,10 @@ def plan_split(
             groups = _plan_split_with_llm(parsed_diff, settings)
         case PartitionStrategy.GRAPH | PartitionStrategy.CP_SAT:
             groups = partition_diff(parsed_diff, settings)
+        case _:
+            raise PRSplitError(
+                f"Unsupported partition strategy '{settings.partition_strategy}'"
+            )
 
     metrics = score_plan(groups, settings.max_loc)
     logger.info(

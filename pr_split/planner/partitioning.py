@@ -266,7 +266,7 @@ def _group_units_cp_sat(
     )
 
     solver = cp_model.CpSolver()
-    solver.parameters.max_time_in_seconds = 15.0
+    solver.parameters.max_time_in_seconds = settings.cp_sat_timeout
     status = solver.Solve(model)
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         raise PRSplitError("CP-SAT partitioning failed to find a feasible hunk assignment")

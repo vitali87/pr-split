@@ -139,6 +139,8 @@ def chunk_hunks(
             return chunk_hunks_greedy(hunk_sequence, token_budget)
         case ChunkStrategy.DYNAMIC_PROGRAMMING:
             return chunk_hunks_dynamic_programming(hunk_sequence, token_budget)
+        case _:
+            raise ValueError(f"Unknown chunk strategy '{strategy}'")
 
 
 def build_chunk_diff_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRef]) -> str:

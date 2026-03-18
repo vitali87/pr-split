@@ -6,6 +6,7 @@ from pr_split.config import Settings
 from pr_split.constants import (
     ANTHROPIC_MAX_CONTEXT_TOKENS,
     DEFAULT_CHUNK_STRATEGY,
+    DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
     OPENAI_MAX_CONTEXT_TOKENS,
@@ -36,6 +37,7 @@ class TestSettingsDefaults:
         s = Settings(provider=Provider.ANTHROPIC)
         assert s.chunk_strategy == DEFAULT_CHUNK_STRATEGY
         assert s.partition_strategy == DEFAULT_PARTITION_STRATEGY
+        assert s.cp_sat_timeout == DEFAULT_CP_SAT_TIMEOUT_SECONDS
 
 
 class TestSettingsApiKeyValidation:

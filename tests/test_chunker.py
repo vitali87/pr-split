@@ -143,6 +143,11 @@ class TestChunkHunks:
         assert [ref.file_path for ref in greedy[0]] == ["a.py", "b.py"]
         assert [ref.file_path for ref in dp[-1]] == ["b.py", "b.py"]
 
+    def test_unknown_strategy_raises(self) -> None:
+        refs = [HunkRef("a.py", 0, 100)]
+        with pytest.raises(ValueError, match="Unknown chunk strategy"):
+            chunk_hunks(refs, 100, "invalid")
+
 
 class TestChunkHunksDynamicProgramming:
     def test_prefers_not_to_split_same_file(self) -> None:

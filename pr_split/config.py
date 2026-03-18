@@ -4,6 +4,7 @@ from pydantic_settings import BaseSettings
 from .constants import (
     ANTHROPIC_MAX_CONTEXT_TOKENS,
     DEFAULT_CHUNK_STRATEGY,
+    DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
@@ -30,6 +31,7 @@ class Settings(BaseSettings):
     provider: Provider = Provider.ANTHROPIC
     model: str = ""
     max_loc: int = DEFAULT_MAX_LOC
+    cp_sat_timeout: float = DEFAULT_CP_SAT_TIMEOUT_SECONDS
     priority: Priority = Priority.ORTHOGONAL
     chunk_strategy: ChunkStrategy = DEFAULT_CHUNK_STRATEGY
     partition_strategy: PartitionStrategy = DEFAULT_PARTITION_STRATEGY

@@ -15,6 +15,7 @@ from . import logs
 from .config import Settings
 from .constants import (
     DEFAULT_CHUNK_STRATEGY,
+    DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
     DEFAULT_PARTITION_STRATEGY,
     PLAN_DIR,
@@ -231,6 +232,9 @@ def split(
     partition_strategy: Annotated[
         PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
     ] = DEFAULT_PARTITION_STRATEGY,
+    cp_sat_timeout: Annotated[
+        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+    ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
 ) -> None:
     dev_branch_arg = dev_branch
     author: str | None = None
@@ -267,6 +271,7 @@ def split(
 
     settings = Settings(
         max_loc=max_loc,
+        cp_sat_timeout=cp_sat_timeout,
         priority=priority,
         chunk_strategy=chunk_strategy,
         partition_strategy=partition_strategy,
