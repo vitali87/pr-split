@@ -107,4 +107,5 @@ class TestPartitionDiffCpSat:
             partition_strategy=PartitionStrategy.CP_SAT,
         )
         groups = partition_diff(parsed, settings)
-        assert groups
+        assert len(groups) == 2
+        assert all(group.depends_on == [] for group in groups)

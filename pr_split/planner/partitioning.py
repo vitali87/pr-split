@@ -12,6 +12,8 @@ from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
 
 if TYPE_CHECKING:
+    from ortools.sat.python.cp_model import IntVar
+
     from ..config import Settings
     from ..diff_ops import ParsedDiff
 
@@ -174,18 +176,6 @@ def _group_units_graph(
     return grouped_units
 
 
-def _build_affinity_edges(
-    units: list[PartitionUnit], priority: Priority
-) -> list[tuple[int, int, int]]:
-    edges: list[tuple[int, int, int]] = []
-    for left in range(len(units)):
-        for right in range(left + 1, len(units)):
-            weight = _affinity_score(units[left], units[right], priority)
-            if weight > 0:
-                edges.append((left, right, weight))
-    return edges
-
-
 def _group_units_cp_sat(
     units: list[PartitionUnit], *, settings: Settings
 ) -> list[list[PartitionUnit]]:
@@ -230,7 +220,7 @@ def _group_units_cp_sat(
     for group_idx in range(group_slots - 1):
         model.Add(y[group_idx] >= y[group_idx + 1])
 
-    pair_terms: list[tuple[int, int, object]] = []
+    pair_terms: list[tuple[int, int, IntVar]] = []
     for left in range(len(units)):
         for right in range(left + 1, len(units)):
             affinity = _affinity_score(units[left], units[right], settings.priority)
