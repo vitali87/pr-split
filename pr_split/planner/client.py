@@ -50,11 +50,9 @@ _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
 
 _OPENAI_TOOL_DEF = {
     "type": "function",
-    "function": {
-        "name": SPLIT_TOOL_NAME,
-        "description": "Propose a plan to split the diff into groups",
-        "parameters": SPLIT_TOOL_SCHEMA,
-    },
+    "name": SPLIT_TOOL_NAME,
+    "description": "Propose a plan to split the diff into groups",
+    "parameters": SPLIT_TOOL_SCHEMA,
 }
 
 
@@ -147,33 +145,27 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
 def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput:
     client = openai.OpenAI(api_key=settings.api_key)
     try:
-        response = client.chat.completions.create(
+        response = client.responses.create(
             model=settings.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
+            instructions=system,
+            input=[{"role": "user", "content": user}],
             tools=[_OPENAI_TOOL_DEF],
-            tool_choice={
-                "type": "function",
-                "function": {"name": SPLIT_TOOL_NAME},
-            },
+            tool_choice={"type": "function", "name": SPLIT_TOOL_NAME},
         )
     except openai.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
-    if not response.choices:
-        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no choices in response"))
-    tool_calls = response.choices[0].message.tool_calls
-    if not tool_calls:
-        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call in response"))
-    raw_args = tool_calls[0].function.arguments
-    try:
-        parsed = json.loads(raw_args)
-    except json.JSONDecodeError as exc:
-        raise LLMError(
-            ErrorMsg.LLM_PARSE_ERROR(detail=f"failed to parse tool arguments: {exc}")
-        ) from exc
-    return RawToolOutput(groups=_extract_raw_output(parsed))
+    for item in response.output:
+        if item.type == "function_call" and item.name == SPLIT_TOOL_NAME:
+            try:
+                parsed = json.loads(item.arguments)
+            except json.JSONDecodeError as exc:
+                raise LLMError(
+                    ErrorMsg.LLM_PARSE_ERROR(
+                        detail=f"failed to parse tool arguments: {exc}"
+                    )
+                ) from exc
+            return RawToolOutput(groups=_extract_raw_output(parsed))
+    raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no function_call in response output"))
 
 
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
