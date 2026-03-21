@@ -4,7 +4,7 @@ import shutil
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from threading import Semaphore
+from threading import Lock, Semaphore
 from typing import Annotated
 
 import typer
@@ -146,6 +146,7 @@ def _present_plan(groups: list[Group]) -> None:
 
 
 _WORKTREE_MAX_WORKERS = 4
+_worktree_ref_lock = Lock()
 
 
 def _create_single_branch_and_commit(
@@ -162,14 +163,15 @@ def _create_single_branch_and_commit(
     worktree_path = str(worktree_base / group.id)
     commit_sha: str = ""
 
-    add_worktree(worktree_path, branch_name, merge_base_ref)
+    with _worktree_ref_lock:
+        add_worktree(worktree_path, branch_name, merge_base_ref)
     try:
         materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
         for file_path, content in materialized.items():
             p = Path(worktree_path) / file_path
             if content is not None:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content)
+                p.write_text(content, encoding="utf-8")
             elif p.exists():
                 p.unlink()
 
