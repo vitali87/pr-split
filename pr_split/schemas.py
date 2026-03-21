@@ -42,7 +42,7 @@ class SplitPlan(BaseModel):
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
     author: str | None = None
-    merge_base_sha: str = ""
+    merge_base_sha: str | None = None
 
 
 class BranchRecord(BaseModel):

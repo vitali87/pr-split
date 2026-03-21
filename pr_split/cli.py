@@ -370,7 +370,7 @@ def split(
             )
             if typer.confirm("Clean up existing branches and PRs before re-splitting?"):
                 closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
-                logger.info(
+                logger.success(
                     logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs)
                 )
             else:
@@ -509,6 +509,4 @@ def clean() -> None:
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
-    logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
-
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
