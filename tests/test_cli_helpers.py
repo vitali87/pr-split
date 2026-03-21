@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -199,26 +198,24 @@ class TestPushAndCreatePrs:
     def test_concurrent_execution(
         self, mock_push: MagicMock, mock_create: MagicMock
     ) -> None:
-        """Verify that multiple groups are processed (concurrent threads)."""
-        lock = threading.Lock()
-        call_count = {"push": 0, "create": 0}
+        """Verify that multiple groups are processed concurrently."""
+        import time
 
-        def counting_push(branch: str) -> None:
-            with lock:
-                call_count["push"] += 1
+        def sleep_then_create(**kwargs) -> tuple[int, str]:
+            time.sleep(0.1)
+            return (1, "https://github.com/pr/1")
 
-        def counting_create(**kwargs) -> tuple[int, str]:
-            with lock:
-                call_count["create"] += 1
-                n = call_count["create"]
-            return (n, f"https://github.com/pr/{n}")
-
-        mock_push.side_effect = counting_push
-        mock_create.side_effect = counting_create
+        mock_create.side_effect = sleep_then_create
 
         groups = [_group(f"pr-{i}", f"feat: {i}") for i in range(1, 6)]
         records = [_branch_record(f"pr-{i}", f"pr-split/ns/pr-{i}") for i in range(1, 6)]
-        result = _push_and_create_prs(groups, records)
-        assert len(result) == 5
-        assert call_count["push"] == 5
-        assert call_count["create"] == 5
+
+        start_time = time.monotonic()
+        _push_and_create_prs(groups, records)
+        duration = time.monotonic() - start_time
+
+        assert mock_push.call_count == 5
+        assert mock_create.call_count == 5
+        # 5 tasks sleeping 0.1s each; sequential would be >0.5s.
+        # GH API semaphore=3, so ~2 batches (0.2s) + overhead.
+        assert duration < 0.4

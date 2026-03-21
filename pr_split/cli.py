@@ -180,8 +180,9 @@ def _create_branches_and_commits(
     return branch_records
 
 
-_PUSH_MAX_WORKERS = 10
+_PUSH_MAX_WORKERS = 5
 _GH_API_CONCURRENCY = 3
+_push_semaphore = Semaphore(_PUSH_MAX_WORKERS)
 _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
@@ -190,7 +191,8 @@ def _push_and_create_single_pr(
     record: BranchRecord,
     all_groups: list[Group],
 ) -> PRRecord:
-    push_branch(record.branch_name)
+    with _push_semaphore:
+        push_branch(record.branch_name)
     logger.info(logs.CREATING_PR.format(group=group.id))
     dag_md = _render_dag_markdown(all_groups, group.id)
     body = f"{group.description}\n\n{dag_md}"
