@@ -199,23 +199,35 @@ class TestPushAndCreatePrs:
         self, mock_push: MagicMock, mock_create: MagicMock
     ) -> None:
         """Verify that multiple groups are processed concurrently."""
-        import time
+        import threading
 
-        def sleep_then_create(**kwargs) -> tuple[int, str]:
-            time.sleep(0.1)
+        # Barrier for 3 parties proves at least 3 threads run simultaneously
+        # (matches _GH_API_CONCURRENCY=3). Timeout prevents hanging if
+        # execution is actually sequential.
+        barrier = threading.Barrier(3, timeout=5)
+        max_concurrent = {"value": 0}
+        lock = threading.Lock()
+        active = {"count": 0}
+
+        def barrier_create(**kwargs) -> tuple[int, str]:
+            with lock:
+                active["count"] += 1
+                if active["count"] > max_concurrent["value"]:
+                    max_concurrent["value"] = active["count"]
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            with lock:
+                active["count"] -= 1
             return (1, "https://github.com/pr/1")
 
-        mock_create.side_effect = sleep_then_create
+        mock_create.side_effect = barrier_create
 
         groups = [_group(f"pr-{i}", f"feat: {i}") for i in range(1, 6)]
         records = [_branch_record(f"pr-{i}", f"pr-split/ns/pr-{i}") for i in range(1, 6)]
-
-        start_time = time.monotonic()
         _push_and_create_prs(groups, records)
-        duration = time.monotonic() - start_time
 
         assert mock_push.call_count == 5
         assert mock_create.call_count == 5
-        # 5 tasks sleeping 0.1s each; sequential would be >0.5s.
-        # GH API semaphore=3, so ~2 batches (0.2s) + overhead.
-        assert duration < 0.4
+        assert max_concurrent["value"] >= 3

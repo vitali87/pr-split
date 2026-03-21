@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import itertools
 import shutil
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Semaphore
 from typing import Annotated
@@ -182,7 +181,6 @@ def _create_branches_and_commits(
 
 _PUSH_MAX_WORKERS = 5
 _GH_API_CONCURRENCY = 3
-_push_semaphore = Semaphore(_PUSH_MAX_WORKERS)
 _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
@@ -191,8 +189,7 @@ def _push_and_create_single_pr(
     record: BranchRecord,
     all_groups: list[Group],
 ) -> PRRecord:
-    with _push_semaphore:
-        push_branch(record.branch_name)
+    push_branch(record.branch_name)
     logger.info(logs.CREATING_PR.format(group=group.id))
     dag_md = _render_dag_markdown(all_groups, group.id)
     body = f"{group.description}\n\n{dag_md}"
@@ -215,17 +212,29 @@ def _push_and_create_prs(
     branch_records: list[BranchRecord],
 ) -> list[PRRecord]:
     record_map = {r.group_id: r for r in branch_records}
-    records_in_order = [record_map[g.id] for g in groups]
 
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
-        results = list(executor.map(
-            _push_and_create_single_pr,
-            groups,
-            records_in_order,
-            itertools.repeat(groups),
-        ))
+        future_to_group_id = {
+            executor.submit(
+                _push_and_create_single_pr, group, record_map[group.id], groups
+            ): group.id
+            for group in groups
+        }
+        results: dict[str, PRRecord] = {}
+        errors: list[tuple[str, BaseException]] = []
+        for future in as_completed(future_to_group_id):
+            group_id = future_to_group_id[future]
+            try:
+                results[group_id] = future.result()
+            except Exception as exc:
+                logger.error(f"Failed to push/create PR for {group_id}: {exc}")
+                errors.append((group_id, exc))
 
-    return results
+    if errors:
+        failed = [gid for gid, _ in errors]
+        raise PRSplitError(f"{len(errors)} PR(s) failed: {failed}")
+
+    return [results[g.id] for g in groups]
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
