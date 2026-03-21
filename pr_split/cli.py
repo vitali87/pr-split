@@ -577,6 +577,11 @@ def merge_all(
         raise typer.Exit(0)
 
     dag = PlanDAG(plan.groups)
+
+    if auto and any(dag.children(gid) for gid in pr_map):
+        console.print("[red]--auto cannot be used with stacked (dependent) PRs.[/red]")
+        raise typer.Exit(1)
+
     merged: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
@@ -607,6 +612,11 @@ def merge_all(
             if state != "OPEN":
                 logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is {state}, skipping")
                 skipped.append(f"{group_id} ({state})")
+                continue
+
+            if live.get("isDraft"):
+                logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is a draft, skipping")
+                skipped.append(f"{group_id} (draft)")
                 continue
 
             review = live.get("reviewDecision") or ""
@@ -646,5 +656,6 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
-    if not failed:
-        logger.success(f"Merge complete: {len(merged)} PRs merged")
+    if failed or stopped:
+        raise typer.Exit(1)
+    logger.success(f"Merge complete: {len(merged)} PRs merged")
