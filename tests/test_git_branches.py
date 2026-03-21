@@ -7,17 +7,21 @@ import pytest
 
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
+    add_worktree,
     branch_exists,
     checkout_branch,
     checkout_new_branch,
     commit_files,
+    commit_files_in_dir,
     create_group_branch,
     delete_branch,
     derive_split_namespace,
     is_worktree_clean,
     merge_base,
     push_branch,
+    remove_worktree,
     run_git,
+    run_git_in_dir,
 )
 
 
@@ -228,3 +232,68 @@ class TestCheckoutWrappers:
         mock_git.return_value = ""
         checkout_branch("main")
         mock_git.assert_called_once_with("checkout", "main")
+
+
+class TestRunGitInDir:
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_passes_cwd(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="ok\n", stderr=""
+        )
+        result = run_git_in_dir("/tmp/wt", "status")
+        assert result == "ok"
+        assert mock_run.call_args.kwargs["cwd"] == "/tmp/wt"
+
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_failure_raises(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=1, stdout="", stderr="error"
+        )
+        with pytest.raises(GitOperationError, match="error"):
+            run_git_in_dir("/tmp/wt", "status")
+
+
+class TestAddWorktree:
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.branches.branch_exists", return_value=False)
+    def test_adds_worktree(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
+        mock_git.return_value = ""
+        add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
+        mock_git.assert_called_once_with(
+            "worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123"
+        )
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
+    def test_deletes_existing_branch_first(
+        self, mock_exists: MagicMock, mock_git: MagicMock
+    ) -> None:
+        mock_git.return_value = ""
+        add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
+        assert mock_git.call_count == 2
+        mock_git.assert_any_call("branch", "-D", "pr-split/ns/pr-1")
+
+
+class TestRemoveWorktree:
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_removes_worktree(self, mock_git: MagicMock) -> None:
+        mock_git.return_value = ""
+        remove_worktree("/tmp/wt")
+        mock_git.assert_called_once_with("worktree", "remove", "--force", "/tmp/wt")
+
+
+class TestCommitFilesInDir:
+    @patch("pr_split.git_ops.branches.run_git_in_dir")
+    def test_basic_commit(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", "", "abc123"]
+        sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
+        assert sha == "abc123"
+        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "--", "file.py")
+
+    @patch("pr_split.git_ops.branches.run_git_in_dir")
+    def test_commit_with_author(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", "", "abc123"]
+        sha = commit_files_in_dir("/tmp/wt", ["f.py"], "msg", author="J <j@x.com>")
+        assert sha == "abc123"
+        commit_call = mock_git.call_args_list[1]
+        assert "--author" in commit_call.args

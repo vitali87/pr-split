@@ -28,11 +28,10 @@ from .constants import (
 from .diff_ops import ParsedDiff, extract_diff, materialize_group_files, parse_diff
 from .exceptions import ErrorMsg, PRSplitError
 from .git_ops import (
+    add_worktree,
     branch_exists,
     check_gh_auth,
-    checkout_branch,
-    commit_files,
-    create_group_branch,
+    commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
     fetch_fork_branch,
@@ -40,6 +39,7 @@ from .git_ops import (
     is_worktree_clean,
     merge_base,
     push_branch,
+    remove_worktree,
 )
 from .git_ops.prs import close_pr, create_pr
 from .graph import PlanDAG
@@ -142,6 +142,50 @@ def _present_plan(groups: list[Group]) -> None:
     console.print(Panel(dag_text, title="Dependency Graph"))
 
 
+_WORKTREE_MAX_WORKERS = 4
+
+
+def _create_single_branch_and_commit(
+    group: Group,
+    parsed_diff: ParsedDiff,
+    base_branch: str,
+    merge_base_ref: str,
+    namespace: str,
+    worktree_base: Path,
+    *,
+    author: str | None = None,
+) -> BranchRecord:
+    from .constants import BRANCH_PREFIX
+
+    branch_name = f"{BRANCH_PREFIX}{namespace}/{group.id}"
+    worktree_path = str(worktree_base / group.id)
+
+    add_worktree(worktree_path, branch_name, merge_base_ref)
+    try:
+        materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
+        for file_path, content in materialized.items():
+            p = Path(worktree_path) / file_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(content)
+
+        logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
+        commit_sha = commit_files_in_dir(
+            worktree_path,
+            list(materialized.keys()),
+            group.title,
+            author=author,
+        )
+    finally:
+        remove_worktree(worktree_path)
+
+    return BranchRecord(
+        group_id=group.id,
+        branch_name=branch_name,
+        base_branch=base_branch,
+        commit_sha=commit_sha,
+    )
+
+
 def _create_branches_and_commits(
     groups: list[Group],
     parsed_diff: ParsedDiff,
@@ -151,32 +195,42 @@ def _create_branches_and_commits(
     *,
     author: str | None = None,
 ) -> list[BranchRecord]:
-    branch_records: list[BranchRecord] = []
+    worktree_base = Path(".pr-split-worktrees")
+    worktree_base.mkdir(exist_ok=True)
 
-    for group in groups:
-        branch_name = create_group_branch(group.id, merge_base_ref, namespace)
-        record = BranchRecord(
-            group_id=group.id,
-            branch_name=branch_name,
-            base_branch=base_branch,
-        )
+    try:
+        with ThreadPoolExecutor(max_workers=_WORKTREE_MAX_WORKERS) as executor:
+            future_to_group_id = {
+                executor.submit(
+                    _create_single_branch_and_commit,
+                    group,
+                    parsed_diff,
+                    base_branch,
+                    merge_base_ref,
+                    namespace,
+                    worktree_base,
+                    author=author,
+                ): group.id
+                for group in groups
+            }
+            results: dict[str, BranchRecord] = {}
+            errors: list[tuple[str, Exception]] = []
+            for future in as_completed(future_to_group_id):
+                group_id = future_to_group_id[future]
+                try:
+                    results[group_id] = future.result()
+                except Exception as exc:
+                    logger.error(f"Failed to create branch for {group_id}: {exc}")
+                    errors.append((group_id, exc))
 
-        materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
-        for file_path, content in materialized.items():
-            p = Path(file_path)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
+        if errors:
+            error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
+            raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
+    finally:
+        if worktree_base.exists():
+            shutil.rmtree(worktree_base, ignore_errors=True)
 
-        logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
-        commit_sha = commit_files(
-            list(materialized.keys()),
-            group.title,
-            author=author,
-        )
-        record.commit_sha = commit_sha
-        branch_records.append(record)
-
-    return branch_records
+    return [results[g.id] for g in groups]
 
 
 _PUSH_MAX_WORKERS = 5
@@ -321,13 +375,10 @@ def split(
 
     namespace = derive_split_namespace(dev_branch_arg)
     merge_base_ref = merge_base(base, dev_branch)
-    checkout_branch(merge_base_ref)
     branch_records = _create_branches_and_commits(
         groups, parsed_diff, base, merge_base_ref, namespace, author=author
     )
     pr_records = _push_and_create_prs(groups, branch_records)
-
-    checkout_branch(dev_branch)
 
     plan_file = PlanFile(
         plan=SplitPlan(

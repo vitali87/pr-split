@@ -1,4 +1,7 @@
 from .branches import (
+    add_worktree as add_worktree,
+)
+from .branches import (
     branch_exists as branch_exists,
 )
 from .branches import (
@@ -6,6 +9,9 @@ from .branches import (
 )
 from .branches import (
     commit_files as commit_files,
+)
+from .branches import (
+    commit_files_in_dir as commit_files_in_dir,
 )
 from .branches import (
     create_group_branch as create_group_branch,
@@ -24,6 +30,9 @@ from .branches import (
 )
 from .branches import (
     push_branch as push_branch,
+)
+from .branches import (
+    remove_worktree as remove_worktree,
 )
 from .prs import (
     check_gh_auth as check_gh_auth,
