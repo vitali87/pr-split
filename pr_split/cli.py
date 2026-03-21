@@ -221,7 +221,7 @@ def _push_and_create_prs(
             for group in groups
         }
         results: dict[str, PRRecord] = {}
-        errors: list[tuple[str, BaseException]] = []
+        errors: list[tuple[str, Exception]] = []
         for future in as_completed(future_to_group_id):
             group_id = future_to_group_id[future]
             try:

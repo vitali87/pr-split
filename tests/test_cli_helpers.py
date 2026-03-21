@@ -224,10 +224,10 @@ class TestPushAndCreatePrs:
 
         mock_create.side_effect = barrier_create
 
-        groups = [_group(f"pr-{i}", f"feat: {i}") for i in range(1, 6)]
-        records = [_branch_record(f"pr-{i}", f"pr-split/ns/pr-{i}") for i in range(1, 6)]
+        groups = [_group(f"pr-{i}", f"feat: {i}") for i in range(1, 7)]
+        records = [_branch_record(f"pr-{i}", f"pr-split/ns/pr-{i}") for i in range(1, 7)]
         _push_and_create_prs(groups, records)
 
-        assert mock_push.call_count == 5
-        assert mock_create.call_count == 5
+        assert mock_push.call_count == 6
+        assert mock_create.call_count == 6
         assert max_concurrent["value"] >= 3
