@@ -105,7 +105,7 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
-def _validate_inputs(dev_branch: str, base: str) -> None:
+def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
         raise typer.Exit(1)
@@ -115,7 +115,7 @@ def _validate_inputs(dev_branch: str, base: str) -> None:
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
-    if not check_gh_auth():
+    if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
 
@@ -358,7 +358,7 @@ def split(
         base = fork_info["base_branch"]
         author = fork_info["author"]
 
-    _validate_inputs(dev_branch, base)
+    _validate_inputs(dev_branch, base, dry_run=dry_run)
 
     raw_diff = extract_diff(dev_branch, base)
     parsed_diff = parse_diff(raw_diff)
