@@ -368,7 +368,10 @@ def split(
             console.print(
                 "[yellow]An existing split plan with branches/PRs was found.[/yellow]"
             )
-            if typer.confirm("Clean up existing branches and PRs before re-splitting?"):
+            console.print(
+                "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
+            )
+            if typer.confirm("Clean up and proceed with re-splitting?"):
                 closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
                 logger.success(
                     logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs)
