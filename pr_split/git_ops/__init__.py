@@ -18,4 +18,5 @@ from .prs import (
     create_pr,
     fetch_fork_branch,
     fetch_fork_pr,
+    get_pr_state,
 )
