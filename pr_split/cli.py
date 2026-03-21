@@ -335,6 +335,9 @@ def split(
     cp_sat_timeout: Annotated[
         float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preview plan without creating branches or PRs")
+    ] = False,
 ) -> None:
     dev_branch_arg = dev_branch
     author: str | None = None
@@ -387,6 +390,22 @@ def split(
 
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
+
+    if dry_run:
+        plan_file = PlanFile(
+            plan=SplitPlan(
+                dev_branch=dev_branch,
+                base_branch=base,
+                max_loc=max_loc,
+                priority=priority,
+                groups=groups,
+                author=author,
+            ),
+            git_state=GitState(branches=[], prs=[]),
+        )
+        save_plan(plan_file)
+        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_DIR}")
+        return
 
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
