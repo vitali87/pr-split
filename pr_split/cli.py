@@ -391,19 +391,17 @@ def split(
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    split_plan = SplitPlan(
+        dev_branch=dev_branch,
+        base_branch=base,
+        max_loc=max_loc,
+        priority=priority,
+        groups=groups,
+        author=author,
+    )
+
     if dry_run:
-        plan_file = PlanFile(
-            plan=SplitPlan(
-                dev_branch=dev_branch,
-                base_branch=base,
-                max_loc=max_loc,
-                priority=priority,
-                groups=groups,
-                author=author,
-            ),
-            git_state=GitState(branches=[], prs=[]),
-        )
-        save_plan(plan_file)
+        save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))
         logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_DIR}")
         return
 
@@ -416,21 +414,10 @@ def split(
     )
     pr_records = _push_and_create_prs(groups, branch_records)
 
-    plan_file = PlanFile(
-        plan=SplitPlan(
-            dev_branch=dev_branch,
-            base_branch=base,
-            max_loc=max_loc,
-            priority=priority,
-            groups=groups,
-            author=author,
-        ),
-        git_state=GitState(
-            branches=branch_records,
-            prs=pr_records,
-        ),
-    )
-    save_plan(plan_file)
+    save_plan(PlanFile(
+        plan=split_plan,
+        git_state=GitState(branches=branch_records, prs=pr_records),
+    ))
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
