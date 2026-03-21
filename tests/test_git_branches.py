@@ -268,10 +268,25 @@ class TestAddWorktree:
     def test_deletes_existing_branch_first(
         self, mock_exists: MagicMock, mock_git: MagicMock
     ) -> None:
-        mock_git.return_value = ""
+        mock_git.side_effect = ["oldsha", "", ""]
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
-        assert mock_git.call_count == 2
+        assert mock_git.call_count == 3
         mock_git.assert_any_call("branch", "-D", "pr-split/ns/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
+    def test_restores_branch_on_failure(
+        self, mock_exists: MagicMock, mock_git: MagicMock
+    ) -> None:
+        mock_git.side_effect = [
+            "oldsha",
+            "",
+            GitOperationError("worktree add failed"),
+            "",
+        ]
+        with pytest.raises(GitOperationError, match="worktree add failed"):
+            add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
+        mock_git.assert_any_call("branch", "pr-split/ns/pr-1", "oldsha")
 
 
 class TestRemoveWorktree:
@@ -297,3 +312,15 @@ class TestCommitFilesInDir:
         assert sha == "abc123"
         commit_call = mock_git.call_args_list[1]
         assert "--author" in commit_call.args
+
+    @patch("pr_split.git_ops.branches.run_git_in_dir")
+    def test_commit_fallback_on_failure(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            "",
+            GitOperationError("nothing to commit"),
+            "",
+            "",
+            "def456",
+        ]
+        sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
+        assert sha == "def456"

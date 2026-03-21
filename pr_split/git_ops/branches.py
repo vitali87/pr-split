@@ -98,9 +98,16 @@ def create_group_branch(group_id: str, base: str, namespace: str) -> str:
 
 
 def add_worktree(path: str, branch_name: str, start_point: str) -> None:
+    prev_sha: str | None = None
     if branch_exists(branch_name):
+        prev_sha = run_git("rev-parse", branch_name)
         run_git("branch", "-D", branch_name)
-    run_git("worktree", "add", "-b", branch_name, path, start_point)
+    try:
+        run_git("worktree", "add", "-b", branch_name, path, start_point)
+    except GitOperationError:
+        if prev_sha is not None:
+            run_git("branch", branch_name, prev_sha)
+        raise
 
 
 def remove_worktree(path: str) -> None:

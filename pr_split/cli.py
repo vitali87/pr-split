@@ -16,6 +16,7 @@ from rich.tree import Tree
 from . import logs
 from .config import Settings
 from .constants import (
+    BRANCH_PREFIX,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
@@ -155,10 +156,9 @@ def _create_single_branch_and_commit(
     *,
     author: str | None = None,
 ) -> BranchRecord:
-    from .constants import BRANCH_PREFIX
-
     branch_name = f"{BRANCH_PREFIX}{namespace}/{group.id}"
     worktree_path = str(worktree_base / group.id)
+    commit_sha: str = ""
 
     add_worktree(worktree_path, branch_name, merge_base_ref)
     try:
@@ -176,7 +176,10 @@ def _create_single_branch_and_commit(
             author=author,
         )
     finally:
-        remove_worktree(worktree_path)
+        try:
+            remove_worktree(worktree_path)
+        except Exception as exc:
+            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
 
     return BranchRecord(
         group_id=group.id,
@@ -195,8 +198,11 @@ def _create_branches_and_commits(
     *,
     author: str | None = None,
 ) -> list[BranchRecord]:
-    worktree_base = Path(".pr-split-worktrees")
-    worktree_base.mkdir(exist_ok=True)
+    import tempfile
+
+    from .git_ops.branches import run_git
+
+    worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
 
     try:
         with ThreadPoolExecutor(max_workers=_WORKTREE_MAX_WORKERS) as executor:
@@ -227,8 +233,11 @@ def _create_branches_and_commits(
             error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
             raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
     finally:
-        if worktree_base.exists():
-            shutil.rmtree(worktree_base, ignore_errors=True)
+        shutil.rmtree(worktree_base, ignore_errors=True)
+        try:
+            run_git("worktree", "prune")
+        except Exception:
+            pass
 
     return [results[g.id] for g in groups]
 
