@@ -185,7 +185,7 @@ def _create_single_branch_and_commit(
     finally:
         try:
             remove_worktree(worktree_path)
-        except Exception as exc:
+        except PRSplitError as exc:
             logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
 
     return BranchRecord(
@@ -236,7 +236,7 @@ def _create_branches_and_commits(
             for record in results.values():
                 try:
                     delete_branch(record.branch_name)
-                except Exception as exc:
+                except PRSplitError as exc:
                     logger.warning(f"Could not clean up branch {record.branch_name}: {exc}")
             error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
             raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
@@ -244,7 +244,7 @@ def _create_branches_and_commits(
         shutil.rmtree(worktree_base, ignore_errors=True)
         try:
             run_git("worktree", "prune")
-        except Exception as exc:
+        except PRSplitError as exc:
             logger.warning(f"Failed to prune worktrees: {exc}")
 
     return [results[g.id] for g in groups]
