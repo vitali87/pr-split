@@ -45,7 +45,7 @@ from .git_ops import (
     remove_worktree,
 )
 from .git_ops.branches import run_git
-from .git_ops.prs import close_pr, create_pr, get_pr_state
+from .git_ops.prs import close_pr, create_pr, get_pr_state, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_plan
@@ -555,3 +555,77 @@ def clean() -> None:
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
+
+
+@app.command(name="merge")
+def merge_all() -> None:
+    if not plan_exists():
+        console.print(ErrorMsg.NO_PLAN())
+        raise typer.Exit(0)
+
+    plan_file = load_plan()
+    plan = plan_file.plan
+    git_state = plan_file.git_state
+    pr_map = {r.group_id: r for r in git_state.prs}
+
+    if not pr_map:
+        console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
+        raise typer.Exit(0)
+
+    dag = PlanDAG(plan.groups)
+    merged: list[str] = []
+    skipped: list[str] = []
+    failed: list[str] = []
+
+    for batch in dag.iter_ready():
+        for group_id in batch:
+            pr_record = pr_map.get(group_id)
+            if not pr_record:
+                skipped.append(f"{group_id} (no PR)")
+                continue
+
+            live = get_pr_state(pr_record.pr_number)
+            state = (live.get("state") or "").upper()
+
+            if state == "MERGED":
+                logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
+                merged.append(group_id)
+                continue
+
+            if state != "OPEN":
+                logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is {state}, skipping")
+                skipped.append(f"{group_id} ({state})")
+                continue
+
+            review = live.get("reviewDecision") or ""
+            if review == "CHANGES_REQUESTED":
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({group_id}) has changes requested, skipping"
+                )
+                skipped.append(f"{group_id} (changes requested)")
+                continue
+
+            try:
+                merge_pr(pr_record.pr_number)
+                merged.append(group_id)
+            except PRSplitError as exc:
+                logger.error(f"Failed to merge PR #{pr_record.pr_number} ({group_id}): {exc}")
+                failed.append(group_id)
+                console.print(
+                    f"[red]Merge failed for {group_id}. "
+                    f"Stopping to avoid merging dependent PRs out of order.[/red]"
+                )
+                break
+        else:
+            continue
+        break
+
+    console.print()
+    if merged:
+        console.print(f"[green]Merged ({len(merged)}): {', '.join(merged)}[/green]")
+    if skipped:
+        console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
+    if failed:
+        console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if not failed:
+        logger.success(f"Merge complete: {len(merged)} PRs merged")

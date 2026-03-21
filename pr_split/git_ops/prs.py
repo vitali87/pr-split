@@ -63,6 +63,11 @@ def get_pr_state(pr_number: int) -> dict[str, str | None]:
         return {}
 
 
+def merge_pr(pr_number: int) -> None:
+    _run_gh("pr", "merge", str(pr_number), "--merge", "--delete-branch")
+    logger.info(f"Merged PR #{pr_number}")
+
+
 def close_pr(pr_number: int) -> None:
     _run_gh("pr", "close", str(pr_number))
     logger.info(logs.PR_CLOSED.format(number=pr_number))
