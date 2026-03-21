@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
@@ -557,6 +558,29 @@ def clean() -> None:
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
+_AUTO_MERGE_POLL_INTERVAL = 10
+_AUTO_MERGE_POLL_TIMEOUT = 600
+
+
+def _poll_for_merged(
+    group_ids: list[str], pr_map: dict[str, PRRecord]
+) -> None:
+    pending = set(group_ids)
+    deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
+    while pending and time.monotonic() < deadline:
+        time.sleep(_AUTO_MERGE_POLL_INTERVAL)
+        for gid in list(pending):
+            pr_record = pr_map[gid]
+            live = get_pr_state(pr_record.pr_number)
+            state = (live.get("state") or "").upper()
+            if state == "MERGED":
+                logger.info(f"PR #{pr_record.pr_number} ({gid}) merged")
+                pending.discard(gid)
+    if pending:
+        remaining = ", ".join(pending)
+        logger.warning(f"Timed out waiting for auto-merge: {remaining}")
+
+
 @app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged PRs. Stops when a PR can't be merged.")
 def merge_all(
     auto: Annotated[
@@ -577,11 +601,6 @@ def merge_all(
         raise typer.Exit(0)
 
     dag = PlanDAG(plan.groups)
-
-    if auto and any(dag.children(gid) for gid in pr_map):
-        console.print("[red]--auto cannot be used with stacked (dependent) PRs.[/red]")
-        raise typer.Exit(1)
-
     merged: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
@@ -629,12 +648,23 @@ def merge_all(
 
             try:
                 merge_pr(pr_record.pr_number, auto=auto)
-                merged.append(group_id)
+                if not auto:
+                    merged.append(group_id)
             except PRSplitError as exc:
                 logger.error(f"Failed to merge PR #{pr_record.pr_number} ({group_id}): {exc}")
                 failed.append(group_id)
                 stopped = True
                 break
+
+        if auto and not stopped:
+            queued = [
+                gid for gid in batch
+                if gid not in merged and gid not in [s.split(" ")[0] for s in skipped]
+            ]
+            if queued:
+                logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
+                _poll_for_merged(queued, pr_map)
+                merged.extend(queued)
 
         if stopped or any(gid not in merged for gid in batch):
             if not stopped:
