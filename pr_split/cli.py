@@ -578,6 +578,12 @@ def _poll_for_merged(
                 logger.info(f"PR #{pr_record.pr_number} ({gid}) merged")
                 actually_merged.add(gid)
                 pending.discard(gid)
+            elif state in ("CLOSED", ""):
+                reason = "closed" if state == "CLOSED" else "fetch error"
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({gid}) {reason} while polling, aborting wait"
+                )
+                pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
         logger.warning(f"Timed out waiting for auto-merge: {remaining}")
@@ -677,7 +683,7 @@ def merge_all(
                 actually_merged = _poll_for_merged(queued, pr_map)
                 merged.extend(actually_merged)
 
-        if stopped or any(gid not in merged for gid in batch):
+        if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
             if not stopped:
                 console.print(
                     "[yellow]Some PRs in this batch were not merged. "
