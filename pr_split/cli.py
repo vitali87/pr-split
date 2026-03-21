@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from threading import Semaphore
 from typing import Annotated
 
 import typer
@@ -177,35 +179,55 @@ def _create_branches_and_commits(
     return branch_records
 
 
-def _push_and_create_prs(
-    groups: list[Group],
-    branch_records: list[BranchRecord],
-) -> list[PRRecord]:
-    pr_records: list[PRRecord] = []
-    record_map = {r.group_id: r for r in branch_records}
+_GH_MAX_WORKERS = 5
+_gh_semaphore = Semaphore(_GH_MAX_WORKERS)
 
-    for group in groups:
-        record = record_map[group.id]
 
-        push_branch(record.branch_name)
-        logger.info(logs.CREATING_PR.format(group=group.id))
-        dag_md = _render_dag_markdown(groups, group.id)
-        body = f"{group.description}\n\n{dag_md}"
+def _push_and_create_single_pr(
+    group: Group,
+    record: BranchRecord,
+    all_groups: list[Group],
+) -> PRRecord:
+    push_branch(record.branch_name)
+    logger.info(logs.CREATING_PR.format(group=group.id))
+    dag_md = _render_dag_markdown(all_groups, group.id)
+    body = f"{group.description}\n\n{dag_md}"
+    with _gh_semaphore:
         pr_number, pr_url = create_pr(
             head=record.branch_name,
             base=record.base_branch,
             title=group.title,
             body=body,
         )
-        pr_records.append(
-            PRRecord(
-                group_id=group.id,
-                pr_number=pr_number,
-                pr_url=pr_url,
-            )
-        )
+    return PRRecord(
+        group_id=group.id,
+        pr_number=pr_number,
+        pr_url=pr_url,
+    )
 
-    return pr_records
+
+def _push_and_create_prs(
+    groups: list[Group],
+    branch_records: list[BranchRecord],
+) -> list[PRRecord]:
+    record_map = {r.group_id: r for r in branch_records}
+
+    with ThreadPoolExecutor(max_workers=_GH_MAX_WORKERS) as executor:
+        futures = {
+            executor.submit(
+                _push_and_create_single_pr,
+                group,
+                record_map[group.id],
+                groups,
+            ): group.id
+            for group in groups
+        }
+        results: dict[str, PRRecord] = {}
+        for future in as_completed(futures):
+            group_id = futures[future]
+            results[group_id] = future.result()
+
+    return [results[g.id] for g in groups]
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
