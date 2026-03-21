@@ -257,7 +257,7 @@ _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
-    sections = [group.description, ""]
+    sections = [group.description]
 
     files = [a.file_path for a in group.assignments]
     if files:
@@ -482,6 +482,18 @@ def status() -> None:
     branch_map = {r.group_id: r.branch_name for r in git_state.branches}
     pr_map = {r.group_id: r for r in git_state.prs}
 
+    live_states: dict[int, dict[str, str]] = {}
+    pr_numbers = [r.pr_number for r in git_state.prs]
+    if pr_numbers:
+        with ThreadPoolExecutor(max_workers=_GH_API_CONCURRENCY) as executor:
+            futures = {executor.submit(get_pr_state, n): n for n in pr_numbers}
+            for future in as_completed(futures):
+                pr_num = futures[future]
+                try:
+                    live_states[pr_num] = future.result()
+                except Exception:
+                    live_states[pr_num] = {}
+
     table = Table(title="PR Split Status")
     table.add_column("ID")
     table.add_column("Title")
@@ -497,9 +509,9 @@ def status() -> None:
         pr_state = ""
         review = ""
         if pr_record:
-            live = get_pr_state(pr_record.pr_number)
+            live = live_states.get(pr_record.pr_number, {})
             pr_state = live.get("state", pr_record.state.value).upper()
-            review = live.get("reviewDecision", "").replace("_", " ").title()
+            review = (live.get("reviewDecision") or "").replace("_", " ").title()
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)

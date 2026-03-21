@@ -55,7 +55,7 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
 def get_pr_state(pr_number: int) -> dict[str, str]:
     try:
         raw = _run_gh(
-            "pr", "view", str(pr_number), "--json", "state,mergeable,reviewDecision"
+            "pr", "view", str(pr_number), "--json", "state,reviewDecision"
         )
         return json.loads(raw)
     except (GitOperationError, json.JSONDecodeError):
