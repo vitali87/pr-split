@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -199,27 +200,23 @@ class TestPushAndCreatePrs:
         self, mock_push: MagicMock, mock_create: MagicMock
     ) -> None:
         """Verify that multiple groups are processed concurrently."""
-        import threading
-
-        # Barrier for 3 parties proves at least 3 threads run simultaneously
-        # (matches _GH_API_CONCURRENCY=3). Timeout prevents hanging if
-        # execution is actually sequential.
         barrier = threading.Barrier(3, timeout=5)
-        max_concurrent = {"value": 0}
         lock = threading.Lock()
-        active = {"count": 0}
+        max_concurrent_val = 0
+        active_count = 0
 
         def barrier_create(**kwargs) -> tuple[int, str]:
+            nonlocal max_concurrent_val, active_count
             with lock:
-                active["count"] += 1
-                if active["count"] > max_concurrent["value"]:
-                    max_concurrent["value"] = active["count"]
+                active_count += 1
+                if active_count > max_concurrent_val:
+                    max_concurrent_val = active_count
             try:
                 barrier.wait()
             except threading.BrokenBarrierError:
                 pass
             with lock:
-                active["count"] -= 1
+                active_count -= 1
             return (1, "https://github.com/pr/1")
 
         mock_create.side_effect = barrier_create
@@ -230,4 +227,4 @@ class TestPushAndCreatePrs:
 
         assert mock_push.call_count == 6
         assert mock_create.call_count == 6
-        assert max_concurrent["value"] >= 3
+        assert max_concurrent_val >= 3

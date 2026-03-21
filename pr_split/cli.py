@@ -231,8 +231,8 @@ def _push_and_create_prs(
                 errors.append((group_id, exc))
 
     if errors:
-        failed = [gid for gid, _ in errors]
-        raise PRSplitError(f"{len(errors)} PR(s) failed: {failed}")
+        error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
+        raise PRSplitError(f"{len(errors)} PR(s) failed:\n{error_details}")
 
     return [results[g.id] for g in groups]
 
