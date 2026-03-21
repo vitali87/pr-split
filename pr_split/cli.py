@@ -557,8 +557,12 @@ def clean() -> None:
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
-@app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged, closed, or changes-requested PRs. Stops on first failure.")
-def merge_all() -> None:
+@app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged PRs. Stops when a PR can't be merged.")
+def merge_all(
+    auto: Annotated[
+        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+    ] = False,
+) -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
@@ -577,6 +581,7 @@ def merge_all() -> None:
     skipped: list[str] = []
     failed: list[str] = []
 
+    stopped = False
     for batch in dag.iter_ready():
         for group_id in batch:
             pr_record = pr_map.get(group_id)
@@ -585,6 +590,13 @@ def merge_all() -> None:
                 continue
 
             live = get_pr_state(pr_record.pr_number)
+            if not live:
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
+                )
+                skipped.append(f"{group_id} (fetch error)")
+                continue
+
             state = (live.get("state") or "").upper()
 
             if state == "MERGED":
@@ -606,19 +618,26 @@ def merge_all() -> None:
                 continue
 
             try:
-                merge_pr(pr_record.pr_number)
+                merge_pr(pr_record.pr_number, auto=auto)
                 merged.append(group_id)
             except PRSplitError as exc:
                 logger.error(f"Failed to merge PR #{pr_record.pr_number} ({group_id}): {exc}")
                 failed.append(group_id)
+                stopped = True
+                break
+
+        if stopped or any(gid not in merged for gid in batch):
+            if not stopped:
                 console.print(
-                    f"[red]Merge failed for {group_id}. "
+                    "[yellow]Some PRs in this batch were not merged. "
+                    "Stopping to avoid merging dependent PRs out of order.[/yellow]"
+                )
+            else:
+                console.print(
+                    f"[red]Merge failed. "
                     f"Stopping to avoid merging dependent PRs out of order.[/red]"
                 )
-                break
-        else:
-            continue
-        break
+            break
 
     console.print()
     if merged:
