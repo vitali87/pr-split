@@ -36,13 +36,18 @@ def apply_hunks(base_content: str, patch_file: PatchedFile, assigned_indices: li
     return "".join(lines)
 
 
-def materialize_group_files(parsed_diff: ParsedDiff, group: Group, ref: str) -> dict[str, str]:
+def materialize_group_files(
+    parsed_diff: ParsedDiff, group: Group, ref: str
+) -> dict[str, str | None]:
     logger.info(logs.MATERIALIZING_FILES.format(count=len(group.assignments), group=group.id))
     pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
-    result: dict[str, str] = {}
+    result: dict[str, str | None] = {}
     for assignment in group.assignments:
         patch_file = pf_map.get(assignment.file_path)
         if patch_file is None:
+            continue
+        if patch_file.is_removed_file:
+            result[assignment.file_path] = None
             continue
         if patch_file.is_added_file:
             all_indices = list(range(len(patch_file)))

@@ -167,8 +167,11 @@ def _create_single_branch_and_commit(
         materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
         for file_path, content in materialized.items():
             p = Path(worktree_path) / file_path
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(content)
+            if content is not None:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_text(content)
+            elif p.exists():
+                p.unlink()
 
         logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
         commit_sha = commit_files_in_dir(
