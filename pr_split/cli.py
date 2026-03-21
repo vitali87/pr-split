@@ -361,6 +361,27 @@ def split(
 
     _validate_inputs(dev_branch, base, dry_run=dry_run)
 
+    if plan_exists():
+        existing = load_plan()
+        has_git_state = existing.git_state.branches or existing.git_state.prs
+        if has_git_state:
+            console.print(
+                "[yellow]An existing split plan with branches/PRs was found.[/yellow]"
+            )
+            console.print(
+                "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
+            )
+            if typer.confirm("Clean up and proceed with re-splitting?"):
+                closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
+                logger.success(
+                    logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs)
+                )
+            else:
+                console.print("[red]Aborting. Run 'pr-split clean' manually first.[/red]")
+                raise typer.Exit(1)
+        else:
+            logger.info("Overwriting existing dry-run plan")
+
     raw_diff = extract_diff(dev_branch, base)
     parsed_diff = parse_diff(raw_diff)
     stats = parsed_diff.stats
@@ -392,6 +413,8 @@ def split(
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    merge_base_ref = merge_base(base, dev_branch)
+
     split_plan = SplitPlan(
         dev_branch=dev_branch,
         base_branch=base,
@@ -399,6 +422,7 @@ def split(
         priority=priority,
         groups=groups,
         author=author,
+        merge_base_sha=merge_base_ref,
     )
 
     if dry_run:
@@ -409,7 +433,6 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
-    merge_base_ref = merge_base(base, dev_branch)
     branch_records = _create_branches_and_commits(
         groups, parsed_diff, base, merge_base_ref, namespace, author=author
     )
@@ -452,17 +475,7 @@ def status() -> None:
     console.print(table)
 
 
-@app.command()
-def clean() -> None:
-    if not plan_exists():
-        console.print(ErrorMsg.NO_PLAN())
-        raise typer.Exit(0)
-
-    plan_file = load_plan()
-    git_state = plan_file.git_state
-
-    typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
-
+def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
         try:
@@ -484,4 +497,19 @@ def clean() -> None:
     if plan_dir.exists():
         shutil.rmtree(plan_dir)
 
+    return closed_prs, deleted_branches
+
+
+@app.command()
+def clean() -> None:
+    if not plan_exists():
+        console.print(ErrorMsg.NO_PLAN())
+        raise typer.Exit(0)
+
+    plan_file = load_plan()
+    git_state = plan_file.git_state
+
+    typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
+
+    closed_prs, deleted_branches = _cleanup_git_state(git_state)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
