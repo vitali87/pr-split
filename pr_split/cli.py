@@ -483,7 +483,7 @@ def status() -> None:
     branch_map = {r.group_id: r.branch_name for r in git_state.branches}
     pr_map = {r.group_id: r for r in git_state.prs}
 
-    live_states: dict[int, dict[str, str | None]] = {}
+    live_states: dict[int, dict[str, str | bool | None]] = {}
     pr_numbers = [r.pr_number for r in git_state.prs]
     if pr_numbers:
         with ThreadPoolExecutor(max_workers=_GH_API_CONCURRENCY) as executor:
@@ -606,6 +606,7 @@ def merge_all(
     failed: list[str] = []
 
     stopped = False
+    exited_early = False
     for batch in dag.iter_ready():
         for group_id in batch:
             pr_record = pr_map.get(group_id)
@@ -639,11 +640,12 @@ def merge_all(
                 continue
 
             review = live.get("reviewDecision") or ""
-            if review == "CHANGES_REQUESTED":
+            if review in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+                label = review.lower().replace("_", " ")
                 logger.warning(
-                    f"PR #{pr_record.pr_number} ({group_id}) has changes requested, skipping"
+                    f"PR #{pr_record.pr_number} ({group_id}) review not approved ({label}), skipping"
                 )
-                skipped.append(f"{group_id} (changes requested)")
+                skipped.append(f"{group_id} ({label})")
                 continue
 
             try:
@@ -674,9 +676,10 @@ def merge_all(
                 )
             else:
                 console.print(
-                    f"[red]Merge failed. "
-                    f"Stopping to avoid merging dependent PRs out of order.[/red]"
+                    "[red]Merge failed. "
+                    "Stopping to avoid merging dependent PRs out of order.[/red]"
                 )
+            exited_early = True
             break
 
     console.print()
@@ -686,6 +689,6 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
-    if failed or stopped:
+    if failed or stopped or exited_early:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")

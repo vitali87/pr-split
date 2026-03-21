@@ -52,7 +52,7 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
     return pr_number, pr_url
 
 
-def get_pr_state(pr_number: int) -> dict[str, str | None]:
+def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
     try:
         raw = _run_gh(
             "pr", "view", str(pr_number), "--json", "state,reviewDecision,isDraft"
