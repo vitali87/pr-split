@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_split.cli import _render_dag, _render_dag_markdown, _resolve_fork_ref
-from pr_split.schemas import Group
+from pr_split.cli import (
+    _push_and_create_prs,
+    _render_dag,
+    _render_dag_markdown,
+    _resolve_fork_ref,
+)
+from pr_split.schemas import BranchRecord, Group, PRRecord
 
 
 def _group(gid: str, title: str, depends_on: list[str] | None = None) -> Group:
@@ -129,3 +135,96 @@ class TestResolveForkRefExtended:
         mock_fetch.return_value = {"pr_number": 7, "local_ref": "ref", "base_branch": "main", "author": "a", "fork_full_name": "u/r"}
         result = _resolve_fork_ref("7")
         mock_fetch.assert_called_once_with(7)
+
+
+def _branch_record(group_id: str, branch_name: str) -> BranchRecord:
+    return BranchRecord(
+        group_id=group_id,
+        branch_name=branch_name,
+        base_branch="main",
+        commit_sha="abc123",
+    )
+
+
+class TestPushAndCreatePrs:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    def test_returns_records_for_all_groups(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b")]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            _branch_record("pr-2", "pr-split/ns/pr-2"),
+        ]
+        result = _push_and_create_prs(groups, records)
+        assert len(result) == 2
+        assert result[0].group_id == "pr-1"
+        assert result[1].group_id == "pr-2"
+
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    def test_pushes_all_branches(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b")]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            _branch_record("pr-2", "pr-split/ns/pr-2"),
+        ]
+        _push_and_create_prs(groups, records)
+        pushed = {call.args[0] for call in mock_push.call_args_list}
+        assert pushed == {"pr-split/ns/pr-1", "pr-split/ns/pr-2"}
+
+    @patch("pr_split.cli.create_pr", return_value=(5, "https://github.com/pr/5"))
+    @patch("pr_split.cli.push_branch")
+    def test_preserves_group_order(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [
+            _group("pr-3", "c"),
+            _group("pr-1", "a"),
+            _group("pr-2", "b"),
+        ]
+        records = [
+            _branch_record("pr-3", "pr-split/ns/pr-3"),
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            _branch_record("pr-2", "pr-split/ns/pr-2"),
+        ]
+        result = _push_and_create_prs(groups, records)
+        assert [r.group_id for r in result] == ["pr-3", "pr-1", "pr-2"]
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_concurrent_execution(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        """Verify that multiple groups are processed concurrently."""
+        barrier = threading.Barrier(3, timeout=5)
+        lock = threading.Lock()
+        max_concurrent_val = 0
+        active_count = 0
+
+        def barrier_create(**kwargs) -> tuple[int, str]:
+            nonlocal max_concurrent_val, active_count
+            with lock:
+                active_count += 1
+                if active_count > max_concurrent_val:
+                    max_concurrent_val = active_count
+            try:
+                barrier.wait()
+            except threading.BrokenBarrierError:
+                pass
+            with lock:
+                active_count -= 1
+            return (1, "https://github.com/pr/1")
+
+        mock_create.side_effect = barrier_create
+
+        groups = [_group(f"pr-{i}", f"feat: {i}") for i in range(1, 7)]
+        records = [_branch_record(f"pr-{i}", f"pr-split/ns/pr-{i}") for i in range(1, 7)]
+        _push_and_create_prs(groups, records)
+
+        assert mock_push.call_count == 6
+        assert mock_create.call_count == 6
+        assert max_concurrent_val >= 3
