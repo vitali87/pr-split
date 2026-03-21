@@ -117,6 +117,8 @@ def remove_worktree(path: str) -> None:
 def commit_files_in_dir(
     cwd: str, file_paths: list[str], message: str, *, author: str | None = None
 ) -> str:
+    if not file_paths:
+        raise GitOperationError("commit_files_in_dir called with no file paths")
     run_git_in_dir(cwd, "add", "--", *file_paths)
     author_args = ("--author", author) if author else ()
     try:

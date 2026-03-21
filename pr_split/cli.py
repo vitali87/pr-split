@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Semaphore
@@ -42,6 +43,7 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
+from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
@@ -198,10 +200,6 @@ def _create_branches_and_commits(
     *,
     author: str | None = None,
 ) -> list[BranchRecord]:
-    import tempfile
-
-    from .git_ops.branches import run_git
-
     worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
 
     try:
@@ -230,14 +228,19 @@ def _create_branches_and_commits(
                     errors.append((group_id, exc))
 
         if errors:
+            for record in results.values():
+                try:
+                    delete_branch(record.branch_name)
+                except Exception as exc:
+                    logger.warning(f"Could not clean up branch {record.branch_name}: {exc}")
             error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
             raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
     finally:
         shutil.rmtree(worktree_base, ignore_errors=True)
         try:
             run_git("worktree", "prune")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(f"Failed to prune worktrees: {exc}")
 
     return [results[g.id] for g in groups]
 

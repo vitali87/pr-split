@@ -313,6 +313,10 @@ class TestCommitFilesInDir:
         commit_call = mock_git.call_args_list[1]
         assert "--author" in commit_call.args
 
+    def test_empty_file_paths_raises(self) -> None:
+        with pytest.raises(GitOperationError, match="no file paths"):
+            commit_files_in_dir("/tmp/wt", [], "msg")
+
     @patch("pr_split.git_ops.branches.run_git_in_dir")
     def test_commit_fallback_on_failure(self, mock_git: MagicMock) -> None:
         mock_git.side_effect = [
