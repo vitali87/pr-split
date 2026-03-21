@@ -52,15 +52,23 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
     return pr_number, pr_url
 
 
-def get_pr_state(pr_number: int) -> dict[str, str | None]:
+def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
     try:
         raw = _run_gh(
-            "pr", "view", str(pr_number), "--json", "state,reviewDecision"
+            "pr", "view", str(pr_number), "--json", "state,reviewDecision,isDraft"
         )
         return json.loads(raw)
     except (GitOperationError, json.JSONDecodeError) as exc:
         logger.debug(f"Failed to fetch live state for PR #{pr_number}: {exc}")
         return {}
+
+
+def merge_pr(pr_number: int, *, auto: bool = False) -> None:
+    args = ["pr", "merge", str(pr_number), "--merge", "--delete-branch"]
+    if auto:
+        args.append("--auto")
+    _run_gh(*args)
+    logger.info(f"{'Queued' if auto else 'Merged'} PR #{pr_number}")
 
 
 def close_pr(pr_number: int) -> None:

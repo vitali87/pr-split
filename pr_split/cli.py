@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
@@ -45,7 +46,7 @@ from .git_ops import (
     remove_worktree,
 )
 from .git_ops.branches import run_git
-from .git_ops.prs import close_pr, create_pr, get_pr_state
+from .git_ops.prs import close_pr, create_pr, get_pr_state, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_plan
@@ -343,7 +344,7 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
     return None
 
 
-@app.command()
+@app.command(help="Split a large PR into smaller dependency-ordered PRs.")
 def split(
     dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
@@ -469,7 +470,7 @@ def split(
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
-@app.command()
+@app.command(help="Show the current split plan with live PR state and review status.")
 def status() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -482,7 +483,7 @@ def status() -> None:
     branch_map = {r.group_id: r.branch_name for r in git_state.branches}
     pr_map = {r.group_id: r for r in git_state.prs}
 
-    live_states: dict[int, dict[str, str | None]] = {}
+    live_states: dict[int, dict[str, str | bool | None]] = {}
     pr_numbers = [r.pr_number for r in git_state.prs]
     if pr_numbers:
         with ThreadPoolExecutor(max_workers=_GH_API_CONCURRENCY) as executor:
@@ -542,7 +543,7 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     return closed_prs, deleted_branches
 
 
-@app.command()
+@app.command(help="Close all split PRs and delete their branches.")
 def clean() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -555,3 +556,154 @@ def clean() -> None:
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
+
+
+_AUTO_MERGE_POLL_INTERVAL = 10
+_AUTO_MERGE_POLL_TIMEOUT = 600
+
+
+def _poll_for_merged(
+    group_ids: list[str], pr_map: dict[str, PRRecord]
+) -> set[str]:
+    pending = set(group_ids)
+    actually_merged: set[str] = set()
+    deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
+    while pending and time.monotonic() < deadline:
+        time.sleep(_AUTO_MERGE_POLL_INTERVAL)
+        for gid in list(pending):
+            pr_record = pr_map[gid]
+            live = get_pr_state(pr_record.pr_number)
+            state = (live.get("state") or "").upper()
+            if state == "MERGED":
+                logger.info(f"PR #{pr_record.pr_number} ({gid}) merged")
+                actually_merged.add(gid)
+                pending.discard(gid)
+            elif state in ("CLOSED", ""):
+                reason = "closed" if state == "CLOSED" else "fetch error"
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({gid}) {reason} while polling, aborting wait"
+                )
+                pending.discard(gid)
+    if pending:
+        remaining = ", ".join(pending)
+        logger.warning(f"Timed out waiting for auto-merge: {remaining}")
+    return actually_merged
+
+
+@app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged PRs. Stops when a PR can't be merged.")
+def merge_all(
+    auto: Annotated[
+        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+    ] = False,
+) -> None:
+    if not plan_exists():
+        console.print(ErrorMsg.NO_PLAN())
+        raise typer.Exit(0)
+
+    plan_file = load_plan()
+    plan = plan_file.plan
+    git_state = plan_file.git_state
+    pr_map = {r.group_id: r for r in git_state.prs}
+
+    if not pr_map:
+        console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
+        raise typer.Exit(0)
+
+    dag = PlanDAG(plan.groups)
+    merged: list[str] = []
+    skipped: list[str] = []
+    skipped_ids: set[str] = set()
+    failed: list[str] = []
+
+    stopped = False
+    exited_early = False
+    for batch in dag.iter_ready():
+        for group_id in batch:
+            pr_record = pr_map.get(group_id)
+            if not pr_record:
+                skipped_ids.add(group_id)
+                skipped.append(f"{group_id} (no PR)")
+                continue
+
+            live = get_pr_state(pr_record.pr_number)
+            if not live:
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
+                )
+                skipped_ids.add(group_id)
+                skipped.append(f"{group_id} (fetch error)")
+                continue
+
+            state = (live.get("state") or "").upper()
+
+            if state == "MERGED":
+                logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
+                merged.append(group_id)
+                continue
+
+            if state != "OPEN":
+                logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is {state}, skipping")
+                skipped_ids.add(group_id)
+                skipped.append(f"{group_id} ({state})")
+                continue
+
+            if live.get("isDraft"):
+                logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is a draft, skipping")
+                skipped_ids.add(group_id)
+                skipped.append(f"{group_id} (draft)")
+                continue
+
+            review = live.get("reviewDecision") or ""
+            if review in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
+                label = review.lower().replace("_", " ")
+                logger.warning(
+                    f"PR #{pr_record.pr_number} ({group_id}) review not approved ({label}), skipping"
+                )
+                skipped_ids.add(group_id)
+                skipped.append(f"{group_id} ({label})")
+                continue
+
+            try:
+                merge_pr(pr_record.pr_number, auto=auto)
+                if not auto:
+                    merged.append(group_id)
+            except PRSplitError as exc:
+                logger.error(f"Failed to merge PR #{pr_record.pr_number} ({group_id}): {exc}")
+                failed.append(group_id)
+                stopped = True
+                break
+
+        if auto and not stopped:
+            queued = [
+                gid for gid in batch
+                if gid not in merged and gid not in skipped_ids
+            ]
+            if queued:
+                logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
+                actually_merged = _poll_for_merged(queued, pr_map)
+                merged.extend(actually_merged)
+
+        if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
+            if not stopped:
+                console.print(
+                    "[yellow]Some PRs in this batch were not merged. "
+                    "Stopping to avoid merging dependent PRs out of order.[/yellow]"
+                )
+            else:
+                console.print(
+                    "[red]Merge failed. "
+                    "Stopping to avoid merging dependent PRs out of order.[/red]"
+                )
+            exited_early = True
+            break
+
+    console.print()
+    if merged:
+        console.print(f"[green]Merged ({len(merged)}): {', '.join(merged)}[/green]")
+    if skipped:
+        console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
+    if failed:
+        console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if failed or stopped or exited_early:
+        raise typer.Exit(1)
+    logger.success(f"Merge complete: {len(merged)} PRs merged")
