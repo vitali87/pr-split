@@ -303,7 +303,7 @@ class TestCommitFilesInDir:
         mock_git.side_effect = ["", "", "abc123"]
         sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
         assert sha == "abc123"
-        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "--", "file.py")
+        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "-A", "--", "file.py")
 
     @patch("pr_split.git_ops.branches.run_git_in_dir")
     def test_commit_with_author(self, mock_git: MagicMock) -> None:
@@ -318,13 +318,8 @@ class TestCommitFilesInDir:
             commit_files_in_dir("/tmp/wt", [], "msg")
 
     @patch("pr_split.git_ops.branches.run_git_in_dir")
-    def test_commit_fallback_on_failure(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = [
-            "",
-            GitOperationError("nothing to commit"),
-            "",
-            "",
-            "def456",
-        ]
-        sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
-        assert sha == "def456"
+    def test_uses_git_add_all(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", "", "abc123"]
+        commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
+        add_call = mock_git.call_args_list[0]
+        assert add_call.args == ("/tmp/wt", "add", "-A", "--", "file.py")

@@ -119,11 +119,7 @@ def commit_files_in_dir(
 ) -> str:
     if not file_paths:
         raise GitOperationError("commit_files_in_dir called with no file paths")
-    run_git_in_dir(cwd, "add", "--", *file_paths)
+    run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
     author_args = ("--author", author) if author else ()
-    try:
-        run_git_in_dir(cwd, "commit", "-m", message, *author_args)
-    except GitOperationError:
-        run_git_in_dir(cwd, "add", "-u")
-        run_git_in_dir(cwd, "commit", "-m", message, *author_args)
+    run_git_in_dir(cwd, "commit", "-m", message, *author_args)
     return run_git_in_dir(cwd, "rev-parse", "HEAD")
