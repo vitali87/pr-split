@@ -343,7 +343,7 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
     return None
 
 
-@app.command()
+@app.command(help="Split a large PR into smaller dependency-ordered PRs.")
 def split(
     dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
@@ -469,7 +469,7 @@ def split(
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
-@app.command()
+@app.command(help="Show the current split plan with live PR state and review status.")
 def status() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -542,7 +542,7 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     return closed_prs, deleted_branches
 
 
-@app.command()
+@app.command(help="Close all split PRs and delete their branches.")
 def clean() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -557,7 +557,7 @@ def clean() -> None:
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
-@app.command(name="merge")
+@app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged, closed, or changes-requested PRs. Stops on first failure.")
 def merge_all() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
