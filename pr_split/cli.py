@@ -23,6 +23,7 @@ from .constants import (
     DEFAULT_MAX_LOC,
     DEFAULT_PARTITION_STRATEGY,
     PLAN_DIR,
+    PLAN_FILE,
     ChunkStrategy,
     PartitionStrategy,
     Priority,
@@ -402,7 +403,7 @@ def split(
 
     if dry_run:
         save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))
-        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_DIR}")
+        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_FILE}")
         return
 
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
