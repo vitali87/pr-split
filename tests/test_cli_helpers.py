@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pr_split.cli import (
     _push_and_create_prs,
-    _push_and_create_single_pr,
     _render_dag,
     _render_dag_markdown,
     _resolve_fork_ref,
@@ -200,14 +200,18 @@ class TestPushAndCreatePrs:
         self, mock_push: MagicMock, mock_create: MagicMock
     ) -> None:
         """Verify that multiple groups are processed (concurrent threads)."""
+        lock = threading.Lock()
         call_count = {"push": 0, "create": 0}
 
         def counting_push(branch: str) -> None:
-            call_count["push"] += 1
+            with lock:
+                call_count["push"] += 1
 
         def counting_create(**kwargs) -> tuple[int, str]:
-            call_count["create"] += 1
-            return (call_count["create"], f"https://github.com/pr/{call_count['create']}")
+            with lock:
+                call_count["create"] += 1
+                n = call_count["create"]
+            return (n, f"https://github.com/pr/{n}")
 
         mock_push.side_effect = counting_push
         mock_create.side_effect = counting_create

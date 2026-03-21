@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import itertools
 import shutil
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Semaphore
 from typing import Annotated
@@ -179,8 +180,9 @@ def _create_branches_and_commits(
     return branch_records
 
 
-_GH_MAX_WORKERS = 5
-_gh_semaphore = Semaphore(_GH_MAX_WORKERS)
+_PUSH_MAX_WORKERS = 10
+_GH_API_CONCURRENCY = 3
+_gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
 def _push_and_create_single_pr(
@@ -211,23 +213,17 @@ def _push_and_create_prs(
     branch_records: list[BranchRecord],
 ) -> list[PRRecord]:
     record_map = {r.group_id: r for r in branch_records}
+    records_in_order = [record_map[g.id] for g in groups]
 
-    with ThreadPoolExecutor(max_workers=_GH_MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(
-                _push_and_create_single_pr,
-                group,
-                record_map[group.id],
-                groups,
-            ): group.id
-            for group in groups
-        }
-        results: dict[str, PRRecord] = {}
-        for future in as_completed(futures):
-            group_id = futures[future]
-            results[group_id] = future.result()
+    with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
+        results = list(executor.map(
+            _push_and_create_single_pr,
+            groups,
+            records_in_order,
+            itertools.repeat(groups),
+        ))
 
-    return [results[g.id] for g in groups]
+    return results
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
