@@ -564,8 +564,9 @@ _AUTO_MERGE_POLL_TIMEOUT = 600
 
 def _poll_for_merged(
     group_ids: list[str], pr_map: dict[str, PRRecord]
-) -> None:
+) -> set[str]:
     pending = set(group_ids)
+    actually_merged: set[str] = set()
     deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
     while pending and time.monotonic() < deadline:
         time.sleep(_AUTO_MERGE_POLL_INTERVAL)
@@ -575,10 +576,12 @@ def _poll_for_merged(
             state = (live.get("state") or "").upper()
             if state == "MERGED":
                 logger.info(f"PR #{pr_record.pr_number} ({gid}) merged")
+                actually_merged.add(gid)
                 pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
         logger.warning(f"Timed out waiting for auto-merge: {remaining}")
+    return actually_merged
 
 
 @app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged PRs. Stops when a PR can't be merged.")
@@ -671,8 +674,8 @@ def merge_all(
             ]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
-                _poll_for_merged(queued, pr_map)
-                merged.extend(queued)
+                actually_merged = _poll_for_merged(queued, pr_map)
+                merged.extend(actually_merged)
 
         if stopped or any(gid not in merged for gid in batch):
             if not stopped:
