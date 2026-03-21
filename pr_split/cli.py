@@ -603,6 +603,7 @@ def merge_all(
     dag = PlanDAG(plan.groups)
     merged: list[str] = []
     skipped: list[str] = []
+    skipped_ids: set[str] = set()
     failed: list[str] = []
 
     stopped = False
@@ -611,6 +612,7 @@ def merge_all(
         for group_id in batch:
             pr_record = pr_map.get(group_id)
             if not pr_record:
+                skipped_ids.add(group_id)
                 skipped.append(f"{group_id} (no PR)")
                 continue
 
@@ -619,6 +621,7 @@ def merge_all(
                 logger.warning(
                     f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
                 )
+                skipped_ids.add(group_id)
                 skipped.append(f"{group_id} (fetch error)")
                 continue
 
@@ -631,11 +634,13 @@ def merge_all(
 
             if state != "OPEN":
                 logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is {state}, skipping")
+                skipped_ids.add(group_id)
                 skipped.append(f"{group_id} ({state})")
                 continue
 
             if live.get("isDraft"):
                 logger.warning(f"PR #{pr_record.pr_number} ({group_id}) is a draft, skipping")
+                skipped_ids.add(group_id)
                 skipped.append(f"{group_id} (draft)")
                 continue
 
@@ -645,6 +650,7 @@ def merge_all(
                 logger.warning(
                     f"PR #{pr_record.pr_number} ({group_id}) review not approved ({label}), skipping"
                 )
+                skipped_ids.add(group_id)
                 skipped.append(f"{group_id} ({label})")
                 continue
 
@@ -661,7 +667,7 @@ def merge_all(
         if auto and not stopped:
             queued = [
                 gid for gid in batch
-                if gid not in merged and gid not in [s.split(" ")[0] for s in skipped]
+                if gid not in merged and gid not in skipped_ids
             ]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
