@@ -52,13 +52,14 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
     return pr_number, pr_url
 
 
-def get_pr_state(pr_number: int) -> dict[str, str]:
+def get_pr_state(pr_number: int) -> dict[str, str | None]:
     try:
         raw = _run_gh(
             "pr", "view", str(pr_number), "--json", "state,reviewDecision"
         )
         return json.loads(raw)
-    except (GitOperationError, json.JSONDecodeError):
+    except (GitOperationError, json.JSONDecodeError) as exc:
+        logger.debug(f"Failed to fetch live state for PR #{pr_number}: {exc}")
         return {}
 
 

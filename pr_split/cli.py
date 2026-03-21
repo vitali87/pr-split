@@ -482,7 +482,7 @@ def status() -> None:
     branch_map = {r.group_id: r.branch_name for r in git_state.branches}
     pr_map = {r.group_id: r for r in git_state.prs}
 
-    live_states: dict[int, dict[str, str]] = {}
+    live_states: dict[int, dict[str, str | None]] = {}
     pr_numbers = [r.pr_number for r in git_state.prs]
     if pr_numbers:
         with ThreadPoolExecutor(max_workers=_GH_API_CONCURRENCY) as executor:
