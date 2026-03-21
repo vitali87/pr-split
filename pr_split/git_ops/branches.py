@@ -21,6 +21,18 @@ def run_git(*args: str) -> str:
     return result.stdout.strip()
 
 
+def run_git_in_dir(cwd: str, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd,
+    )
+    if result.returncode != 0:
+        raise GitOperationError(result.stderr.strip())
+    return result.stdout.strip()
+
+
 def branch_exists(branch: str) -> bool:
     try:
         run_git("rev-parse", "--verify", branch)
@@ -83,3 +95,31 @@ def create_group_branch(group_id: str, base: str, namespace: str) -> str:
         run_git("branch", "-D", branch_name)
     checkout_new_branch(branch_name, base)
     return branch_name
+
+
+def add_worktree(path: str, branch_name: str, start_point: str) -> None:
+    prev_sha: str | None = None
+    if branch_exists(branch_name):
+        prev_sha = run_git("rev-parse", branch_name)
+        run_git("branch", "-D", branch_name)
+    try:
+        run_git("worktree", "add", "-b", branch_name, path, start_point)
+    except GitOperationError:
+        if prev_sha is not None:
+            run_git("branch", branch_name, prev_sha)
+        raise
+
+
+def remove_worktree(path: str) -> None:
+    run_git("worktree", "remove", "--force", path)
+
+
+def commit_files_in_dir(
+    cwd: str, file_paths: list[str], message: str, *, author: str | None = None
+) -> str:
+    if not file_paths:
+        raise GitOperationError("commit_files_in_dir called with no file paths")
+    run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
+    author_args = ("--author", author) if author else ()
+    run_git_in_dir(cwd, "commit", "-m", message, *author_args)
+    return run_git_in_dir(cwd, "rev-parse", "HEAD")
