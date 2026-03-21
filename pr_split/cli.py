@@ -45,7 +45,7 @@ from .git_ops import (
     remove_worktree,
 )
 from .git_ops.branches import run_git
-from .git_ops.prs import close_pr, create_pr
+from .git_ops.prs import close_pr, create_pr, get_pr_state
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_plan
@@ -256,6 +256,31 @@ _GH_API_CONCURRENCY = 3
 _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
+def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
+    sections = [group.description, ""]
+
+    files = [a.file_path for a in group.assignments]
+    if files:
+        file_list = "\n".join(f"- `{f}`" for f in files)
+        sections.append(f"## Files changed\n\n{file_list}")
+
+    sections.append(
+        f"## Diff stats\n\n"
+        f"**+{group.estimated_added}** additions, "
+        f"**-{group.estimated_removed}** deletions "
+        f"({group.estimated_loc} LOC)"
+    )
+
+    deps = group.depends_on
+    if deps:
+        dep_list = ", ".join(f"`{d}`" for d in deps)
+        sections.append(f"## Dependencies\n\nThis PR depends on: {dep_list}")
+
+    sections.append(_render_dag_markdown(all_groups, group.id))
+
+    return "\n\n".join(sections)
+
+
 def _push_and_create_single_pr(
     group: Group,
     record: BranchRecord,
@@ -263,8 +288,7 @@ def _push_and_create_single_pr(
 ) -> PRRecord:
     push_branch(record.branch_name)
     logger.info(logs.CREATING_PR.format(group=group.id))
-    dag_md = _render_dag_markdown(all_groups, group.id)
-    body = f"{group.description}\n\n{dag_md}"
+    body = _build_pr_body(group, all_groups)
     with _gh_semaphore:
         pr_number, pr_url = create_pr(
             head=record.branch_name,
@@ -464,13 +488,19 @@ def status() -> None:
     table.add_column("Branch")
     table.add_column("PR")
     table.add_column("State")
+    table.add_column("Review")
 
     for group in plan.groups:
         branch_name = branch_map.get(group.id, "")
         pr_record = pr_map.get(group.id)
         pr_info = f"#{pr_record.pr_number}" if pr_record else ""
-        pr_state = pr_record.state.value if pr_record else ""
-        table.add_row(group.id, group.title, branch_name, pr_info, pr_state)
+        pr_state = ""
+        review = ""
+        if pr_record:
+            live = get_pr_state(pr_record.pr_number)
+            pr_state = live.get("state", pr_record.state.value).upper()
+            review = live.get("reviewDecision", "").replace("_", " ").title()
+        table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
 

@@ -52,6 +52,16 @@ def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
     return pr_number, pr_url
 
 
+def get_pr_state(pr_number: int) -> dict[str, str]:
+    try:
+        raw = _run_gh(
+            "pr", "view", str(pr_number), "--json", "state,mergeable,reviewDecision"
+        )
+        return json.loads(raw)
+    except (GitOperationError, json.JSONDecodeError):
+        return {}
+
+
 def close_pr(pr_number: int) -> None:
     _run_gh("pr", "close", str(pr_number))
     logger.info(logs.PR_CLOSED.format(number=pr_number))
