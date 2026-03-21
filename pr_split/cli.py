@@ -23,6 +23,7 @@ from .constants import (
     DEFAULT_MAX_LOC,
     DEFAULT_PARTITION_STRATEGY,
     PLAN_DIR,
+    PLAN_FILE,
     ChunkStrategy,
     PartitionStrategy,
     Priority,
@@ -105,7 +106,7 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
-def _validate_inputs(dev_branch: str, base: str) -> None:
+def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
         raise typer.Exit(1)
@@ -115,7 +116,7 @@ def _validate_inputs(dev_branch: str, base: str) -> None:
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
-    if not check_gh_auth():
+    if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
 
@@ -335,6 +336,9 @@ def split(
     cp_sat_timeout: Annotated[
         float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Preview plan without creating branches or PRs")
+    ] = False,
 ) -> None:
     dev_branch_arg = dev_branch
     author: str | None = None
@@ -355,7 +359,7 @@ def split(
         base = fork_info["base_branch"]
         author = fork_info["author"]
 
-    _validate_inputs(dev_branch, base)
+    _validate_inputs(dev_branch, base, dry_run=dry_run)
 
     raw_diff = extract_diff(dev_branch, base)
     parsed_diff = parse_diff(raw_diff)
@@ -388,6 +392,20 @@ def split(
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    split_plan = SplitPlan(
+        dev_branch=dev_branch,
+        base_branch=base,
+        max_loc=max_loc,
+        priority=priority,
+        groups=groups,
+        author=author,
+    )
+
+    if dry_run:
+        save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))
+        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_FILE}")
+        return
+
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
@@ -397,21 +415,10 @@ def split(
     )
     pr_records = _push_and_create_prs(groups, branch_records)
 
-    plan_file = PlanFile(
-        plan=SplitPlan(
-            dev_branch=dev_branch,
-            base_branch=base,
-            max_loc=max_loc,
-            priority=priority,
-            groups=groups,
-            author=author,
-        ),
-        git_state=GitState(
-            branches=branch_records,
-            prs=pr_records,
-        ),
-    )
-    save_plan(plan_file)
+    save_plan(PlanFile(
+        plan=split_plan,
+        git_state=GitState(branches=branch_records, prs=pr_records),
+    ))
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
