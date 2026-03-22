@@ -10,6 +10,9 @@
 
 <p align="center">
   <a href="https://github.com/vitali87/pr-split/blob/main/LICENSE"><img src="https://img.shields.io/github/license/vitali87/pr-split" alt="License"></a>
+  <a href="https://gitcgr.com/vitali87/pr-split">
+    <img src="https://gitcgr.com/badge/vitali87/pr-split.svg" alt="gitcgr" />
+  </a>
 </p>
 
 ## Why pr-split?
