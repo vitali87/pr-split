@@ -61,6 +61,12 @@ pr-split split '#42' --base main
 pr-split split someuser:feature-branch --base main
 ```
 
+### Preview a split plan without creating PRs
+
+```bash
+pr-split split feature-branch --base main --dry-run
+```
+
 ### Options
 
 | Flag | Default | Description |
@@ -70,16 +76,41 @@ pr-split split someuser:feature-branch --base main
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
 
-### Other commands
+### Check status of an existing split
 
 ```bash
-# Show status of an existing split
 pr-split status
+```
 
-# Clean up all pr-split branches and close PRs
+Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub.
+
+### Merge split PRs in dependency order
+
+```bash
+pr-split merge
+```
+
+Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, or changes-requested PRs. Stops if a merge fails or a dependency wasn't merged to prevent out-of-order merges.
+
+Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
+
+```bash
+pr-split merge --auto
+```
+
+### Re-split with different parameters
+
+Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten.
+
+### Clean up
+
+```bash
 pr-split clean
 ```
+
+Closes all split PRs and deletes their branches (local and remote).
 
 ## Configuration
 
@@ -110,11 +141,12 @@ For a deeper explanation of the planning model, optimization methods, scoring, a
 ## What it does
 
 1. Extracts the merge-base diff between your branch and the base (same view as GitHub's PR page)
-2. Sends the diff to the configured LLM, which groups hunks into logical sub-PRs with dependency ordering
+2. Sends the diff to the configured backend (LLM, graph, or CP-SAT), which groups hunks into logical sub-PRs with dependency ordering
 3. Validates the plan: full coverage (every hunk assigned exactly once), no cycles, no merge conflicts between independent groups
 4. Shows you the plan (table + dependency tree) and asks for confirmation
-5. Creates branches, commits, pushes, and opens GitHub PRs in topological order
+5. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees
 6. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
+7. Track progress with `status`, merge in order with `merge`, or clean up with `clean`
 
 ## License
 
