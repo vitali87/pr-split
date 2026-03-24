@@ -19,13 +19,13 @@ from . import logs
 from .config import Settings
 from .constants import (
     BRANCH_PREFIX,
-    AssignmentType,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
     DEFAULT_PARTITION_STRATEGY,
     PLAN_DIR,
     PLAN_FILE,
+    AssignmentType,
     ChunkStrategy,
     PartitionStrategy,
     Priority,
@@ -340,7 +340,12 @@ def _push_and_create_prs(
 
 
 def _move_assignment(
-    groups: list[Group], file_path: str, hunk_index: int, from_id: str, to_id: str
+    groups: list[Group],
+    parsed_diff: ParsedDiff,
+    file_path: str,
+    hunk_index: int,
+    from_id: str,
+    to_id: str,
 ) -> bool:
     group_map = {g.id: g for g in groups}
     src = group_map.get(from_id)
@@ -349,9 +354,20 @@ def _move_assignment(
         console.print(f"[red]Group '{from_id}' or '{to_id}' not found.[/red]")
         return False
 
+    pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
+
     found = False
     for assignment in src.assignments:
-        if assignment.file_path == file_path and hunk_index in assignment.hunk_indices:
+        if assignment.file_path != file_path:
+            continue
+        # For WHOLE_FILE, expand to explicit hunk indices first
+        if assignment.assignment_type == AssignmentType.WHOLE_FILE:
+            pf = pf_map.get(file_path)
+            if pf is None:
+                continue
+            assignment.hunk_indices = list(range(len(pf)))
+            assignment.assignment_type = AssignmentType.PARTIAL_HUNKS
+        if hunk_index in assignment.hunk_indices:
             assignment.hunk_indices.remove(hunk_index)
             if not assignment.hunk_indices:
                 src.assignments.remove(assignment)
@@ -390,14 +406,17 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     console.print(f"\n[bold]{group.id}[/bold]: {group.title}")
     console.print(f"  Description: {group.description}")
     console.print(f"  Depends on: {', '.join(group.depends_on) or 'none'}")
-    console.print(f"  Estimated: +{group.estimated_added}/-{group.estimated_removed} ({group.estimated_loc} LOC)")
+    console.print(
+        f"  Estimated: +{group.estimated_added}/-{group.estimated_removed}"
+        f" ({group.estimated_loc} LOC)"
+    )
     for a in group.assignments:
         indices = ", ".join(str(i) for i in a.hunk_indices)
         console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{indices}]")
     console.print()
 
 
-def _interactive_edit(groups: list[Group]) -> list[Group]:
+def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
         "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
@@ -409,8 +428,8 @@ def _interactive_edit(groups: list[Group]) -> list[Group]:
     while True:
         try:
             cmd = typer.prompt("edit", default="done")
-        except (KeyboardInterrupt, EOFError):
-            raise typer.Abort()
+        except (KeyboardInterrupt, EOFError) as exc:
+            raise typer.Abort() from exc
 
         parts = cmd.strip().split()
         if not parts:
@@ -424,12 +443,24 @@ def _interactive_edit(groups: list[Group]) -> list[Group]:
             raise typer.Abort()
         elif action == "plan":
             _present_plan(groups)
-        elif action == "show" and len(parts) == 2:
-            _show_group_detail(groups, parts[1])
-        elif action == "move" and len(parts) == 4:
+        elif action == "show":
+            if len(parts) == 2:
+                _show_group_detail(groups, parts[1])
+            else:
+                console.print("[red]Usage: show <group_id>[/red]")
+        elif action == "move":
+            if len(parts) != 4:
+                console.print(
+                    "[red]Usage: move <file>:<hunk_index>"
+                    " <from_group> <to_group>[/red]"
+                )
+                continue
             ref, from_id, to_id = parts[1], parts[2], parts[3]
             if ":" not in ref:
-                console.print("[red]Usage: move <file>:<hunk_index> <from> <to>[/red]")
+                console.print(
+                    "[red]Usage: move <file>:<hunk_index>"
+                    " <from_group> <to_group>[/red]"
+                )
                 continue
             file_path, hunk_str = ref.rsplit(":", 1)
             try:
@@ -437,9 +468,14 @@ def _interactive_edit(groups: list[Group]) -> list[Group]:
             except ValueError:
                 console.print("[red]Hunk index must be an integer.[/red]")
                 continue
-            _move_assignment(groups, file_path, hunk_index, from_id, to_id)
+            _move_assignment(
+                groups, parsed_diff, file_path, hunk_index, from_id, to_id
+            )
         else:
-            console.print("[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]")
+            console.print(
+                "[yellow]Unknown command."
+                " Type 'done' to proceed or 'abort' to cancel.[/yellow]"
+            )
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
@@ -546,7 +582,7 @@ def split(
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
-    groups = _interactive_edit(groups)
+    groups = _interactive_edit(groups, parsed_diff)
 
     merge_base_ref = merge_base(base, dev_branch)
 
