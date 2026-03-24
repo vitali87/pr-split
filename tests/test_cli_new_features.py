@@ -5,6 +5,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_split.cli import _build_pr_body, _cleanup_git_state
+from pr_split.constants import AssignmentType
+from pr_split.exceptions import GitOperationError, PRSplitError
+from pr_split.git_ops.prs import get_pr_state, merge_pr
 from pr_split.schemas import (
     BranchRecord,
     GitState,
@@ -12,7 +15,6 @@ from pr_split.schemas import (
     GroupAssignment,
     PRRecord,
 )
-from pr_split.constants import AssignmentType
 
 
 def _group(
@@ -111,6 +113,10 @@ class TestCleanupGitState:
         closed, deleted = _cleanup_git_state(git_state)
         assert closed == 2
         assert deleted == 2
+        mock_close.assert_any_call(10)
+        mock_close.assert_any_call(11)
+        mock_delete.assert_any_call("pr-split/ns/pr-1", remote=True)
+        mock_delete.assert_any_call("pr-split/ns/pr-2", remote=True)
 
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.Path")
@@ -123,8 +129,6 @@ class TestCleanupGitState:
         mock_path: MagicMock,
         mock_rmtree: MagicMock,
     ) -> None:
-        from pr_split.exceptions import PRSplitError
-
         mock_path.return_value.exists.return_value = True
         mock_close.side_effect = [None, PRSplitError("fail")]
         mock_delete.side_effect = [PRSplitError("fail"), None]
@@ -146,8 +150,6 @@ class TestCleanupGitState:
 class TestGetPrState:
     @patch("pr_split.git_ops.prs._run_gh")
     def test_returns_parsed_state(self, mock_gh: MagicMock) -> None:
-        from pr_split.git_ops.prs import get_pr_state
-
         mock_gh.return_value = '{"state": "OPEN", "reviewDecision": null, "isDraft": false}'
         result = get_pr_state(42)
         assert result["state"] == "OPEN"
@@ -156,9 +158,6 @@ class TestGetPrState:
 
     @patch("pr_split.git_ops.prs._run_gh")
     def test_returns_empty_on_error(self, mock_gh: MagicMock) -> None:
-        from pr_split.exceptions import GitOperationError
-        from pr_split.git_ops.prs import get_pr_state
-
         mock_gh.side_effect = GitOperationError("not found")
         result = get_pr_state(999)
         assert result == {}
@@ -167,19 +166,18 @@ class TestGetPrState:
 class TestMergePr:
     @patch("pr_split.git_ops.prs._run_gh")
     def test_merge_without_auto(self, mock_gh: MagicMock) -> None:
-        from pr_split.git_ops.prs import merge_pr
-
         mock_gh.return_value = ""
         merge_pr(42)
         args = mock_gh.call_args[0]
         assert "--auto" not in args
         assert "--merge" in args
+        assert "--delete-branch" in args
 
     @patch("pr_split.git_ops.prs._run_gh")
     def test_merge_with_auto(self, mock_gh: MagicMock) -> None:
-        from pr_split.git_ops.prs import merge_pr
-
         mock_gh.return_value = ""
         merge_pr(42, auto=True)
         args = mock_gh.call_args[0]
         assert "--auto" in args
+        assert "--merge" in args
+        assert "--delete-branch" in args
