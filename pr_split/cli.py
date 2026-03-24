@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json as json_mod
 import shutil
 import tempfile
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
@@ -666,6 +668,19 @@ def _poll_for_merged(
     return actually_merged
 
 
+def _send_webhook(url: str, payload: dict[str, object]) -> None:
+    try:
+        data = json_mod.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=data, headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        logger.info(f"Webhook notification sent to {url}")
+    except Exception as exc:
+        logger.warning(f"Failed to send webhook notification: {exc}")
+
+
 @app.command(
     name="merge",
     help="Merge all split PRs in dependency order. Skips already-merged PRs.",
@@ -674,6 +689,14 @@ def merge_all(
     auto: Annotated[
         bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
     ] = False,
+    notify: Annotated[
+        str | None,
+        typer.Option(
+            "--notify",
+            help="Webhook URL to POST merge results to",
+            envvar="PR_SPLIT_WEBHOOK_URL",
+        ),
+    ] = None,
 ) -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -784,6 +807,25 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if notify:
+        exit_reason = (
+            "merge_error" if stopped
+            else "incomplete_batch" if exited_early
+            else "success"
+        )
+        skipped_structured = [
+            {"id": s.split(" (")[0], "reason": s}
+            for s in skipped
+        ]
+        _send_webhook(notify, {
+            "event": "merge_complete",
+            "merged": merged,
+            "skipped": skipped_structured,
+            "failed": failed,
+            "success": not (failed or stopped or exited_early),
+            "exit_reason": exit_reason,
+        })
+
     if failed or stopped or exited_early:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
