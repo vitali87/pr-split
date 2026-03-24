@@ -100,6 +100,51 @@ Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 pr-split merge --auto
 ```
 
+Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
+
+```bash
+pr-split merge --notify https://hooks.slack.com/...
+```
+
+### Execute a saved dry-run plan
+
+```bash
+pr-split execute
+```
+
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run.
+
+### Interactive plan editing
+
+After the plan is displayed, an interactive editor lets you adjust the plan before confirming:
+
+```
+edit> show pr-1          # inspect a group's assignments
+edit> move src/foo.py:2 pr-1 pr-2   # move a hunk between groups
+edit> plan               # redisplay the plan table
+edit> done               # proceed (default — just press Enter)
+edit> abort              # cancel
+```
+
+The plan is re-validated after editing to catch empty groups or coverage gaps.
+
+### Custom PR body templates
+
+Create `.pr-split/template.md` to customize the body of each generated PR using placeholders:
+
+```markdown
+{description}
+
+### Files
+{files}
+
+**Stats:** +{added}/-{removed} ({loc} lines)
+
+{dag}
+```
+
+Available placeholders: `{description}`, `{files}`, `{added}`, `{removed}`, `{loc}`, `{dependencies}`, `{dag}`, `{id}`, `{title}`.
+
 ### Re-split with different parameters
 
 Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten.
@@ -110,7 +155,7 @@ Running `split` again when a plan already exists will prompt you to clean up exi
 pr-split clean
 ```
 
-Closes all split PRs, deletes their branches (local and remote), and removes the `.pr-split` directory.
+Closes all split PRs, deletes their branches (local and remote), and removes the plan file.
 
 ## Configuration
 
@@ -126,6 +171,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
 ## Planning backends
 
@@ -143,8 +189,8 @@ For a deeper explanation of the planning model, optimization methods, scoring, a
 1. Extracts the merge-base diff between your branch and the base (same view as GitHub's PR page)
 2. Sends the diff to the configured backend (LLM, graph, or CP-SAT), which groups hunks into logical sub-PRs with dependency ordering
 3. Validates the plan: full coverage (every hunk assigned exactly once), no cycles, no merge conflicts between independent groups
-4. Shows you the plan (table + dependency tree) and asks for confirmation
-5. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees
+4. Shows you the plan (table + dependency tree) with an optional interactive editor to move hunks between groups
+5. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees. Use `--dry-run` to save the plan for later execution with `execute`
 6. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
 7. `status`, `merge`, and `clean` commands are available to track progress, merge PRs in dependency order, or clean up branches and PRs
 
