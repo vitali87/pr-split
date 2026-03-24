@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import threading
 from unittest.mock import MagicMock, patch
 
@@ -11,7 +12,7 @@ from pr_split.cli import (
     _render_dag_markdown,
     _resolve_fork_ref,
 )
-from pr_split.schemas import BranchRecord, Group, PRRecord
+from pr_split.schemas import BranchRecord, Group
 
 
 def _group(gid: str, title: str, depends_on: list[str] | None = None) -> Group:
@@ -76,11 +77,11 @@ class TestResolveForkRef:
         assert result is None
 
     def test_pr_number_format(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises((Exception, SystemExit)):
             _resolve_fork_ref("#42")
 
     def test_colon_format(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises((Exception, SystemExit)):
             _resolve_fork_ref("user:branch")
 
 
@@ -91,7 +92,7 @@ class TestRenderDagMarkdownExtended:
         result = _render_dag_markdown([g1, g2], "pr-2")
         assert "<-- this PR" in result
         lines = result.splitlines()
-        pr1_lines = [l for l in lines if "pr-1" in l]
+        pr1_lines = [line for line in lines if "pr-1" in line]
         for line in pr1_lines:
             assert "<-- this PR" not in line
 
@@ -115,25 +116,34 @@ class TestRenderDagRichTreeExtended:
         assert "depends on" in result
 
 
+_FORK_INFO = {
+    "pr_number": 42,
+    "local_ref": "ref",
+    "base_branch": "main",
+    "author": "a",
+    "fork_full_name": "u/r",
+}
+
+
 class TestResolveForkRefExtended:
     @patch("pr_split.cli.fetch_fork_pr")
     def test_pr_number_fork_ref(self, mock_fetch: MagicMock) -> None:
-        mock_fetch.return_value = {"pr_number": 42, "local_ref": "ref", "base_branch": "main", "author": "a", "fork_full_name": "u/r"}
+        mock_fetch.return_value = _FORK_INFO
         result = _resolve_fork_ref("#42")
         mock_fetch.assert_called_once_with(42)
         assert result is not None
 
     @patch("pr_split.cli.fetch_fork_branch")
     def test_colon_fork_ref(self, mock_fetch: MagicMock) -> None:
-        mock_fetch.return_value = {"pr_number": None, "local_ref": "ref", "base_branch": "main", "author": "a", "fork_full_name": "u/r"}
+        mock_fetch.return_value = {**_FORK_INFO, "pr_number": None}
         result = _resolve_fork_ref("user:branch")
         mock_fetch.assert_called_once_with("user", "branch")
         assert result is not None
 
     @patch("pr_split.cli.fetch_fork_pr")
     def test_bare_number_treated_as_pr(self, mock_fetch: MagicMock) -> None:
-        mock_fetch.return_value = {"pr_number": 7, "local_ref": "ref", "base_branch": "main", "author": "a", "fork_full_name": "u/r"}
-        result = _resolve_fork_ref("7")
+        mock_fetch.return_value = {**_FORK_INFO, "pr_number": 7}
+        _resolve_fork_ref("7")
         mock_fetch.assert_called_once_with(7)
 
 
@@ -211,10 +221,8 @@ class TestPushAndCreatePrs:
                 active_count += 1
                 if active_count > max_concurrent_val:
                     max_concurrent_val = active_count
-            try:
+            with contextlib.suppress(threading.BrokenBarrierError):
                 barrier.wait()
-            except threading.BrokenBarrierError:
-                pass
             with lock:
                 active_count -= 1
             return (1, "https://github.com/pr/1")

@@ -81,7 +81,7 @@ class TestCreatePrUrlParsingExtended:
     @patch("pr_split.git_ops.prs._run_gh")
     def test_extracts_number_from_url_with_trailing_slash(self, mock_gh: MagicMock) -> None:
         mock_gh.return_value = "https://github.com/org/repo/pull/99/"
-        number, url = create_pr("head", "base", "Title", "Body")
+        number, _url = create_pr("head", "base", "Title", "Body")
         assert number == 99
 
     @patch("pr_split.git_ops.prs._run_gh")

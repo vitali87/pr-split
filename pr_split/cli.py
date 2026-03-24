@@ -60,7 +60,10 @@ from .schemas import (
 )
 from .types_defs import ForkPRInfo
 
-app = typer.Typer(name="pr-split", help="Decompose large PRs into reviewable dependency-ordered PRs")
+app = typer.Typer(
+    name="pr-split",
+    help="Decompose large PRs into reviewable dependency-ordered PRs",
+)
 console = Console()
 
 
@@ -590,7 +593,10 @@ def _poll_for_merged(
     return actually_merged
 
 
-@app.command(name="merge", help="Merge all split PRs in dependency order. Skips already-merged PRs. Stops when a PR can't be merged.")
+@app.command(
+    name="merge",
+    help="Merge all split PRs in dependency order. Skips already-merged PRs.",
+)
 def merge_all(
     auto: Annotated[
         bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
@@ -657,7 +663,8 @@ def merge_all(
             if review in ("CHANGES_REQUESTED", "REVIEW_REQUIRED"):
                 label = review.lower().replace("_", " ")
                 logger.warning(
-                    f"PR #{pr_record.pr_number} ({group_id}) review not approved ({label}), skipping"
+                    f"PR #{pr_record.pr_number} ({group_id}) "
+                    f"review not approved ({label}), skipping"
                 )
                 skipped_ids.add(group_id)
                 skipped.append(f"{group_id} ({label})")

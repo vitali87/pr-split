@@ -142,7 +142,7 @@ class TestExtractRawOutputEdgeCases:
         assert result == []
 
     def test_error_message_includes_available_keys(self) -> None:
-        with pytest.raises(LLMError, match="alpha.*beta|beta.*alpha"):
+        with pytest.raises(LLMError, match=r"alpha.*beta|beta.*alpha"):
             _extract_raw_output({"alpha": 1, "beta": 2})
 
 

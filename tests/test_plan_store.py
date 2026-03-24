@@ -81,7 +81,9 @@ class TestPlanStore:
 
 
 class TestPlanStoreJson:
-    def test_saved_file_is_valid_json(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_saved_file_is_valid_json(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.chdir(tmp_path)
         plan_file = PlanFile(
             plan=SplitPlan(
