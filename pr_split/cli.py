@@ -808,12 +808,22 @@ def merge_all(
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
     if notify:
+        exit_reason = (
+            "merge_error" if stopped
+            else "incomplete_batch" if exited_early
+            else "success"
+        )
+        skipped_structured = [
+            {"id": s.split(" (")[0], "reason": s}
+            for s in skipped
+        ]
         _send_webhook(notify, {
             "event": "merge_complete",
             "merged": merged,
-            "skipped": skipped,
+            "skipped": skipped_structured,
             "failed": failed,
             "success": not (failed or stopped or exited_early),
+            "exit_reason": exit_reason,
         })
 
     if failed or stopped or exited_early:
