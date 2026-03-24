@@ -451,6 +451,8 @@ def split(
         groups=groups,
         author=author,
         merge_base_sha=merge_base_ref,
+        dev_branch_arg=dev_branch_arg,
+        raw_diff=raw_diff,
     )
 
     if dry_run:
@@ -561,7 +563,9 @@ def clean() -> None:
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
-@app.command(help="Execute a previously saved dry-run plan, creating branches and PRs.")
+@app.command(
+    help="Execute a previously saved dry-run plan, creating branches and PRs.",
+)
 def execute() -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -571,23 +575,43 @@ def execute() -> None:
     plan = plan_file.plan
 
     if plan_file.git_state.branches or plan_file.git_state.prs:
-        console.print("[red]This plan already has branches/PRs. Use 'pr-split clean' first.[/red]")
+        console.print(
+            "[red]This plan already has branches/PRs."
+            " Use 'pr-split clean' first.[/red]"
+        )
         raise typer.Exit(1)
 
-    if not check_gh_auth():
-        console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
+    if not plan.raw_diff:
+        console.print(
+            "[red]Plan is missing saved diff data."
+            " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
         raise typer.Exit(1)
+
+    if not plan.merge_base_sha:
+        console.print(
+            "[red]Plan is missing merge base SHA."
+            " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
+        raise typer.Exit(1)
+
+    _validate_inputs(plan.dev_branch, plan.base_branch)
+
+    parsed_diff = parse_diff(plan.raw_diff)
 
     _present_plan(plan.groups)
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
-    raw_diff = extract_diff(plan.dev_branch, plan.base_branch)
-    parsed_diff = parse_diff(raw_diff)
-
-    merge_base_ref = plan.merge_base_sha or merge_base(plan.base_branch, plan.dev_branch)
-    namespace = derive_split_namespace(plan.dev_branch)
+    namespace = derive_split_namespace(
+        plan.dev_branch_arg or plan.dev_branch
+    )
     branch_records = _create_branches_and_commits(
-        plan.groups, parsed_diff, plan.base_branch, merge_base_ref, namespace, author=plan.author
+        plan.groups,
+        parsed_diff,
+        plan.base_branch,
+        plan.merge_base_sha,
+        namespace,
+        author=plan.author,
     )
     pr_records = _push_and_create_prs(plan.groups, branch_records)
 
@@ -595,7 +619,9 @@ def execute() -> None:
         plan=plan,
         git_state=GitState(branches=branch_records, prs=pr_records),
     ))
-    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
+    logger.success(
+        f"Execute complete: {len(plan.groups)} PRs created from saved plan"
+    )
 
 
 _AUTO_MERGE_POLL_INTERVAL = 10

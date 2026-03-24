@@ -43,6 +43,8 @@ class SplitPlan(BaseModel):
     groups: list[Group] = Field(default_factory=list)
     author: str | None = None
     merge_base_sha: str | None = None
+    dev_branch_arg: str | None = None
+    raw_diff: str | None = None
 
 
 class BranchRecord(BaseModel):
