@@ -382,8 +382,14 @@ def _move_assignment(
         (a for a in dst.assignments if a.file_path == file_path), None
     )
     if dst_assignment:
-        dst_assignment.hunk_indices.append(hunk_index)
-        dst_assignment.hunk_indices.sort()
+        if dst_assignment.assignment_type == AssignmentType.WHOLE_FILE:
+            pf = pf_map.get(file_path)
+            if pf is not None:
+                dst_assignment.hunk_indices = list(range(len(pf)))
+                dst_assignment.assignment_type = AssignmentType.PARTIAL_HUNKS
+        if hunk_index not in dst_assignment.hunk_indices:
+            dst_assignment.hunk_indices.append(hunk_index)
+            dst_assignment.hunk_indices.sort()
     else:
         dst.assignments.append(
             GroupAssignment(
@@ -583,6 +589,19 @@ def split(
     _present_plan(groups)
 
     groups = _interactive_edit(groups, parsed_diff)
+
+    # Re-validate after user edits
+    empty_groups = [g for g in groups if not g.assignments]
+    if empty_groups:
+        empty_ids = [g.id for g in empty_groups]
+        console.print(
+            f"[red]Groups {empty_ids} are empty after editing.[/red]"
+        )
+        raise typer.Exit(1)
+    dag = PlanDAG(groups)
+    warnings = validate_plan(groups, parsed_diff, dag, max_loc)
+    for warning in warnings:
+        logger.warning(warning)
 
     merge_base_ref = merge_base(base, dev_branch)
 
