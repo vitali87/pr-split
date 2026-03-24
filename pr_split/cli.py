@@ -595,7 +595,17 @@ def execute() -> None:
         )
         raise typer.Exit(1)
 
-    _validate_inputs(plan.dev_branch, plan.base_branch)
+    if not branch_exists(plan.base_branch):
+        console.print(
+            f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]"
+        )
+        raise typer.Exit(1)
+    if not is_worktree_clean():
+        console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
+        raise typer.Exit(1)
+    if not check_gh_auth():
+        console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
+        raise typer.Exit(1)
 
     parsed_diff = parse_diff(plan.raw_diff)
 
