@@ -424,8 +424,11 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
         f" ({group.estimated_loc} LOC)"
     )
     for a in group.assignments:
-        indices = ", ".join(str(i) for i in a.hunk_indices)
-        console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{indices}]")
+        if a.assignment_type == AssignmentType.WHOLE_FILE:
+            hunks_str = "all"
+        else:
+            hunks_str = ", ".join(str(i) for i in a.hunk_indices)
+        console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{hunks_str}]")
     console.print()
 
 
