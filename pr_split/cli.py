@@ -260,28 +260,43 @@ _GH_API_CONCURRENCY = 3
 _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
+_PR_TEMPLATE_PATH = Path(PLAN_DIR) / "template.md"
+
+
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
-    sections = [group.description]
-
     files = [a.file_path for a in group.assignments]
-    if files:
-        file_list = "\n".join(f"- `{f}`" for f in files)
-        sections.append(f"## Files changed\n\n{file_list}")
+    file_list = "\n".join(f"- `{f}`" for f in files)
+    dep_list = ", ".join(f"`{d}`" for d in group.depends_on)
+    dag_md = _render_dag_markdown(all_groups, group.id)
 
+    template_vars = {
+        "description": group.description,
+        "files": file_list,
+        "added": group.estimated_added,
+        "removed": group.estimated_removed,
+        "loc": group.estimated_loc,
+        "dependencies": dep_list,
+        "dag": dag_md,
+        "id": group.id,
+        "title": group.title,
+    }
+
+    if _PR_TEMPLATE_PATH.exists():
+        template = _PR_TEMPLATE_PATH.read_text(encoding="utf-8")
+        return template.format(**template_vars)
+
+    sections = [group.description]
+    if files:
+        sections.append(f"## Files changed\n\n{file_list}")
     sections.append(
         f"## Diff stats\n\n"
         f"**+{group.estimated_added}** additions, "
         f"**-{group.estimated_removed}** deletions "
         f"({group.estimated_loc} LOC)"
     )
-
-    deps = group.depends_on
-    if deps:
-        dep_list = ", ".join(f"`{d}`" for d in deps)
+    if group.depends_on:
         sections.append(f"## Dependencies\n\nThis PR depends on: {dep_list}")
-
-    sections.append(_render_dag_markdown(all_groups, group.id))
-
+    sections.append(dag_md)
     return "\n\n".join(sections)
 
 
