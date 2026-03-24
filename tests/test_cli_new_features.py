@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from pr_split.cli import _build_pr_body, _cleanup_git_state
 from pr_split.constants import AssignmentType
@@ -83,6 +86,34 @@ class TestBuildPrBody:
         group = _group("pr-1", "root")
         body = _build_pr_body(group, [group])
         assert "## Files changed" not in body
+
+    def test_custom_template(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        template_dir = tmp_path / ".pr-split"
+        template_dir.mkdir()
+        template_file = template_dir / "template.md"
+        template_file.write_text("{description}\n\nFiles: {files}\nLOC: {loc}")
+        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+
+        group = _group("pr-1", "feat: auth", files=["auth.py"], added=10, removed=5)
+        body = _build_pr_body(group, [group])
+        assert "desc for pr-1" in body
+        assert "auth.py" in body
+        assert "15" in body
+
+    def test_custom_template_invalid_placeholder(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        template_dir = tmp_path / ".pr-split"
+        template_dir.mkdir()
+        template_file = template_dir / "template.md"
+        template_file.write_text("{nonexistent}")
+        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+
+        group = _group("pr-1", "feat: auth", files=["auth.py"])
+        with pytest.raises(PRSplitError, match="Invalid PR template"):
+            _build_pr_body(group, [group])
 
 
 class TestCleanupGitState:
