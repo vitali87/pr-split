@@ -264,29 +264,26 @@ _PR_TEMPLATE_PATH = Path(PLAN_DIR) / "template.md"
 
 
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
-    files = [a.file_path for a in group.assignments]
-    file_list = "\n".join(f"- `{f}`" for f in files)
-    dep_list = ", ".join(f"`{d}`" for d in group.depends_on)
-    dag_md = _render_dag_markdown(all_groups, group.id)
-
-    template_vars = {
-        "description": group.description,
-        "files": file_list,
-        "added": group.estimated_added,
-        "removed": group.estimated_removed,
-        "loc": group.estimated_loc,
-        "dependencies": dep_list,
-        "dag": dag_md,
-        "id": group.id,
-        "title": group.title,
-    }
-
     if _PR_TEMPLATE_PATH.exists():
+        files = [a.file_path for a in group.assignments]
+        template_vars = {
+            "description": group.description,
+            "files": "\n".join(f"- `{f}`" for f in files),
+            "added": group.estimated_added,
+            "removed": group.estimated_removed,
+            "loc": group.estimated_loc,
+            "dependencies": ", ".join(f"`{d}`" for d in group.depends_on),
+            "dag": _render_dag_markdown(all_groups, group.id),
+            "id": group.id,
+            "title": group.title,
+        }
         try:
             template = _PR_TEMPLATE_PATH.read_text(encoding="utf-8")
             return template.format(**template_vars)
         except (KeyError, ValueError, IndexError) as exc:
-            available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
+            available = ", ".join(
+                f"{{{k}}}" for k in sorted(template_vars)
+            )
             raise PRSplitError(
                 f"Invalid PR template at {_PR_TEMPLATE_PATH}: {exc}. "
                 f"Available placeholders: {available}. "
@@ -297,8 +294,10 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
                 f"Could not read PR template at {_PR_TEMPLATE_PATH}: {exc}"
             ) from exc
 
+    files = [a.file_path for a in group.assignments]
     sections = [group.description]
     if files:
+        file_list = "\n".join(f"- `{f}`" for f in files)
         sections.append(f"## Files changed\n\n{file_list}")
     sections.append(
         f"## Diff stats\n\n"
@@ -307,8 +306,9 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
         f"({group.estimated_loc} LOC)"
     )
     if group.depends_on:
+        dep_list = ", ".join(f"`{d}`" for d in group.depends_on)
         sections.append(f"## Dependencies\n\nThis PR depends on: {dep_list}")
-    sections.append(dag_md)
+    sections.append(_render_dag_markdown(all_groups, group.id))
     return "\n\n".join(sections)
 
 
