@@ -568,9 +568,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
-    plan_dir = Path(PLAN_DIR)
-    if plan_dir.exists():
-        shutil.rmtree(plan_dir)
+    plan_path = Path(PLAN_FILE)
+    if plan_path.exists():
+        plan_path.unlink()
 
     return closed_prs, deleted_branches
 
