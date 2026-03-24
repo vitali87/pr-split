@@ -283,7 +283,15 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
 
     if _PR_TEMPLATE_PATH.exists():
         template = _PR_TEMPLATE_PATH.read_text(encoding="utf-8")
-        return template.format(**template_vars)
+        try:
+            return template.format(**template_vars)
+        except (KeyError, ValueError) as exc:
+            available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
+            raise PRSplitError(
+                f"Invalid PR template at {_PR_TEMPLATE_PATH}: {exc}. "
+                f"Available placeholders: {available}. "
+                "Escape literal braces with {{ and }}."
+            ) from exc
 
     sections = [group.description]
     if files:
