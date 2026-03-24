@@ -347,6 +347,13 @@ def _move_assignment(
     from_id: str,
     to_id: str,
 ) -> bool:
+    if from_id == to_id:
+        console.print(
+            f"[yellow]Source and destination are the same"
+            f" ('{from_id}'). No move performed.[/yellow]"
+        )
+        return False
+
     group_map = {g.id: g for g in groups}
     src = group_map.get(from_id)
     dst = group_map.get(to_id)
