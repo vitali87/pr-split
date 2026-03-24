@@ -22,6 +22,8 @@ class TestSplitPlan:
         )
         assert plan.groups == []
         assert plan.author is None
+        assert plan.min_loc is None
+        assert plan.strict_loc_bounds is False
 
     def test_with_author(self) -> None:
         plan = SplitPlan(
@@ -30,6 +32,18 @@ class TestSplitPlan:
             author="Jane <jane@x.com>",
         )
         assert plan.author == "Jane <jane@x.com>"
+
+    def test_with_loc_bounds(self) -> None:
+        plan = SplitPlan(
+            dev_branch="feat/x",
+            base_branch="main",
+            min_loc=50,
+            max_loc=400,
+            strict_loc_bounds=True,
+            priority=Priority.LOGICAL,
+        )
+        assert plan.min_loc == 50
+        assert plan.strict_loc_bounds is True
 
 
 class TestBranchRecord:

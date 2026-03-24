@@ -240,6 +240,7 @@ new file mode 100644
             {
                 "total_groups": 1,
                 "max_group_loc": 1,
+                "loc_underflow": 0,
                 "loc_overflow": 0,
                 "dag_width": 1,
                 "dag_depth": 1,

@@ -9,6 +9,7 @@ from pr_split.constants import (
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
+    DEFAULT_STRICT_LOC_BOUNDS,
     OPENAI_MAX_CONTEXT_TOKENS,
     OPENAI_MODEL,
     PartitionStrategy,
@@ -38,6 +39,8 @@ class TestSettingsDefaults:
         assert s.chunk_strategy == DEFAULT_CHUNK_STRATEGY
         assert s.partition_strategy == DEFAULT_PARTITION_STRATEGY
         assert s.cp_sat_timeout == DEFAULT_CP_SAT_TIMEOUT_SECONDS
+        assert s.min_loc is None
+        assert s.strict_loc_bounds == DEFAULT_STRICT_LOC_BOUNDS
 
 
 class TestSettingsApiKeyValidation:
@@ -78,6 +81,36 @@ class TestSettingsApiKeyValidation:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         s = Settings(partition_strategy=PartitionStrategy.CP_SAT)
         assert s.partition_strategy == PartitionStrategy.CP_SAT
+
+
+class TestSettingsLocBoundsValidation:
+    def test_min_loc_less_than_max_loc_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=50, max_loc=100)
+        assert s.min_loc == 50
+        assert s.max_loc == 100
+
+    def test_min_loc_equal_to_max_loc_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="min_loc 100 must be less than max_loc 100"):
+            Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=100, max_loc=100)
+
+    def test_min_loc_greater_than_max_loc_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with pytest.raises(ValueError, match="min_loc 101 must be less than max_loc 100"):
+            Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=101, max_loc=100)
+
+    def test_min_loc_loaded_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("PR_SPLIT_MIN_LOC", "75")
+        s = Settings(partition_strategy=PartitionStrategy.GRAPH)
+        assert s.min_loc == 75
 
 
 class TestSettingsMaxContextTokens:

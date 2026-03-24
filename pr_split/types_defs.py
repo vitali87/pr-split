@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import NamedTuple, TypedDict
 
+from .constants import LocViolationType
+
 
 class HunkInfo(NamedTuple):
     index: int
@@ -35,6 +37,15 @@ class HunkRef(NamedTuple):
     file_path: str
     hunk_index: int
     token_estimate: int
+
+
+class LocBoundViolation(NamedTuple):
+    group_id: str
+    violation_type: LocViolationType
+    limit: int
+    estimated_loc: int
+    estimated_added: int
+    estimated_removed: int
 
 
 class DiffStats(TypedDict):

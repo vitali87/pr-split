@@ -362,11 +362,12 @@ def plan_split(
                 f"Unsupported partition strategy '{settings.partition_strategy}'"
             )
 
-    metrics = score_plan(groups, settings.max_loc)
+    metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(
         logs.PLAN_METRICS.format(
             groups=metrics.total_groups,
             max_loc=metrics.max_group_loc,
+            underflow=metrics.loc_underflow,
             overflow=metrics.loc_overflow,
             width=metrics.dag_width,
             depth=metrics.dag_depth,

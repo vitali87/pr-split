@@ -4,8 +4,9 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import typer
 
-from pr_split.cli import _build_pr_body, _cleanup_git_state
+from pr_split.cli import _build_pr_body, _cleanup_git_state, _handle_loc_bound_warnings
 from pr_split.constants import AssignmentType
 from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.git_ops.prs import get_pr_state, merge_pr
@@ -210,3 +211,19 @@ class TestMergePr:
         assert "--auto" in args
         assert "--merge" in args
         assert "--delete-branch" in args
+
+
+class TestHandleLocBoundWarnings:
+    @patch("pr_split.cli.logger.warning")
+    def test_non_strict_only_logs(self, mock_warning: MagicMock) -> None:
+        _handle_loc_bound_warnings(["warning 1"], strict_loc_bounds=False)
+        mock_warning.assert_called_once_with("warning 1")
+
+    @patch("pr_split.cli.console.print")
+    @patch("pr_split.cli.logger.warning")
+    def test_strict_raises_exit(
+        self, mock_warning: MagicMock, mock_print: MagicMock
+    ) -> None:
+        with pytest.raises(typer.Exit):
+            _handle_loc_bound_warnings(["warning 1"], strict_loc_bounds=True)
+        assert mock_warning.call_count == 1

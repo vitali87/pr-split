@@ -37,6 +37,7 @@ class TestScorePlan:
         metrics = score_plan(groups, 100)
         assert metrics.total_groups == 2
         assert metrics.max_group_loc == 120
+        assert metrics.loc_underflow == 0
         assert metrics.loc_overflow == 20
         assert metrics.dependency_edges == 1
         assert metrics.dag_depth == 2
@@ -56,3 +57,12 @@ class TestScorePlan:
         ]
         metrics = score_plan(groups, 100)
         assert metrics.tiny_groups == 1
+
+    def test_underflow_and_undersized_groups_are_counted(self) -> None:
+        groups = [
+            _group("g1", "a.py", [0], 20),
+            _group("g2", "b.py", [0], 90),
+        ]
+        metrics = score_plan(groups, 100, min_loc=50)
+        assert metrics.loc_underflow == 30
+        assert metrics.undersized_groups == 1

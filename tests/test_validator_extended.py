@@ -63,3 +63,14 @@ class TestValidatePlanIntegration:
         dag = PlanDAG(groups)
         warnings = validate_plan(groups, parsed, dag, 2)
         assert len(warnings) == 2
+
+    def test_valid_plan_with_min_loc_warning(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        dag = PlanDAG(groups)
+        warnings = validate_plan(groups, parsed, dag, 10, min_loc=5)
+        assert len(warnings) == 2
+        assert all("below minimum" in warning for warning in warnings)

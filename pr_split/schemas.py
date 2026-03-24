@@ -38,7 +38,9 @@ class Group(BaseModel):
 class SplitPlan(BaseModel):
     dev_branch: str
     base_branch: str
+    min_loc: int | None = None
     max_loc: int
+    strict_loc_bounds: bool = False
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
     author: str | None = None

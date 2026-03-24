@@ -24,7 +24,9 @@ from .constants import (
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
+    DEFAULT_MIN_LOC,
     DEFAULT_PARTITION_STRATEGY,
+    DEFAULT_STRICT_LOC_BOUNDS,
     PLAN_DIR,
     PLAN_FILE,
     AssignmentType,
@@ -126,6 +128,17 @@ def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> No
         raise typer.Exit(1)
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
+        raise typer.Exit(1)
+
+
+def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
+    for warning in warnings:
+        logger.warning(warning)
+
+    if strict_loc_bounds and warnings:
+        console.print(f"[red]{ErrorMsg.LOC_BOUNDS_STRICT_FAILED()}[/red]")
+        for warning in warnings:
+            console.print(f"[red]- {warning}[/red]")
         raise typer.Exit(1)
 
 
@@ -543,9 +556,25 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
 def split(
     dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
+    min_loc: Annotated[
+        int | None,
+        typer.Option(
+            "--min-loc",
+            envvar="PR_SPLIT_MIN_LOC",
+            help="Minimum target diff lines per sub-PR",
+        ),
+    ] = DEFAULT_MIN_LOC,
     max_loc: Annotated[
         int, typer.Option(help="Soft limit on diff lines per sub-PR")
     ] = DEFAULT_MAX_LOC,
+    strict_loc_bounds: Annotated[
+        bool,
+        typer.Option(
+            "--strict-loc-bounds",
+            envvar="PR_SPLIT_STRICT_LOC_BOUNDS",
+            help="Fail if the final plan violates configured LOC bounds",
+        ),
+    ] = DEFAULT_STRICT_LOC_BOUNDS,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
         ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
@@ -614,20 +643,25 @@ def split(
         )
     )
 
-    settings = Settings(
-        max_loc=max_loc,
-        cp_sat_timeout=cp_sat_timeout,
-        priority=priority,
-        chunk_strategy=chunk_strategy,
-        partition_strategy=partition_strategy,
-    )
+    try:
+        settings = Settings(
+            min_loc=min_loc,
+            max_loc=max_loc,
+            strict_loc_bounds=strict_loc_bounds,
+            cp_sat_timeout=cp_sat_timeout,
+            priority=priority,
+            chunk_strategy=chunk_strategy,
+            partition_strategy=partition_strategy,
+        )
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
 
     logger.info(logs.VALIDATING_PLAN)
     dag = PlanDAG(groups)
-    warnings = validate_plan(groups, parsed_diff, dag, max_loc)
-    for warning in warnings:
-        logger.warning(warning)
+    warnings = validate_plan(groups, parsed_diff, dag, settings.max_loc, min_loc=settings.min_loc)
+    _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
     logger.success(logs.VALIDATION_PASSED)
 
     logger.info(logs.PRESENTING_PLAN)
@@ -658,7 +692,9 @@ def split(
     split_plan = SplitPlan(
         dev_branch=dev_branch,
         base_branch=base,
-        max_loc=max_loc,
+        min_loc=settings.min_loc,
+        max_loc=settings.max_loc,
+        strict_loc_bounds=settings.strict_loc_bounds,
         priority=priority,
         groups=groups,
         author=author,
