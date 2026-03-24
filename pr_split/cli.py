@@ -19,6 +19,7 @@ from . import logs
 from .config import Settings
 from .constants import (
     BRANCH_PREFIX,
+    AssignmentType,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
@@ -54,6 +55,7 @@ from .schemas import (
     BranchRecord,
     GitState,
     Group,
+    GroupAssignment,
     PlanFile,
     PRRecord,
     SplitPlan,
@@ -337,6 +339,109 @@ def _push_and_create_prs(
     return [results[g.id] for g in groups]
 
 
+def _move_assignment(
+    groups: list[Group], file_path: str, hunk_index: int, from_id: str, to_id: str
+) -> bool:
+    group_map = {g.id: g for g in groups}
+    src = group_map.get(from_id)
+    dst = group_map.get(to_id)
+    if not src or not dst:
+        console.print(f"[red]Group '{from_id}' or '{to_id}' not found.[/red]")
+        return False
+
+    found = False
+    for assignment in src.assignments:
+        if assignment.file_path == file_path and hunk_index in assignment.hunk_indices:
+            assignment.hunk_indices.remove(hunk_index)
+            if not assignment.hunk_indices:
+                src.assignments.remove(assignment)
+            found = True
+            break
+
+    if not found:
+        console.print(f"[red]Hunk {file_path}:{hunk_index} not found in {from_id}.[/red]")
+        return False
+
+    dst_assignment = next(
+        (a for a in dst.assignments if a.file_path == file_path), None
+    )
+    if dst_assignment:
+        dst_assignment.hunk_indices.append(hunk_index)
+        dst_assignment.hunk_indices.sort()
+    else:
+        dst.assignments.append(
+            GroupAssignment(
+                file_path=file_path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[hunk_index],
+            )
+        )
+
+    console.print(f"[green]Moved {file_path}:{hunk_index} from {from_id} to {to_id}[/green]")
+    return True
+
+
+def _show_group_detail(groups: list[Group], group_id: str) -> None:
+    group_map = {g.id: g for g in groups}
+    group = group_map.get(group_id)
+    if not group:
+        console.print(f"[red]Group '{group_id}' not found.[/red]")
+        return
+    console.print(f"\n[bold]{group.id}[/bold]: {group.title}")
+    console.print(f"  Description: {group.description}")
+    console.print(f"  Depends on: {', '.join(group.depends_on) or 'none'}")
+    console.print(f"  Estimated: +{group.estimated_added}/-{group.estimated_removed} ({group.estimated_loc} LOC)")
+    for a in group.assignments:
+        indices = ", ".join(str(i) for i in a.hunk_indices)
+        console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{indices}]")
+    console.print()
+
+
+def _interactive_edit(groups: list[Group]) -> list[Group]:
+    console.print(
+        "\n[cyan]Interactive editor. Commands:[/cyan]\n"
+        "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
+        "  [bold]show[/bold] <group_id>\n"
+        "  [bold]plan[/bold]  — redisplay the plan table\n"
+        "  [bold]done[/bold]  — proceed\n"
+        "  [bold]abort[/bold] — cancel\n"
+    )
+    while True:
+        try:
+            cmd = typer.prompt("edit", default="done")
+        except (KeyboardInterrupt, EOFError):
+            raise typer.Abort()
+
+        parts = cmd.strip().split()
+        if not parts:
+            continue
+
+        action = parts[0].lower()
+
+        if action == "done":
+            return groups
+        elif action == "abort":
+            raise typer.Abort()
+        elif action == "plan":
+            _present_plan(groups)
+        elif action == "show" and len(parts) == 2:
+            _show_group_detail(groups, parts[1])
+        elif action == "move" and len(parts) == 4:
+            ref, from_id, to_id = parts[1], parts[2], parts[3]
+            if ":" not in ref:
+                console.print("[red]Usage: move <file>:<hunk_index> <from> <to>[/red]")
+                continue
+            file_path, hunk_str = ref.rsplit(":", 1)
+            try:
+                hunk_index = int(hunk_str)
+            except ValueError:
+                console.print("[red]Hunk index must be an integer.[/red]")
+                continue
+            _move_assignment(groups, file_path, hunk_index, from_id, to_id)
+        else:
+            console.print("[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]")
+
+
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
     cleaned = dev_branch.lstrip("#")
     if cleaned.isdigit():
@@ -440,6 +545,8 @@ def split(
 
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
+
+    groups = _interactive_edit(groups)
 
     merge_base_ref = merge_base(base, dev_branch)
 
