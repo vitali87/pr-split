@@ -26,7 +26,7 @@ jobs:
         run: uv sync --dev --extra dev --extra test
 
       - name: Run linter
-        run: uv run ruff check pr_split/ || true
+        run: uv run ruff check pr_split/ tests/
 
       - name: Run tests
         run: uv run pytest tests/ -q --tb=short

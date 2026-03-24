@@ -164,15 +164,16 @@ def _format_file_summary(diff_stats: DiffStats) -> str:
     for fs in diff_stats["file_summaries"]:
         flags = [
             f
-            for f, c in [("new", fs["is_new"]), ("deleted", fs["is_deleted"]), ("renamed", fs["is_renamed"])]
+            for f, c in [
+                ("new", fs["is_new"]),
+                ("deleted", fs["is_deleted"]),
+                ("renamed", fs["is_renamed"]),
+            ]
             if c
         ]
         flag_str = f" [{', '.join(flags)}]" if flags else ""
         hunk_count = fs["hunk_count"]
-        if hunk_count > 0:
-            idx_range = f"indices 0..{hunk_count - 1}"
-        else:
-            idx_range = "no hunks"
+        idx_range = f"indices 0..{hunk_count - 1}" if hunk_count > 0 else "no hunks"
         lines.append(
             f"  {fs['path']}: +{fs['added']}/-{fs['removed']}"
             f" ({hunk_count} hunks, {idx_range}){flag_str}"

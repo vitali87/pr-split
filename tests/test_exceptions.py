@@ -14,7 +14,8 @@ from pr_split.exceptions import (
 
 class TestErrorMsg:
     def test_call_without_kwargs(self) -> None:
-        assert ErrorMsg.DIRTY_WORKTREE() == "Working tree has uncommitted changes; commit or stash first"
+        expected = "Working tree has uncommitted changes; commit or stash first"
+        assert ErrorMsg.DIRTY_WORKTREE() == expected
 
     def test_call_with_kwargs(self) -> None:
         result = ErrorMsg.BRANCH_NOT_FOUND(branch="feature/xyz")
