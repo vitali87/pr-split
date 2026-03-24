@@ -92,7 +92,7 @@ Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/
 pr-split merge
 ```
 
-Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, or changes-requested PRs. Stops if a merge fails or a dependency wasn't merged to prevent out-of-order merges.
+Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs. Stops if a merge fails or a dependency wasn't merged to prevent out-of-order merges.
 
 Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 
@@ -110,7 +110,7 @@ Running `split` again when a plan already exists will prompt you to clean up exi
 pr-split clean
 ```
 
-Closes all split PRs and deletes their branches (local and remote).
+Closes all split PRs, deletes their branches (local and remote), and removes the `.pr-split` directory.
 
 ## Configuration
 
@@ -146,7 +146,7 @@ For a deeper explanation of the planning model, optimization methods, scoring, a
 4. Shows you the plan (table + dependency tree) and asks for confirmation
 5. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees
 6. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
-7. Track progress with `status`, merge in order with `merge`, or clean up with `clean`
+7. `status`, `merge`, and `clean` commands are available to track progress, merge PRs in dependency order, or clean up branches and PRs
 
 ## License
 
