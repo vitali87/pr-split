@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from pr_split.cli import _build_pr_body, _cleanup_git_state
 from pr_split.constants import AssignmentType
 from pr_split.exceptions import GitOperationError, PRSplitError
