@@ -6,7 +6,9 @@ from pr_split.constants import (
     CHUNK_TARGET_RATIO,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_MAX_LOC,
+    DEFAULT_MIN_LOC,
     DEFAULT_PARTITION_STRATEGY,
+    DEFAULT_STRICT_LOC_BOUNDS,
     FORK_REF_PREFIX,
     MAX_OUTPUT_TOKENS,
     PLAN_DIR,
@@ -14,6 +16,7 @@ from pr_split.constants import (
     PR_REF_PREFIX,
     AssignmentType,
     ChunkStrategy,
+    LocViolationType,
     PartitionStrategy,
     Priority,
     Provider,
@@ -49,6 +52,12 @@ class TestPartitionStrategy:
         assert PartitionStrategy.CP_SAT == "cp_sat"
 
 
+class TestLocViolationType:
+    def test_values(self) -> None:
+        assert LocViolationType.BELOW_MIN == "below_min"
+        assert LocViolationType.ABOVE_MAX == "above_max"
+
+
 class TestPRState:
     def test_values(self) -> None:
         assert PRState.OPEN == "open"
@@ -72,6 +81,12 @@ class TestConstants:
 
     def test_default_max_loc(self) -> None:
         assert DEFAULT_MAX_LOC == 400
+
+    def test_default_min_loc(self) -> None:
+        assert DEFAULT_MIN_LOC is None
+
+    def test_default_strict_loc_bounds(self) -> None:
+        assert DEFAULT_STRICT_LOC_BOUNDS is False
 
     def test_default_strategies(self) -> None:
         assert DEFAULT_CHUNK_STRATEGY == ChunkStrategy.DYNAMIC_PROGRAMMING

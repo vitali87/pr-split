@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from pr_split.types_defs import DiffStats, FileSummary, ForkPRInfo, HunkInfo, HunkRef
+from pr_split.constants import LocViolationType
+from pr_split.types_defs import (
+    DiffStats,
+    FileSummary,
+    ForkPRInfo,
+    HunkInfo,
+    HunkRef,
+    LocBoundViolation,
+)
 
 
 class TestHunkInfo:
@@ -79,3 +87,18 @@ class TestHunkRefExtended:
         r1 = HunkRef(file_path="a.py", hunk_index=0, token_estimate=50)
         r2 = HunkRef(file_path="a.py", hunk_index=0, token_estimate=50)
         assert r1 == r2
+
+
+class TestLocBoundViolation:
+    def test_fields(self) -> None:
+        violation = LocBoundViolation(
+            group_id="pr-1",
+            violation_type=LocViolationType.BELOW_MIN,
+            limit=50,
+            estimated_loc=20,
+            estimated_added=15,
+            estimated_removed=5,
+        )
+        assert violation.group_id == "pr-1"
+        assert violation.violation_type == LocViolationType.BELOW_MIN
+        assert violation.limit == 50

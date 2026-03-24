@@ -19,6 +19,8 @@ class ErrorMsg(StrEnum):
     PR_FETCH_FAILED = "Failed to fetch fork branch for PR #{number}: {detail}"
     FORK_FETCH_FAILED = "Failed to fetch {user}:{branch}: {detail}"
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
+    MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
+    LOC_BOUNDS_STRICT_FAILED = "Plan violates configured LOC bounds"
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

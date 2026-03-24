@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from loguru import logger
-
 from .. import logs
+from ..constants import LocViolationType
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
 from ..schemas import Group
+from ..types_defs import LocBoundViolation
 
 
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
@@ -65,19 +65,62 @@ def validate_no_conflicts(groups: list[Group], dag: PlanDAG) -> None:
                     )
 
 
-def validate_loc_bounds(groups: list[Group], max_loc: int) -> list[str]:
-    warnings: list[str] = []
+def detect_loc_bound_violations(
+    groups: list[Group],
+    max_loc: int,
+    min_loc: int | None = None,
+) -> list[LocBoundViolation]:
+    violations: list[LocBoundViolation] = []
     for group in groups:
-        if group.estimated_loc > max_loc:
-            msg = logs.LOC_SOFT_WARN.format(
-                group=group.id,
-                added=group.estimated_added,
-                removed=group.estimated_removed,
-                limit=max_loc,
+        if min_loc is not None and group.estimated_loc < min_loc:
+            violations.append(
+                LocBoundViolation(
+                    group_id=group.id,
+                    violation_type=LocViolationType.BELOW_MIN,
+                    limit=min_loc,
+                    estimated_loc=group.estimated_loc,
+                    estimated_added=group.estimated_added,
+                    estimated_removed=group.estimated_removed,
+                )
             )
-            logger.warning(msg)
-            warnings.append(msg)
-    return warnings
+        if group.estimated_loc > max_loc:
+            violations.append(
+                LocBoundViolation(
+                    group_id=group.id,
+                    violation_type=LocViolationType.ABOVE_MAX,
+                    limit=max_loc,
+                    estimated_loc=group.estimated_loc,
+                    estimated_added=group.estimated_added,
+                    estimated_removed=group.estimated_removed,
+                )
+            )
+    return violations
+
+
+def _format_loc_bound_violation(violation: LocBoundViolation) -> str:
+    template = (
+        logs.LOC_MIN_WARN
+        if violation.violation_type == LocViolationType.BELOW_MIN
+        else logs.LOC_MAX_WARN
+    )
+    return template.format(
+        group=violation.group_id,
+        loc=violation.estimated_loc,
+        added=violation.estimated_added,
+        removed=violation.estimated_removed,
+        limit=violation.limit,
+    )
+
+
+def validate_loc_bounds(
+    groups: list[Group],
+    max_loc: int,
+    min_loc: int | None = None,
+) -> list[str]:
+    return [
+        _format_loc_bound_violation(violation)
+        for violation in detect_loc_bound_violations(groups, max_loc, min_loc)
+    ]
 
 
 def validate_plan(
@@ -85,9 +128,10 @@ def validate_plan(
     parsed_diff: ParsedDiff,
     dag: PlanDAG,
     max_loc: int,
+    min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
     validate_no_conflicts(groups, dag)
-    return validate_loc_bounds(groups, max_loc)
+    return validate_loc_bounds(groups, max_loc, min_loc)

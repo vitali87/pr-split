@@ -22,7 +22,9 @@ def _make_plan_file() -> PlanFile:
         plan=SplitPlan(
             dev_branch="feat/big",
             base_branch="main",
+            min_loc=50,
             max_loc=400,
+            strict_loc_bounds=True,
             priority=Priority.ORTHOGONAL,
             groups=[
                 Group(
@@ -56,6 +58,8 @@ class TestPlanStore:
         assert loaded.plan.dev_branch == "feat/big"
         assert len(loaded.plan.groups) == 1
         assert loaded.plan.groups[0].id == "pr-1"
+        assert loaded.plan.min_loc == 50
+        assert loaded.plan.strict_loc_bounds is True
 
     def test_plan_exists_false(self, tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
@@ -89,7 +93,9 @@ class TestPlanStoreJson:
             plan=SplitPlan(
                 dev_branch="dev",
                 base_branch="main",
+                min_loc=25,
                 max_loc=400,
+                strict_loc_bounds=True,
                 priority=Priority.LOGICAL,
                 groups=[],
             ),
@@ -98,3 +104,5 @@ class TestPlanStoreJson:
         raw = json.loads((tmp_path / ".pr-split" / "plan.json").read_text())
         assert "plan" in raw
         assert raw["plan"]["priority"] == "logical"
+        assert raw["plan"]["min_loc"] == 25
+        assert raw["plan"]["strict_loc_bounds"] is True

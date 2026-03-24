@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import pytest
 
-from pr_split.constants import AssignmentType
+from pr_split.constants import AssignmentType, LocViolationType
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PlanValidationError
 from pr_split.graph import PlanDAG
 from pr_split.planner.validator import (
+    detect_loc_bound_violations,
     validate_coverage,
     validate_loc,
     validate_loc_bounds,
@@ -155,3 +156,19 @@ class TestValidateLocBounds:
         warnings = validate_loc_bounds(groups, 400)
         assert len(warnings) == 1
         assert "g1" in warnings[0]
+        assert "above maximum" in warnings[0]
+
+    def test_below_minimum_returns_warnings(self) -> None:
+        groups = [_make_group("g1", [], 25)]
+        warnings = validate_loc_bounds(groups, 400, min_loc=50)
+        assert len(warnings) == 1
+        assert "g1" in warnings[0]
+        assert "below minimum" in warnings[0]
+
+    def test_detect_loc_bound_violations_returns_structured_result(self) -> None:
+        groups = [_make_group("g1", [], 25)]
+        violations = detect_loc_bound_violations(groups, 400, min_loc=50)
+        assert len(violations) == 1
+        assert violations[0].group_id == "g1"
+        assert violations[0].violation_type == LocViolationType.BELOW_MIN
+        assert violations[0].limit == 50

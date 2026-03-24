@@ -6,8 +6,10 @@ from .constants import (
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
+    DEFAULT_MIN_LOC,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
+    DEFAULT_STRICT_LOC_BOUNDS,
     OPENAI_MAX_CONTEXT_TOKENS,
     OPENAI_MODEL,
     ChunkStrategy,
@@ -15,6 +17,7 @@ from .constants import (
     Priority,
     Provider,
 )
+from .exceptions import ErrorMsg
 
 
 class Settings(BaseSettings):
@@ -30,7 +33,9 @@ class Settings(BaseSettings):
     )
     provider: Provider = Provider.ANTHROPIC
     model: str = ""
-    max_loc: int = DEFAULT_MAX_LOC
+    min_loc: int | None = Field(default=DEFAULT_MIN_LOC, ge=1)
+    max_loc: int = Field(default=DEFAULT_MAX_LOC, gt=0)
+    strict_loc_bounds: bool = DEFAULT_STRICT_LOC_BOUNDS
     cp_sat_timeout: float = DEFAULT_CP_SAT_TIMEOUT_SECONDS
     priority: Priority = Priority.ORTHOGONAL
     chunk_strategy: ChunkStrategy = DEFAULT_CHUNK_STRATEGY
@@ -46,6 +51,14 @@ class Settings(BaseSettings):
                     self.model = OPENAI_MODEL
                 case _:
                     raise NotImplementedError(f"No default model for provider '{self.provider}'")
+        return self
+
+    @model_validator(mode="after")
+    def validate_loc_bounds(self):
+        if self.min_loc is not None and self.min_loc >= self.max_loc:
+            raise ValueError(
+                ErrorMsg.MIN_LOC_GE_MAX_LOC(min_loc=self.min_loc, max_loc=self.max_loc)
+            )
         return self
 
     @model_validator(mode="after")
