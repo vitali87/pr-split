@@ -50,6 +50,7 @@ def score_plan(groups: list[Group], max_loc: int, min_loc: int | None = None) ->
     file_scatter = sum(max(0, len(group_ids) - 1) for group_ids in file_groups.values())
 
     undersized_groups = (
+        # Includes empty groups (estimated_loc == 0), unlike tiny_groups below.
         sum(1 for group in groups if group.estimated_loc < min_loc)
         if min_loc is not None
         else 0

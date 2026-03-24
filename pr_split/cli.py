@@ -12,6 +12,7 @@ from typing import Annotated
 
 import typer
 from loguru import logger
+from pydantic import ValidationError
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -132,14 +133,14 @@ def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> No
 
 
 def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
-    for warning in warnings:
-        logger.warning(warning)
-
     if strict_loc_bounds and warnings:
         console.print(f"[red]{ErrorMsg.LOC_BOUNDS_STRICT_FAILED()}[/red]")
         for warning in warnings:
             console.print(f"[red]- {warning}[/red]")
         raise typer.Exit(1)
+
+    for warning in warnings:
+        logger.warning(warning)
 
 
 def _present_plan(groups: list[Group]) -> None:
@@ -565,7 +566,12 @@ def split(
         ),
     ] = DEFAULT_MIN_LOC,
     max_loc: Annotated[
-        int, typer.Option(help="Soft limit on diff lines per sub-PR")
+        int,
+        typer.Option(
+            "--max-loc",
+            envvar="PR_SPLIT_MAX_LOC",
+            help="Maximum target diff lines per sub-PR",
+        ),
     ] = DEFAULT_MAX_LOC,
     strict_loc_bounds: Annotated[
         bool,
@@ -653,7 +659,7 @@ def split(
             chunk_strategy=chunk_strategy,
             partition_strategy=partition_strategy,
         )
-    except ValueError as exc:
+    except (ValidationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
@@ -679,9 +685,14 @@ def split(
         raise typer.Exit(1)
     try:
         dag = PlanDAG(groups)
-        warnings = validate_plan(groups, parsed_diff, dag, max_loc)
-        for warning in warnings:
-            logger.warning(warning)
+        warnings = validate_plan(
+            groups,
+            parsed_diff,
+            dag,
+            settings.max_loc,
+            min_loc=settings.min_loc,
+        )
+        _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
         logger.success("Edited plan validation passed")
     except PRSplitError as exc:
         console.print(f"[red]Edited plan is invalid: {exc}[/red]")

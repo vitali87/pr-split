@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from pr_split.config import Settings
 from pr_split.constants import (
@@ -47,13 +48,13 @@ class TestSettingsApiKeyValidation:
     def test_anthropic_missing_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
             Settings(provider=Provider.ANTHROPIC)
 
     def test_openai_missing_key_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
             Settings(provider=Provider.OPENAI)
 
     def test_anthropic_key_present_passes(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,7 +95,7 @@ class TestSettingsLocBoundsValidation:
     def test_min_loc_equal_to_max_loc_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="min_loc 100 must be less than max_loc 100"):
+        with pytest.raises(ValidationError, match="min_loc 100 must be less than max_loc 100"):
             Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=100, max_loc=100)
 
     def test_min_loc_greater_than_max_loc_raises(
@@ -102,7 +103,7 @@ class TestSettingsLocBoundsValidation:
     ) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        with pytest.raises(ValueError, match="min_loc 101 must be less than max_loc 100"):
+        with pytest.raises(ValidationError, match="min_loc 101 must be less than max_loc 100"):
             Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=101, max_loc=100)
 
     def test_min_loc_loaded_from_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,10 +129,10 @@ class TestSettingsMaxContextTokens:
 class TestSettingsEmptyKeyValidation:
     def test_empty_string_key_raises_anthropic(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "")
-        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
             Settings(provider=Provider.ANTHROPIC)
 
     def test_empty_string_key_raises_openai(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("OPENAI_API_KEY", "")
-        with pytest.raises(ValueError, match="OPENAI_API_KEY"):
+        with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
             Settings(provider=Provider.OPENAI)

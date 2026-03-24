@@ -5,8 +5,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import typer
+from typer.testing import CliRunner
 
-from pr_split.cli import _build_pr_body, _cleanup_git_state, _handle_loc_bound_warnings
+from pr_split.cli import (
+    _build_pr_body,
+    _cleanup_git_state,
+    _handle_loc_bound_warnings,
+    app,
+)
 from pr_split.constants import AssignmentType
 from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.git_ops.prs import get_pr_state, merge_pr
@@ -17,6 +23,8 @@ from pr_split.schemas import (
     GroupAssignment,
     PRRecord,
 )
+
+runner = CliRunner()
 
 
 def _group(
@@ -226,4 +234,107 @@ class TestHandleLocBoundWarnings:
     ) -> None:
         with pytest.raises(typer.Exit):
             _handle_loc_bound_warnings(["warning 1"], strict_loc_bounds=True)
-        assert mock_warning.call_count == 1
+        mock_warning.assert_not_called()
+
+
+class TestSplitCliEnvVars:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_uses_max_loc_envvar(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={
+                "ANTHROPIC_API_KEY": "sk-test",
+                "PR_SPLIT_MAX_LOC": "123",
+            },
+        )
+
+        assert result.exit_code == 0
+        settings = mock_plan_split.call_args[0][1]
+        assert settings.max_loc == 123
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", side_effect=[[], ["warning 1"]])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_revalidates_min_loc_after_interactive_edit(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app,
+            [
+                "split",
+                "feature-branch",
+                "--dry-run",
+                "--min-loc",
+                "50",
+                "--strict-loc-bounds",
+            ],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
+        assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
+        mock_save_plan.assert_not_called()
