@@ -367,12 +367,15 @@ def _move_assignment(
     for assignment in src.assignments:
         if assignment.file_path != file_path:
             continue
-        # For WHOLE_FILE, expand to explicit hunk indices first
+        # For WHOLE_FILE, check hunk validity before expanding
         if assignment.assignment_type == AssignmentType.WHOLE_FILE:
             pf = pf_map.get(file_path)
             if pf is None:
                 continue
-            assignment.hunk_indices = list(range(len(pf)))
+            all_indices = list(range(len(pf)))
+            if hunk_index not in all_indices:
+                continue
+            assignment.hunk_indices = all_indices
             assignment.assignment_type = AssignmentType.PARTIAL_HUNKS
         if hunk_index in assignment.hunk_indices:
             assignment.hunk_indices.remove(hunk_index)
@@ -483,6 +486,9 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
                 hunk_index = int(hunk_str)
             except ValueError:
                 console.print("[red]Hunk index must be an integer.[/red]")
+                continue
+            if hunk_index < 0:
+                console.print("[red]Hunk index must be non-negative.[/red]")
                 continue
             _move_assignment(
                 groups, parsed_diff, file_path, hunk_index, from_id, to_id
@@ -608,10 +614,15 @@ def split(
             f"[red]Groups {empty_ids} are empty after editing.[/red]"
         )
         raise typer.Exit(1)
-    dag = PlanDAG(groups)
-    warnings = validate_plan(groups, parsed_diff, dag, max_loc)
-    for warning in warnings:
-        logger.warning(warning)
+    try:
+        dag = PlanDAG(groups)
+        warnings = validate_plan(groups, parsed_diff, dag, max_loc)
+        for warning in warnings:
+            logger.warning(warning)
+        logger.success("Edited plan validation passed")
+    except PRSplitError as exc:
+        console.print(f"[red]Edited plan is invalid: {exc}[/red]")
+        raise typer.Exit(1) from exc
 
     merge_base_ref = merge_base(base, dev_branch)
 
