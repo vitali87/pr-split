@@ -25,6 +25,7 @@ from .constants import (
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
+    DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
     DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
@@ -581,6 +582,14 @@ def split(
             help="Fail if the final plan violates configured LOC bounds",
         ),
     ] = DEFAULT_STRICT_LOC_BOUNDS,
+    max_refinement_iterations: Annotated[
+        int,
+        typer.Option(
+            "--max-refinement-iterations",
+            envvar="PR_SPLIT_MAX_REFINEMENT_ITERATIONS",
+            help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
+        ),
+    ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
     priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
         ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
@@ -654,6 +663,7 @@ def split(
             min_loc=min_loc,
             max_loc=max_loc,
             strict_loc_bounds=strict_loc_bounds,
+            max_refinement_iterations=max_refinement_iterations,
             cp_sat_timeout=cp_sat_timeout,
             priority=priority,
             chunk_strategy=chunk_strategy,

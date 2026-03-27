@@ -54,3 +54,10 @@ PLAN_METRICS = (
     "Plan metrics: groups={groups}, max_group_loc={max_loc}, underflow={underflow}, "
     "overflow={overflow}, width={width}, depth={depth}, scatter={scatter}, objective={objective}"
 )
+REFINEMENT_START = (
+    "LOC bound violations detected ({count}), starting refinement iteration {iteration}"
+)
+REFINEMENT_RESOLVED = "All LOC bound violations resolved after {iterations} refinement iteration(s)"
+REFINEMENT_EXHAUSTED = (
+    "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
+)
