@@ -8,6 +8,7 @@ from pr_split.constants import (
     ANTHROPIC_MAX_CONTEXT_TOKENS,
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
+    DEFAULT_MIN_LOC_RATIO,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
@@ -112,6 +113,57 @@ class TestSettingsLocBoundsValidation:
         monkeypatch.setenv("PR_SPLIT_MIN_LOC", "75")
         s = Settings(partition_strategy=PartitionStrategy.GRAPH)
         assert s.min_loc == 75
+
+
+class TestSettingsAutoDerivMinLoc:
+    def test_min_loc_derived_when_refinement_enabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=400,
+            max_refinement_iterations=2,
+        )
+        assert s.min_loc == 400 // DEFAULT_MIN_LOC_RATIO
+
+    def test_min_loc_not_derived_when_refinement_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=400,
+            max_refinement_iterations=0,
+        )
+        assert s.min_loc is None
+
+    def test_explicit_min_loc_not_overridden(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=50,
+            max_loc=400,
+            max_refinement_iterations=2,
+        )
+        assert s.min_loc == 50
+
+    def test_derived_min_loc_uses_integer_division(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        s = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=401,
+            max_refinement_iterations=1,
+        )
+        assert s.min_loc == 401 // DEFAULT_MIN_LOC_RATIO
 
 
 class TestSettingsMaxContextTokens:

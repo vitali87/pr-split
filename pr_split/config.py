@@ -8,6 +8,7 @@ from .constants import (
     DEFAULT_MAX_LOC,
     DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
+    DEFAULT_MIN_LOC_RATIO,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
@@ -53,6 +54,12 @@ class Settings(BaseSettings):
                     self.model = OPENAI_MODEL
                 case _:
                     raise NotImplementedError(f"No default model for provider '{self.provider}'")
+        return self
+
+    @model_validator(mode="after")
+    def auto_derive_min_loc(self):
+        if self.min_loc is None and self.max_refinement_iterations > 0:
+            self.min_loc = self.max_loc // DEFAULT_MIN_LOC_RATIO
         return self
 
     @model_validator(mode="after")
