@@ -96,13 +96,15 @@ class TestValidateInputs:
         with pytest.raises(typer.Exit):
             _validate_inputs("feature", "main")
 
+    @patch("pr_split.cli.check_gh_auth")
     @patch("pr_split.cli.is_worktree_clean", return_value=True)
     @patch("pr_split.cli.branch_exists", return_value=True)
     def test_dry_run_skips_gh_auth(
-        self, mock_be: MagicMock, mock_clean: MagicMock
+        self, mock_be: MagicMock, mock_clean: MagicMock, mock_auth: MagicMock
     ) -> None:
         # dry_run=True should not check gh auth
         _validate_inputs("feature", "main", dry_run=True)
+        mock_auth.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -370,8 +372,28 @@ class TestMoveAssignment:
 # split command argument validation
 # ---------------------------------------------------------------------------
 class TestSplitCommandValidation:
-    def test_split_min_loc_ge_max_loc_error(self) -> None:
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_split_min_loc_ge_max_loc_error(
+        self,
+        mock_pe: MagicMock,
+        mock_be: MagicMock,
+        mock_vi: MagicMock,
+        mock_extract: MagicMock,
+        mock_parse: MagicMock,
+    ) -> None:
         """min_loc >= max_loc should cause a validation error."""
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 10,
+            "total_removed": 5,
+            "total_loc": 15,
+        }
+        mock_parse.return_value = parsed_diff
         result = runner.invoke(
             app,
             ["split", "feature", "--dry-run", "--min-loc", "500", "--max-loc", "400"],
@@ -424,19 +446,16 @@ class TestSplitCommandValidation:
         assert result.exit_code == 0
         mock_save_plan.assert_called_once()
 
-    @patch("pr_split.cli._validate_inputs")
     @patch("pr_split.cli.check_gh_auth", return_value=False)
     @patch("pr_split.cli.branch_exists", return_value=False)
     def test_split_fork_ref_no_auth(
         self,
         mock_be: MagicMock,
         mock_auth: MagicMock,
-        mock_vi: MagicMock,
     ) -> None:
         result = runner.invoke(app, ["split", "#42", "--dry-run"])
         assert result.exit_code != 0
 
-    @patch("pr_split.cli._validate_inputs")
     @patch("pr_split.cli.is_worktree_clean", return_value=False)
     @patch("pr_split.cli.check_gh_auth", return_value=True)
     @patch("pr_split.cli.branch_exists", return_value=False)
@@ -445,7 +464,6 @@ class TestSplitCommandValidation:
         mock_be: MagicMock,
         mock_auth: MagicMock,
         mock_clean: MagicMock,
-        mock_vi: MagicMock,
     ) -> None:
         result = runner.invoke(app, ["split", "#42", "--dry-run"])
         assert result.exit_code != 0
