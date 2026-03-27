@@ -17,11 +17,9 @@
 
 ## Latest News 🔥
 
-**Smart LOC Bounds**: Configure `--min-loc` and `--max-loc` to control sub-PR size. All three partitioning backends (LLM, graph, CP-SAT) now enforce both lower and upper bounds — undersized groups get merged, oversized groups get penalised.
-
-**LLM Refinement Loop**: Enable `--max-refinement-iterations` to let the LLM iteratively fix LOC bound violations. When the initial plan has groups that are too small or too large, pr-split feeds the violations back to the LLM for automatic correction.
-
-**Auto-derived Minimum LOC**: When refinement is enabled and `--min-loc` isn't set, pr-split automatically derives a sensible lower bound (`max_loc / 4`) so you get well-sized groups out of the box without manual tuning.
+- Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
+- LLM Refinement Loop — enable `--max-refinement-iterations` and pr-split will automatically feed LOC violations back to the LLM until every group fits within your configured bounds.
+- Auto-derived Minimum LOC — when refinement is on and no `--min-loc` is set, pr-split picks a sensible default (25% of `--max-loc`) so you get well-sized groups out of the box.
 
 ## Why pr-split?
 
