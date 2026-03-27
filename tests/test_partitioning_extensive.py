@@ -79,6 +79,7 @@ def _settings(
     monkeypatch: pytest.MonkeyPatch,
     *,
     max_loc: int,
+    min_loc: int | None = None,
     partition_strategy: PartitionStrategy,
     priority: Priority = Priority.ORTHOGONAL,
 ) -> Settings:
@@ -86,6 +87,7 @@ def _settings(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     return Settings(
         max_loc=max_loc,
+        min_loc=min_loc,
         partition_strategy=partition_strategy,
         priority=priority,
     )
@@ -104,13 +106,32 @@ def _group_signature(groups: list[Group]) -> tuple[tuple[tuple[str, tuple[int, .
     return tuple(normalized)
 
 
-def _assert_valid_plan(groups: list[Group], diff_text: str, max_loc: int) -> None:
+def _assert_valid_plan(
+    groups: list[Group],
+    diff_text: str,
+    max_loc: int,
+    min_loc: int | None = None,
+) -> None:
     parsed = parse_diff(diff_text)
-    warnings = validate_plan(groups, parsed, PlanDAG(groups), max_loc)
+    warnings = validate_plan(groups, parsed, PlanDAG(groups), max_loc, min_loc=min_loc)
     assert warnings == []
 
 
 class TestPartitionDiffGraphExtensive:
+    def test_min_loc_merges_undersized_groups_when_possible(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            min_loc=5,
+            partition_strategy=PartitionStrategy.GRAPH,
+            priority=Priority.ORTHOGONAL,
+        )
+        groups = partition_diff(parse_diff(UNRELATED_DIFF), settings)
+        assert len(groups) == 1
+        _assert_valid_plan(groups, UNRELATED_DIFF, 10, min_loc=5)
+
     def test_orthogonal_keeps_unrelated_files_separate(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -160,6 +181,18 @@ class TestPartitionDiffGraphExtensive:
             priority=Priority.LOGICAL,
         )
         parsed = parse_diff(RELATED_DIFF)
+        signatures = {_group_signature(partition_diff(parsed, settings)) for _ in range(3)}
+        assert len(signatures) == 1
+
+    def test_min_loc_repair_is_deterministic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            min_loc=5,
+            partition_strategy=PartitionStrategy.GRAPH,
+            priority=Priority.ORTHOGONAL,
+        )
+        parsed = parse_diff(UNRELATED_DIFF)
         signatures = {_group_signature(partition_diff(parsed, settings)) for _ in range(3)}
         assert len(signatures) == 1
 
