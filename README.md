@@ -15,7 +15,7 @@
   </a>
 </p>
 
-## Latest News
+## Latest News 🔥
 
 **Smart LOC Bounds**: Configure `--min-loc` and `--max-loc` to control sub-PR size. All three partitioning backends (LLM, graph, CP-SAT) now enforce both lower and upper bounds — undersized groups get merged, oversized groups get penalised.
 
