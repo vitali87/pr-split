@@ -25,6 +25,7 @@ _AFFINITY_ORTHOGONAL_PENALTY = 20
 _AFFINITY_LOGICAL_SHARED_DIR_BONUS = 10
 _GRAPH_ORTHOGONAL_FILE_PENALTY = 25.0
 _CP_SAT_OVERFLOW_WEIGHT = 1_000
+_CP_SAT_UNDERFLOW_WEIGHT = 1_000
 _CP_SAT_GROUP_WEIGHT_LOGICAL = 200
 _CP_SAT_GROUP_WEIGHT_ORTHOGONAL = 250
 _CP_SAT_CROSS_FILE_PENALTY_LOGICAL = 0
@@ -344,6 +345,14 @@ def _group_units_cp_sat(
         model.NewIntVar(0, max_total_loc, f"overflow_{group_idx}")
         for group_idx in range(group_slots)
     ]
+    underflow = (
+        [
+            model.NewIntVar(0, max_total_loc, f"underflow_{group_idx}")
+            for group_idx in range(group_slots)
+        ]
+        if settings.min_loc is not None
+        else []
+    )
 
     for unit_idx in range(len(units)):
         model.Add(sum(x[(unit_idx, group_idx)] for group_idx in range(group_slots)) == 1)
@@ -355,6 +364,10 @@ def _group_units_cp_sat(
         )
         model.Add(load <= max_total_loc * y[group_idx])
         model.Add(load - settings.max_loc <= overflow[group_idx])
+        if underflow:
+            # Underflow only applies to active groups: inactive groups (y==0)
+            # have zero load and should not be penalised for being undersized.
+            model.Add(settings.min_loc * y[group_idx] - load <= underflow[group_idx])
         for unit_idx in range(len(units)):
             model.Add(x[(unit_idx, group_idx)] <= y[group_idx])
 
@@ -394,9 +407,11 @@ def _group_units_cp_sat(
         else _CP_SAT_AFFINITY_DIVISOR_ORTHOGONAL
     )
 
+    underflow_cost = _CP_SAT_UNDERFLOW_WEIGHT * sum(underflow) if underflow else 0
     model.Minimize(
         group_weight * sum(y)
         + overflow_weight * sum(overflow)
+        + underflow_cost
         + cross_file_penalty
         * sum(same_group for _, is_cross_file, same_group in pair_terms if is_cross_file)
         - sum(
