@@ -170,7 +170,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `ANTHROPIC_API_KEY` | (required for Anthropic) | Anthropic API key |
 | `OPENAI_API_KEY` | (required for OpenAI) | OpenAI API key |
 | `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider) |
-| `PR_SPLIT_MIN_LOC` | unset | Optional minimum target diff lines |
+| `PR_SPLIT_MIN_LOC` | unset | Minimum target diff lines per sub-PR |
 | `PR_SPLIT_MAX_LOC` | `400` | Default maximum target diff lines |
 | `PR_SPLIT_STRICT_LOC_BOUNDS` | `false` | Fail if the final plan violates configured LOC bounds |
 | `PR_SPLIT_MAX_REFINEMENT_ITERATIONS` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
