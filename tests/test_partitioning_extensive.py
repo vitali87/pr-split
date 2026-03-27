@@ -267,6 +267,34 @@ class TestPartitionDiffCpSatExtensive:
         assert groups[1].depends_on == ["pr-1"]
         _assert_valid_plan(groups, TWO_HUNK_DIFF, 1)
 
+    def test_min_loc_merges_undersized_groups(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        pytest.importorskip("ortools.sat.python.cp_model")
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            min_loc=5,
+            partition_strategy=PartitionStrategy.CP_SAT,
+            priority=Priority.ORTHOGONAL,
+        )
+        groups = partition_diff(parse_diff(UNRELATED_DIFF), settings)
+        assert len(groups) == 1
+        _assert_valid_plan(groups, UNRELATED_DIFF, 10, min_loc=5)
+
+    def test_min_loc_no_effect_when_groups_already_large(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        pytest.importorskip("ortools.sat.python.cp_model")
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            min_loc=1,
+            partition_strategy=PartitionStrategy.CP_SAT,
+            priority=Priority.ORTHOGONAL,
+        )
+        groups = partition_diff(parse_diff(UNRELATED_DIFF), settings)
+        assert len(groups) == 2
+        _assert_valid_plan(groups, UNRELATED_DIFF, 10, min_loc=1)
+
     def test_is_deterministic_across_runs(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.importorskip("ortools.sat.python.cp_model")
         settings = _settings(
