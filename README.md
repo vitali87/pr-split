@@ -72,9 +72,10 @@ pr-split split feature-branch --base main --dry-run
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--base` | `main` | Base branch for the diff |
-| `--min-loc` | unset | Optional minimum diff lines per sub-PR |
+| `--min-loc` | unset | Minimum target diff lines per sub-PR |
 | `--max-loc` | `400` | Maximum target diff lines per sub-PR |
-| `--strict-loc-bounds` | `false` | Exit instead of proceeding when the final plan violates configured LOC bounds |
+| `--strict-loc-bounds` | `false` | Fail if the final plan violates configured LOC bounds |
+| `--max-refinement-iterations` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
@@ -172,6 +173,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_MIN_LOC` | unset | Optional minimum target diff lines |
 | `PR_SPLIT_MAX_LOC` | `400` | Default maximum target diff lines |
 | `PR_SPLIT_STRICT_LOC_BOUNDS` | `false` | Fail if the final plan violates configured LOC bounds |
+| `PR_SPLIT_MAX_REFINEMENT_ITERATIONS` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
