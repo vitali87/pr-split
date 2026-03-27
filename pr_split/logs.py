@@ -57,7 +57,9 @@ PLAN_METRICS = (
 REFINEMENT_START = (
     "LOC bound violations detected ({count}), starting refinement iteration {iteration}"
 )
-REFINEMENT_RESOLVED = "All LOC bound violations resolved after {iterations} refinement iteration(s)"
+REFINEMENT_RESOLVED = (
+    "All LOC bound violations resolved after {iterations} refinement iteration(s)"
+)
 REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
