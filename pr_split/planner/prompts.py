@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from ..constants import Priority
-from ..types_defs import DiffStats
+from ..types_defs import DiffStats, LocBoundViolation
 
 SPLIT_TOOL_NAME = "propose_split_plan"
 
@@ -159,6 +159,42 @@ Diff (this chunk only):
 """
 
 
+_REFINEMENT_USER_PROMPT_TEMPLATE = """\
+Your previous split plan has LOC bound violations that need to be fixed.
+
+Violations:
+{violations}
+
+Current plan:
+{current_plan}
+
+Full diff:
+{full_diff}
+
+Revise the plan to fix these violations by merging undersized groups or \
+redistributing hunks from oversized groups. Return a complete revised plan \
+covering ALL hunks. Keep groups that already satisfy the bounds unchanged \
+where possible.\
+"""
+
+
+def _format_violations(violations: list[LocBoundViolation]) -> str:
+    lines: list[str] = []
+    for v in violations:
+        direction = "below minimum" if v.violation_type == "below_min" else "above maximum"
+        lines.append(
+            f"  - {v.group_id}: {v.estimated_loc} LOC "
+            f"(+{v.estimated_added}/-{v.estimated_removed}), {direction} {v.limit}"
+        )
+    return "\n".join(lines)
+
+
+def _format_current_plan(groups: list[dict[str, object]]) -> str:
+    import json
+
+    return json.dumps(groups, indent=2)
+
+
 def _format_file_summary(diff_stats: DiffStats) -> str:
     lines: list[str] = []
     for fs in diff_stats["file_summaries"]:
@@ -232,4 +268,16 @@ def build_chunk_continuation_prompt(
         group_catalog=group_catalog,
         file_summary=_format_file_summary(chunk_stats),
         chunk_diff=chunk_diff,
+    )
+
+
+def build_refinement_prompt(
+    violations: list[LocBoundViolation],
+    current_groups: list[dict[str, object]],
+    full_diff: str,
+) -> str:
+    return _REFINEMENT_USER_PROMPT_TEMPLATE.format(
+        violations=_format_violations(violations),
+        current_plan=_format_current_plan(current_groups),
+        full_diff=full_diff,
     )

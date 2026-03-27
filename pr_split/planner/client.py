@@ -37,10 +37,12 @@ from .prompts import (
     SPLIT_TOOL_SCHEMA,
     build_chunk_continuation_prompt,
     build_chunk_first_prompt,
+    build_refinement_prompt,
     build_system_prompt,
     build_user_prompt,
 )
 from .scoring import score_plan
+from .validator import detect_loc_bound_violations
 
 _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
@@ -319,6 +321,88 @@ def _plan_split_chunked(
     return accumulated
 
 
+def _groups_to_raw_dicts(groups: list[Group]) -> list[dict[str, object]]:
+    return [
+        {
+            "id": g.id,
+            "title": g.title,
+            "description": g.description,
+            "depends_on": g.depends_on,
+            "assignments": [
+                {
+                    "file_path": a.file_path,
+                    "assignment_type": a.assignment_type.value,
+                    "hunk_indices": list(a.hunk_indices),
+                }
+                for a in g.assignments
+            ],
+            "estimated_loc": g.estimated_loc,
+        }
+        for g in groups
+    ]
+
+
+def _refine_plan_with_llm(
+    groups: list[Group],
+    parsed_diff: ParsedDiff,
+    settings: Settings,
+    system: str,
+) -> list[Group]:
+    if settings.max_refinement_iterations == 0 or (
+        settings.min_loc is None and settings.max_loc >= sum(g.estimated_loc for g in groups)
+    ):
+        return groups
+
+    for iteration in range(1, settings.max_refinement_iterations + 1):
+        violations = detect_loc_bound_violations(
+            groups, settings.max_loc, settings.min_loc
+        )
+        if not violations:
+            logger.info(
+                logs.REFINEMENT_RESOLVED.format(iterations=iteration - 1)
+            )
+            return groups
+
+        logger.info(
+            logs.REFINEMENT_START.format(count=len(violations), iteration=iteration)
+        )
+
+        user = build_refinement_prompt(
+            violations=violations,
+            current_groups=_groups_to_raw_dicts(groups),
+            full_diff=parsed_diff.labeled_diff,
+        )
+
+        try:
+            raw = _call_llm(system=system, user=user, settings=settings)
+            refined = _parse_groups(raw)
+            recompute_estimated_loc(refined, parsed_diff)
+            groups = refined
+        except LLMError:
+            logger.warning(
+                logs.REFINEMENT_EXHAUSTED.format(
+                    iterations=iteration, remaining=len(violations)
+                )
+            )
+            return groups
+
+    remaining = detect_loc_bound_violations(groups, settings.max_loc, settings.min_loc)
+    if not remaining:
+        logger.info(
+            logs.REFINEMENT_RESOLVED.format(
+                iterations=settings.max_refinement_iterations
+            )
+        )
+    else:
+        logger.warning(
+            logs.REFINEMENT_EXHAUSTED.format(
+                iterations=settings.max_refinement_iterations,
+                remaining=len(remaining),
+            )
+        )
+    return groups
+
+
 def _plan_split_with_llm(
     parsed_diff: ParsedDiff,
     settings: Settings,
@@ -337,14 +421,14 @@ def _plan_split_with_llm(
         logger.warning(logs.DIFF_TOO_LARGE.format(tokens=token_count, limit=effective_limit))
         groups = _plan_split_chunked(parsed_diff, settings, system, token_count)
         logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
-        return groups
+        return _refine_plan_with_llm(groups, parsed_diff, settings, system)
 
     logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
     raw = _call_llm(system=system, user=user, settings=settings)
     groups = _parse_groups(raw)
     recompute_estimated_loc(groups, parsed_diff)
     logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
-    return groups
+    return _refine_plan_with_llm(groups, parsed_diff, settings, system)
 
 
 def plan_split(

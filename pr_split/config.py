@@ -6,6 +6,7 @@ from .constants import (
     DEFAULT_CHUNK_STRATEGY,
     DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     DEFAULT_MAX_LOC,
+    DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
@@ -36,6 +37,7 @@ class Settings(BaseSettings):
     min_loc: int | None = Field(default=DEFAULT_MIN_LOC, ge=1)
     max_loc: int = Field(default=DEFAULT_MAX_LOC, gt=0)
     strict_loc_bounds: bool = DEFAULT_STRICT_LOC_BOUNDS
+    max_refinement_iterations: int = Field(default=DEFAULT_MAX_REFINEMENT_ITERATIONS, ge=0)
     cp_sat_timeout: float = DEFAULT_CP_SAT_TIMEOUT_SECONDS
     priority: Priority = Priority.ORTHOGONAL
     chunk_strategy: ChunkStrategy = DEFAULT_CHUNK_STRATEGY
