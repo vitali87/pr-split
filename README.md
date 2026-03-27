@@ -15,6 +15,14 @@
   </a>
 </p>
 
+## Latest News
+
+**Smart LOC Bounds**: Configure `--min-loc` and `--max-loc` to control sub-PR size. All three partitioning backends (LLM, graph, CP-SAT) now enforce both lower and upper bounds — undersized groups get merged, oversized groups get penalised.
+
+**LLM Refinement Loop**: Enable `--max-refinement-iterations` to let the LLM iteratively fix LOC bound violations. When the initial plan has groups that are too small or too large, pr-split feeds the violations back to the LLM for automatic correction.
+
+**Auto-derived Minimum LOC**: When refinement is enabled and `--min-loc` isn't set, pr-split automatically derives a sensible lower bound (`max_loc / 4`) so you get well-sized groups out of the box without manual tuning.
+
 ## Why pr-split?
 
 Vibe coding with AI assistants can produce massive PRs that no one wants to review. A 2,000 line PR with changes across dozens of files is a review bottleneck: teammates skim it, rubber stamp it, or just ignore it. `pr-split` turns that monolith into a set of focused, bite-sized PRs your team can actually review with confidence. Each sub-PR has a clear purpose, minimal scope, and explicit dependencies, so reviewers know exactly what changed and why.
