@@ -225,6 +225,7 @@ jobs:
 | `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`) |
 | `priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `threshold-groups` | `2` | Minimum suggested groups before posting the split plan |
+| `python-version` | `3.12` | Python version to use |
 | `post-comment` | `true` | Whether to post a PR comment with the results |
 
 ### Action outputs

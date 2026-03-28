@@ -6,6 +6,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -29,25 +31,41 @@ def _skip(reason: str) -> None:
     _set_output("should_split", "false")
 
 
+def _md_escape(s: str) -> str:
+    return s.replace("|", "\\|")
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, str(default))
+    try:
+        return int(raw)
+    except ValueError:
+        print(f"Error: {name} must be an integer, got '{raw}'.", file=sys.stderr)
+        sys.exit(1)
+
+
 def main() -> None:
-    max_loc = os.environ.get("MAX_LOC", "400")
-    min_loc = os.environ.get("MIN_LOC", "")
+    max_loc = _parse_int_env("MAX_LOC", 400)
+    min_loc_raw = os.environ.get("MIN_LOC", "")
     strategy = os.environ.get("PARTITION_STRATEGY", "graph")
     priority = os.environ.get("PRIORITY", "orthogonal")
-    threshold = int(os.environ.get("THRESHOLD_GROUPS", "2"))
+    threshold = _parse_int_env("THRESHOLD_GROUPS", 2)
+    pr_number = os.environ.get("PR_NUMBER", "")
     base_branch = os.environ["BASE_BRANCH"]
     head_branch = os.environ["HEAD_BRANCH"]
 
-    # GitHub Actions pull_request checkout is a merge commit.
-    # Create local branch refs so pr-split can resolve them.
-    _run(["git", "fetch", "origin", base_branch, head_branch])
-    _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
-    _run(["git", "branch", "-f", head_branch, f"origin/{head_branch}"])
+    # Fetch refs — use refs/pull/{n}/head for fork compatibility
+    _run(["git", "fetch", "origin", base_branch])
+    if pr_number:
+        pr_ref = f"refs/pull/{pr_number}/head"
+        local_head = f"pr-split/head-{pr_number}"
+        _run(["git", "fetch", "origin", f"{pr_ref}:{local_head}"])
+    else:
+        _run(["git", "fetch", "origin", head_branch])
+        local_head = f"origin/{head_branch}"
 
     # Compute diff stats
-    result = _run(
-        ["git", "diff", "--numstat", f"{base_branch}...{head_branch}"]
-    )
+    result = _run(["git", "diff", "--numstat", f"origin/{base_branch}...{local_head}"])
 
     total_added = 0
     total_removed = 0
@@ -64,9 +82,13 @@ def main() -> None:
     total_loc = total_added + total_removed
     _set_output("total_loc", str(total_loc))
 
-    if total_loc <= int(max_loc):
+    if total_loc <= max_loc:
         _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
         return
+
+    # Create local branch refs for pr-split
+    _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
+    _run(["git", "branch", "-f", head_branch, local_head])
 
     # Run pr-split in dry-run mode
     cmd = [
@@ -74,19 +96,13 @@ def main() -> None:
         "--base", base_branch,
         "--partition-strategy", strategy,
         "--priority", priority,
-        "--max-loc", max_loc,
+        "--max-loc", str(max_loc),
         "--dry-run",
     ]
-    if min_loc:
-        cmd.extend(["--min-loc", min_loc])
+    if min_loc_raw:
+        cmd.extend(["--min-loc", min_loc_raw])
 
-    result = _run(cmd, check=False)
-    # Feed "done" to the interactive editor via stdin
-    if result.returncode != 0:
-        # Retry with stdin to handle interactive editor prompt
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, input="done\n"
-        )
+    result = subprocess.run(cmd, capture_output=True, text=True, input="done\n")
     if result.returncode != 0:
         print(f"pr-split failed:\n{result.stderr}", file=sys.stderr)
         _skip("pr-split failed to generate a plan.")
@@ -104,7 +120,7 @@ def main() -> None:
     total_groups = len(groups)
 
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
-    overflow = sum(max(0, g["estimated_loc"] - int(max_loc)) for g in groups)
+    overflow = sum(max(0, g["estimated_loc"] - max_loc) for g in groups)
     file_groups: dict[str, set[str]] = {}
     for g in groups:
         for a in g.get("assignments", []):
@@ -148,15 +164,16 @@ def main() -> None:
         lines.append("|-------|-------|------|------------|-------|")
         for g in groups:
             files = ", ".join(
-                f"`{a['file_path']}`" for a in g.get("assignments", [])
+                f"`{_md_escape(a['file_path'])}`"
+                for a in g.get("assignments", [])
             )
             deps = ", ".join(g.get("depends_on", [])) or "—"
             diff_str = (
                 f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
             )
-            lines.append(
-                f"| {g['id']} | {g['title']} | {diff_str} | {deps} | {files} |"
-            )
+            title = _md_escape(g["title"])
+            gid = _md_escape(g["id"])
+            lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")
         lines.append("")
         lines.append(
             "*Run `pr-split split` locally to create these sub-PRs, "
@@ -166,8 +183,10 @@ def main() -> None:
         lines.append("This PR is within acceptable size limits.")
 
     comment = "\n".join(lines)
-    with open("/tmp/pr-split-comment.md", "w") as f:
-        f.write(comment)
+    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
+    comment_path = Path(tmp_dir) / "pr-split-comment.md"
+    comment_path.write_text(comment)
+    _set_output("comment_path", str(comment_path))
 
 
 if __name__ == "__main__":
