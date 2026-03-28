@@ -2,23 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
 
 
-def _run(cmd: list[str]) -> str:
+def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
+    if check and result.returncode != 0:
         print(f"Command failed: {' '.join(cmd)}", file=sys.stderr)
         print(result.stderr, file=sys.stderr)
         sys.exit(1)
-    return result.stdout.strip()
+    return result
 
 
 def _set_output(name: str, value: str) -> None:
     with open(os.environ["GITHUB_OUTPUT"], "a") as f:
         f.write(f"{name}={value}\n")
+
+
+def _skip(reason: str) -> None:
+    print(reason)
+    _set_output("total_groups", "1")
+    _set_output("objective", "0")
+    _set_output("should_split", "false")
 
 
 def main() -> None:
@@ -30,13 +38,21 @@ def main() -> None:
     base_branch = os.environ["BASE_BRANCH"]
     head_branch = os.environ["HEAD_BRANCH"]
 
+    # GitHub Actions pull_request checkout is a merge commit.
+    # Create local branch refs so pr-split can resolve them.
+    _run(["git", "fetch", "origin", base_branch, head_branch])
+    _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
+    _run(["git", "branch", "-f", head_branch, f"origin/{head_branch}"])
+
     # Compute diff stats
-    diff_numstat = _run(["git", "diff", "--numstat", f"{base_branch}...{head_branch}"])
+    result = _run(
+        ["git", "diff", "--numstat", f"{base_branch}...{head_branch}"]
+    )
 
     total_added = 0
     total_removed = 0
     file_count = 0
-    for line in diff_numstat.splitlines():
+    for line in result.stdout.strip().splitlines():
         parts = line.split("\t")
         if len(parts) >= 3:
             added = int(parts[0]) if parts[0] != "-" else 0
@@ -46,18 +62,13 @@ def main() -> None:
             file_count += 1
 
     total_loc = total_added + total_removed
-
     _set_output("total_loc", str(total_loc))
 
-    # If the diff is tiny, skip scoring
     if total_loc <= int(max_loc):
-        _set_output("total_groups", "1")
-        _set_output("objective", "0")
-        _set_output("should_split", "false")
-        print(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
+        _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
         return
 
-    # Run pr-split in dry-run mode with the graph/cp_sat backend
+    # Run pr-split in dry-run mode
     cmd = [
         "pr-split", "split", head_branch,
         "--base", base_branch,
@@ -69,24 +80,21 @@ def main() -> None:
     if min_loc:
         cmd.extend(["--min-loc", min_loc])
 
-    # pr-split writes the plan to .pr-split/plan.json
-    result = subprocess.run(cmd, capture_output=True, text=True, input="done\n")
+    result = _run(cmd, check=False)
+    # Feed "done" to the interactive editor via stdin
+    if result.returncode != 0:
+        # Retry with stdin to handle interactive editor prompt
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, input="done\n"
+        )
     if result.returncode != 0:
         print(f"pr-split failed:\n{result.stderr}", file=sys.stderr)
-        _set_output("total_groups", "1")
-        _set_output("objective", "0")
-        _set_output("should_split", "false")
+        _skip("pr-split failed to generate a plan.")
         return
-
-    # Parse the saved plan
-    import json
 
     plan_path = ".pr-split/plan.json"
     if not os.path.exists(plan_path):
-        print("No plan file generated", file=sys.stderr)
-        _set_output("total_groups", "1")
-        _set_output("objective", "0")
-        _set_output("should_split", "false")
+        _skip("No plan file generated.")
         return
 
     with open(plan_path) as f:
@@ -95,7 +103,6 @@ def main() -> None:
     groups = plan.get("groups", [])
     total_groups = len(groups)
 
-    # Compute a simple score
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
     overflow = sum(max(0, g["estimated_loc"] - int(max_loc)) for g in groups)
     file_groups: dict[str, set[str]] = {}
@@ -144,8 +151,12 @@ def main() -> None:
                 f"`{a['file_path']}`" for a in g.get("assignments", [])
             )
             deps = ", ".join(g.get("depends_on", [])) or "—"
-            diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
-            lines.append(f"| {g['id']} | {g['title']} | {diff_str} | {deps} | {files} |")
+            diff_str = (
+                f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
+            )
+            lines.append(
+                f"| {g['id']} | {g['title']} | {diff_str} | {deps} | {files} |"
+            )
         lines.append("")
         lines.append(
             "*Run `pr-split split` locally to create these sub-PRs, "
