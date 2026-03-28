@@ -53,7 +53,7 @@ runs:
 
     - name: Install pr-split
       shell: bash
-      run: uv tool install pr-split
+      run: uv tool install "${{ github.action_path }}"
 
     - name: Score PR
       id: score
