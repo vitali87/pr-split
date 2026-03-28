@@ -20,7 +20,6 @@
 - GitHub Action — add pr-split to any repo as a CI check. Scores every PR and posts a split plan comment when it's too large. No API key needed.
 - Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
 - LLM Refinement Loop — enable `--max-refinement-iterations` and pr-split will automatically feed LOC violations back to the LLM until every group fits within your configured bounds.
-- Auto-derived Minimum LOC — when refinement is on and no `--min-loc` is set, pr-split picks a sensible default (25% of `--max-loc`) so you get well-sized groups out of the box.
 
 ## Why pr-split?
 
