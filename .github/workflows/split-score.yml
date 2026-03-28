@@ -5,6 +5,7 @@ on:
     branches: [main]
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
@@ -15,7 +16,8 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: ./
+      - name: pr-split score
+        uses: vitali87/pr-split@v1.0.0
         with:
           max-loc: "400"
           partition-strategy: "graph"
