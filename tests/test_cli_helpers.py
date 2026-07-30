@@ -502,3 +502,48 @@ class TestPushFailureGating:
         with pytest.raises(PRCreationError) as excinfo:
             _push_and_create_prs(groups, records)
         assert [r.pr_number for r in excinfo.value.pr_records] == [11]
+
+
+class TestStackedTransitiveChain:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_grandchild_materializes_with_all_ancestor_hunks(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        grandparent = _group("pr-1", "feat: base")
+        grandparent.assignments = [
+            GroupAssignment(
+                file_path="shared.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        parent = _group("pr-2", "feat: mid", ["pr-1"])
+        parent.assignments = [
+            GroupAssignment(
+                file_path="shared.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[1],
+            )
+        ]
+        child = _group("pr-3", "feat: top", ["pr-2"])
+        child.assignments = [
+            GroupAssignment(
+                file_path="shared.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[2],
+            )
+        ]
+        _create_branches_and_commits(
+            [grandparent, parent, child], MagicMock(), "main", "base_sha", "ns", stacked=True
+        )
+        child_calls = [
+            call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"
+        ]
+        assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1, 2]

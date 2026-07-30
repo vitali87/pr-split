@@ -68,3 +68,21 @@ class TestSplitPlanStacked:
             stacked=True,
         )
         assert SplitPlan.model_validate(plan.model_dump()).stacked is True
+
+
+class TestSplitPlanDraft:
+    def test_defaults_to_ready(self) -> None:
+        plan = SplitPlan(
+            dev_branch="dev", base_branch="main", max_loc=400, priority=Priority.ORTHOGONAL
+        )
+        assert plan.draft is False
+
+    def test_draft_round_trips_through_plan_file(self) -> None:
+        plan = SplitPlan(
+            dev_branch="dev",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            draft=True,
+        )
+        assert SplitPlan.model_validate(plan.model_dump()).draft is True
