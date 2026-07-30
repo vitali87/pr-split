@@ -547,3 +547,40 @@ class TestStackedTransitiveChain:
             call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"
         ]
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1, 2]
+
+
+class TestTransitivePushFailureGating:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    def test_leaf_pr_skipped_when_root_push_fails(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [
+            _group("pr-1", "feat: a"),
+            _group("pr-2", "feat: b", ["pr-1"]),
+            _group("pr-3", "feat: c", ["pr-2"]),
+        ]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            BranchRecord(
+                group_id="pr-2",
+                branch_name="pr-split/ns/pr-2",
+                base_branch="pr-split/ns/pr-1",
+                commit_sha="abc123",
+            ),
+            BranchRecord(
+                group_id="pr-3",
+                branch_name="pr-split/ns/pr-3",
+                base_branch="pr-split/ns/pr-2",
+                commit_sha="abc123",
+            ),
+        ]
+
+        def push(branch: str) -> None:
+            if branch == "pr-split/ns/pr-1":
+                raise GitOperationError("push rejected")
+
+        mock_push.side_effect = push
+        with pytest.raises(PRSplitError):
+            _push_and_create_prs(groups, records)
+        assert mock_create.call_count == 0
