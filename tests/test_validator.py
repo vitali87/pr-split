@@ -172,3 +172,26 @@ class TestValidateLocBounds:
         assert violations[0].group_id == "g1"
         assert violations[0].violation_type == LocViolationType.BELOW_MIN
         assert violations[0].limit == 50
+
+
+class TestValidateCoverageWholeFileExpansion:
+    def test_whole_file_with_empty_indices_counts_as_full_coverage(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        validate_coverage(groups, parsed)
+
+    def test_whole_file_overlapping_same_file_partial_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group(
+                "g2",
+                [_ga("a.py", PARTIAL, [0]), _ga("b.py", WHOLE, [0])],
+                7,
+            ),
+        ]
+        with pytest.raises(PlanValidationError, match="multiple groups"):
+            validate_coverage(groups, parsed)
