@@ -30,20 +30,25 @@ def check_gh_auth() -> bool:
     return True
 
 
-def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
+def create_pr(
+    head: str, base: str, title: str, body: str, *, draft: bool = False
+) -> tuple[int, str]:
+    args = [
+        "pr",
+        "create",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--title",
+        title,
+        "--body",
+        body,
+    ]
+    if draft:
+        args.append("--draft")
     try:
-        output = _run_gh(
-            "pr",
-            "create",
-            "--base",
-            base,
-            "--head",
-            head,
-            "--title",
-            title,
-            "--body",
-            body,
-        )
+        output = _run_gh(*args)
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_CREATE_FAILED(group=head, detail=str(exc))) from exc
     pr_url = output.strip().splitlines()[-1]

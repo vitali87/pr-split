@@ -386,6 +386,8 @@ def _create_single_pr(
     group: Group,
     record: BranchRecord,
     all_groups: list[Group],
+    *,
+    draft: bool = False,
 ) -> PRRecord:
     logger.info(logs.CREATING_PR.format(group=group.id))
     body = _build_pr_body(group, all_groups)
@@ -395,6 +397,7 @@ def _create_single_pr(
             base=record.base_branch,
             title=group.title,
             body=body,
+            draft=draft,
         )
     return PRRecord(
         group_id=group.id,
@@ -406,6 +409,8 @@ def _create_single_pr(
 def _push_and_create_prs(
     groups: list[Group],
     branch_records: list[BranchRecord],
+    *,
+    draft: bool = False,
 ) -> list[PRRecord]:
     record_map = {r.group_id: r for r in branch_records}
     errors: list[tuple[str, Exception]] = []
@@ -428,7 +433,9 @@ def _push_and_create_prs(
 
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
         future_to_group_id = {
-            executor.submit(_create_single_pr, group, record_map[group.id], groups): group.id
+            executor.submit(
+                _create_single_pr, group, record_map[group.id], groups, draft=draft
+            ): group.id
             for group in groups
             if group.id in pushed
         }
@@ -681,6 +688,14 @@ def split(
             help="Stack dependent PRs: each child branches from and targets its parent's branch",
         ),
     ] = False,
+    draft: Annotated[
+        bool,
+        typer.Option(
+            "--draft",
+            envvar="PR_SPLIT_DRAFT",
+            help="Open every sub-PR as a draft",
+        ),
+    ] = False,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Preview plan without creating branches or PRs")
     ] = False,
@@ -798,6 +813,7 @@ def split(
         max_loc=settings.max_loc,
         strict_loc_bounds=settings.strict_loc_bounds,
         stacked=stack,
+        draft=draft,
         priority=priority,
         groups=groups,
         author=author,
@@ -817,7 +833,7 @@ def split(
     branch_records = _create_branches_and_commits(
         groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
     )
-    pr_records = _push_and_create_prs(groups, branch_records)
+    pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     if stack:
         _link_stacks(dag, pr_records)
 
@@ -928,6 +944,14 @@ def execute(
             help="Stack dependent PRs even if the saved plan was not created with --stack",
         ),
     ] = False,
+    draft: Annotated[
+        bool,
+        typer.Option(
+            "--draft",
+            envvar="PR_SPLIT_DRAFT",
+            help="Open every sub-PR as a draft even if the plan was not saved with --draft",
+        ),
+    ] = False,
 ) -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -937,6 +961,8 @@ def execute(
     plan = plan_file.plan
     if stack and not plan.stacked:
         plan = plan.model_copy(update={"stacked": True})
+    if draft and not plan.draft:
+        plan = plan.model_copy(update={"draft": True})
 
     if plan_file.git_state.branches or plan_file.git_state.prs:
         console.print(
@@ -988,7 +1014,7 @@ def execute(
         author=plan.author,
         stacked=plan.stacked,
     )
-    pr_records = _push_and_create_prs(plan.groups, branch_records)
+    pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
 
