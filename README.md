@@ -97,7 +97,7 @@ pr-split split feature-branch --base main --stack
 
 Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
 
-Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group fall back to targeting the base branch, since native stacks are strictly linear.
+Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
 ### Check status of an existing split
 
