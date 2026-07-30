@@ -12,6 +12,28 @@ from ..schemas import Group
 from .parser import ParsedDiff
 
 
+def merge_chain_assignments(group: Group, ancestors: list[Group]) -> Group:
+    ancestor_hunks: dict[str, set[int]] = {}
+    for ancestor in ancestors:
+        for assignment in ancestor.assignments:
+            ancestor_hunks.setdefault(assignment.file_path, set()).update(
+                assignment.hunk_indices
+            )
+
+    merged = []
+    for assignment in group.assignments:
+        extra = ancestor_hunks.get(assignment.file_path)
+        if assignment.assignment_type is AssignmentType.PARTIAL_HUNKS and extra:
+            merged.append(
+                assignment.model_copy(
+                    update={"hunk_indices": sorted(set(assignment.hunk_indices) | extra)}
+                )
+            )
+        else:
+            merged.append(assignment)
+    return group.model_copy(update={"assignments": merged})
+
+
 def _get_base_file_content(file_path: str, ref: str) -> str:
     result = subprocess.run(
         ["git", "show", f"{ref}:{file_path}"],

@@ -41,6 +41,7 @@ class SplitPlan(BaseModel):
     min_loc: int | None = None
     max_loc: int
     strict_loc_bounds: bool = False
+    stacked: bool = False
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
     author: str | None = None

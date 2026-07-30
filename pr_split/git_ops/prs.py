@@ -76,6 +76,15 @@ def close_pr(pr_number: int) -> None:
     logger.info(logs.PR_CLOSED.format(number=pr_number))
 
 
+def link_stack(pr_numbers: list[int]) -> None:
+    try:
+        _run_gh("stack", "link", *[str(n) for n in pr_numbers])
+    except GitOperationError as exc:
+        logger.warning(logs.STACK_LINK_FAILED.format(prs=pr_numbers, detail=exc))
+        return
+    logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
+
+
 def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     from .branches import run_git
 
