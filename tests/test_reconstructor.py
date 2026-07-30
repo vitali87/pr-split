@@ -274,3 +274,21 @@ class TestMergeChainAssignments:
     def test_no_ancestors_is_identity(self) -> None:
         child = self._child()
         assert merge_chain_assignments(child, []) == child
+
+
+class TestAddedFileLineEndings:
+    def test_added_file_content_is_not_double_spaced(self) -> None:
+        parsed = parse_diff(NEW_FILE_DIFF)
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="t",
+            assignments=[
+                GroupAssignment(
+                    file_path="new_file.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                )
+            ],
+        )
+        result = materialize_group_files(parsed, group, "abc123")
+        assert result["new_file.py"] == 'def hello():\n    return "world"\n\n'
