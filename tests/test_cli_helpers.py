@@ -13,8 +13,10 @@ from pr_split.cli import (
     _render_dag,
     _render_dag_markdown,
     _resolve_fork_ref,
+    _stacked_batch_args,
 )
 from pr_split.constants import AssignmentType
+from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.graph import PlanDAG
 from pr_split.schemas import BranchRecord, Group, GroupAssignment, PRRecord
 
@@ -390,3 +392,113 @@ class TestPushAndCreatePrsDraft:
         ]
         _push_and_create_prs(groups, records, draft=True)
         assert [call.kwargs["draft"] for call in mock_create.call_args_list] == [True, True]
+
+
+class TestStackedBatchArgsMergeNode:
+    def _diamond(self) -> list[Group]:
+        left = _group("pr-1", "left")
+        left.assignments = [
+            GroupAssignment(
+                file_path="left.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        right = _group("pr-2", "right")
+        right.assignments = [
+            GroupAssignment(
+                file_path="right.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        child = _group("pr-3", "merge", ["pr-1", "pr-2"])
+        child.assignments = [
+            GroupAssignment(
+                file_path="child.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        return [left, right, child]
+
+    def _merge_node_args(self) -> tuple[Group, str, str]:
+        groups = self._diamond()
+        batches = _stacked_batch_args(
+            PlanDAG(groups),
+            {g.id: g for g in groups},
+            {g.id: f"pr-split/ns/{g.id}" for g in groups},
+            "main",
+            "base_sha",
+            {"left.py": 1, "right.py": 1, "child.py": 1},
+        )
+        return next(
+            (merged, base, start)
+            for batch in batches
+            for merged, base, start in batch
+            if merged.id == "pr-3"
+        )
+
+    def test_merge_node_carries_both_parents_changes(self) -> None:
+        merged, _, _ = self._merge_node_args()
+        assert {a.file_path for a in merged.assignments} == {
+            "left.py",
+            "right.py",
+            "child.py",
+        }
+
+    def test_merge_node_still_builds_from_merge_base(self) -> None:
+        _, base, start = self._merge_node_args()
+        assert (base, start) == ("main", "base_sha")
+
+
+class TestPushFailureGating:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    def test_child_pr_skipped_when_parent_push_fails(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b", ["pr-1"])]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            BranchRecord(
+                group_id="pr-2",
+                branch_name="pr-split/ns/pr-2",
+                base_branch="pr-split/ns/pr-1",
+                commit_sha="abc123",
+            ),
+        ]
+
+        def push(branch: str) -> None:
+            if branch == "pr-split/ns/pr-1":
+                raise GitOperationError("push rejected")
+
+        mock_push.side_effect = push
+        with pytest.raises(PRSplitError):
+            _push_and_create_prs(groups, records)
+        assert mock_create.call_count == 0
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_partial_pr_records_ride_on_the_error(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b")]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            _branch_record("pr-2", "pr-split/ns/pr-2"),
+        ]
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-2":
+                raise GitOperationError("boom")
+            return (11, "https://github.com/pr/11")
+
+        mock_create.side_effect = create
+        with pytest.raises(PRCreationError) as excinfo:
+            _push_and_create_prs(groups, records)
+        assert [r.pr_number for r in excinfo.value.pr_records] == [11]

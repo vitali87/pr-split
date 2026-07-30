@@ -276,6 +276,83 @@ class TestMergeChainAssignments:
         assert merge_chain_assignments(child, []) == child
 
 
+class TestMergeChainAssignmentsWholeFileAncestor:
+    def _parent(self) -> Group:
+        return Group(
+            id="pr-1",
+            title="parent",
+            description="parent",
+            assignments=[
+                GroupAssignment(
+                    file_path="shared.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                ),
+            ],
+        )
+
+    def _child(self) -> Group:
+        return Group(
+            id="pr-2",
+            title="child",
+            description="child",
+            depends_on=["pr-1"],
+            assignments=[
+                GroupAssignment(
+                    file_path="shared.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                ),
+            ],
+        )
+
+    def test_whole_file_ancestor_covers_every_hunk(self) -> None:
+        merged = merge_chain_assignments(
+            self._child(), [self._parent()], hunk_counts={"shared.py": 2}
+        )
+        by_path = {a.file_path: a for a in merged.assignments}
+        assert by_path["shared.py"].hunk_indices == [0, 1]
+
+
+class TestMergeChainAssignmentsCarryAncestorFiles:
+    def _parent(self) -> Group:
+        return Group(
+            id="pr-1",
+            title="parent",
+            description="parent",
+            assignments=[
+                GroupAssignment(
+                    file_path="parent_only.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                ),
+            ],
+        )
+
+    def _child(self) -> Group:
+        return Group(
+            id="pr-3",
+            title="child",
+            description="child",
+            depends_on=["pr-1"],
+            assignments=[
+                GroupAssignment(
+                    file_path="child.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                ),
+            ],
+        )
+
+    def test_ancestor_only_file_is_carried(self) -> None:
+        merged = merge_chain_assignments(
+            self._child(),
+            [self._parent()],
+            hunk_counts={"parent_only.py": 1, "child.py": 1},
+            carry_ancestor_files=True,
+        )
+        by_path = {a.file_path: a for a in merged.assignments}
+        assert by_path["parent_only.py"].hunk_indices == [0]
+
+
 class TestAddedFileLineEndings:
     def test_added_file_content_is_not_double_spaced(self) -> None:
         parsed = parse_diff(NEW_FILE_DIFF)
