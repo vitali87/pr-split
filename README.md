@@ -17,9 +17,9 @@
 
 ## Latest News 🔥
 
+- Stacked PR Mode — pass `--stack` and every dependent PR branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Chains are registered as native GitHub stacks via the `gh-stack` extension when it is installed.
 - GitHub Action — add pr-split to any repo as a CI check. Scores every PR and posts a split plan comment when it's too large. No API key needed.
 - Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
-- LLM Refinement Loop — enable `--max-refinement-iterations` and pr-split will automatically feed LOC violations back to the LLM until every group fits within your configured bounds.
 
 ## Why pr-split?
 
@@ -85,7 +85,18 @@ pr-split split feature-branch --base main --dry-run
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
+
+### Stack dependent PRs
+
+```bash
+pr-split split feature-branch --base main --stack
+```
+
+Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
+
+Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group fall back to targeting the base branch, since native stacks are strictly linear.
 
 ### Check status of an existing split
 
@@ -121,7 +132,7 @@ pr-split merge --notify https://hooks.slack.com/...
 pr-split execute
 ```
 
-Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run.
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` to stack the PRs even when the plan was saved without it.
 
 ### Interactive plan editing
 
@@ -183,6 +194,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
 ## GitHub Action
