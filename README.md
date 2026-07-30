@@ -86,6 +86,7 @@ pr-split split feature-branch --base main --dry-run
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
+| `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
 
 ### Stack dependent PRs
@@ -132,7 +133,7 @@ pr-split merge --notify https://hooks.slack.com/...
 pr-split execute
 ```
 
-Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` to stack the PRs even when the plan was saved without it.
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags.
 
 ### Interactive plan editing
 
@@ -195,6 +196,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
 | `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
+| `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
 ## GitHub Action
