@@ -8,8 +8,55 @@ from unidiff import PatchedFile
 from .. import logs
 from ..constants import AssignmentType
 from ..exceptions import GitOperationError
-from ..schemas import Group
+from ..schemas import Group, GroupAssignment
 from .parser import ParsedDiff
+
+
+def merge_chain_assignments(
+    group: Group,
+    ancestors: list[Group],
+    hunk_counts: dict[str, int] | None = None,
+    *,
+    carry_ancestor_files: bool = False,
+) -> Group:
+    counts = hunk_counts or {}
+    ancestor_hunks: dict[str, set[int]] = {}
+    for ancestor in ancestors:
+        for assignment in ancestor.assignments:
+            # A WHOLE_FILE assignment covers every hunk even when its
+            # hunk_indices list was left empty, so expand from the diff.
+            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
+                covered = set(range(counts.get(assignment.file_path, 0)))
+                covered.update(assignment.hunk_indices)
+            else:
+                covered = set(assignment.hunk_indices)
+            ancestor_hunks.setdefault(assignment.file_path, set()).update(covered)
+
+    merged = []
+    own_files = set[str]()
+    for assignment in group.assignments:
+        own_files.add(assignment.file_path)
+        extra = ancestor_hunks.get(assignment.file_path)
+        if assignment.assignment_type is AssignmentType.PARTIAL_HUNKS and extra:
+            merged.append(
+                assignment.model_copy(
+                    update={"hunk_indices": sorted(set(assignment.hunk_indices) | extra)}
+                )
+            )
+        else:
+            merged.append(assignment)
+
+    if carry_ancestor_files:
+        for file_path, covered in ancestor_hunks.items():
+            if file_path not in own_files:
+                merged.append(
+                    GroupAssignment(
+                        file_path=file_path,
+                        assignment_type=AssignmentType.PARTIAL_HUNKS,
+                        hunk_indices=sorted(covered),
+                    )
+                )
+    return group.model_copy(update={"assignments": merged})
 
 
 def _get_base_file_content(file_path: str, ref: str) -> str:
@@ -62,9 +109,11 @@ def materialize_group_files(
                 for line in hunk:
                     if line.is_added or line.is_context:
                         target_lines.append(str(line)[1:])
-            result[assignment.file_path] = "\n".join(target_lines)
-            if target_lines:
-                result[assignment.file_path] += "\n"
+            # Lines from unidiff keep their trailing newline, so they are
+            # concatenated as-is; joining on "\n" double-spaces the file.
+            result[assignment.file_path] = "".join(
+                ln if ln.endswith("\n") else ln + "\n" for ln in target_lines
+            )
             continue
         base_content = _get_base_file_content(assignment.file_path, ref)
         match assignment.assignment_type:

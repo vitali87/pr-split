@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .. import logs
-from ..constants import LocViolationType
+from ..constants import AssignmentType, LocViolationType
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
@@ -10,10 +10,17 @@ from ..types_defs import LocBoundViolation
 
 
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
-            for idx in assignment.hunk_indices:
+            # A WHOLE_FILE assignment claims every hunk of the file even when
+            # its hunk_indices list was left empty.
+            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
+                indices = range(hunk_counts.get(assignment.file_path, 0))
+            else:
+                indices = assignment.hunk_indices
+            for idx in indices:
                 key = (assignment.file_path, idx)
                 assigned.setdefault(key, []).append(group.id)
 

@@ -30,20 +30,25 @@ def check_gh_auth() -> bool:
     return True
 
 
-def create_pr(head: str, base: str, title: str, body: str) -> tuple[int, str]:
+def create_pr(
+    head: str, base: str, title: str, body: str, *, draft: bool = False
+) -> tuple[int, str]:
+    args = [
+        "pr",
+        "create",
+        "--base",
+        base,
+        "--head",
+        head,
+        "--title",
+        title,
+        "--body",
+        body,
+    ]
+    if draft:
+        args.append("--draft")
     try:
-        output = _run_gh(
-            "pr",
-            "create",
-            "--base",
-            base,
-            "--head",
-            head,
-            "--title",
-            title,
-            "--body",
-            body,
-        )
+        output = _run_gh(*args)
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_CREATE_FAILED(group=head, detail=str(exc))) from exc
     pr_url = output.strip().splitlines()[-1]
@@ -74,6 +79,15 @@ def merge_pr(pr_number: int, *, auto: bool = False) -> None:
 def close_pr(pr_number: int) -> None:
     _run_gh("pr", "close", str(pr_number))
     logger.info(logs.PR_CLOSED.format(number=pr_number))
+
+
+def link_stack(pr_numbers: list[int]) -> None:
+    try:
+        _run_gh("stack", "link", *[str(n) for n in pr_numbers])
+    except GitOperationError as exc:
+        logger.warning(logs.STACK_LINK_FAILED.format(prs=pr_numbers, detail=exc))
+        return
+    logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
 
 
 def fetch_fork_pr(pr_number: int) -> ForkPRInfo:

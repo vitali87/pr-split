@@ -77,3 +77,22 @@ class PlanDAG:
                 result.add(node)
                 queue.extend(self._children[node])
         return result
+
+    def _chained_to_parent(self, group_id: str) -> bool:
+        parents = self._parents[group_id]
+        return len(parents) == 1 and len(self._children[parents[0]]) == 1
+
+    def linear_chains(self) -> list[list[str]]:
+        chains: list[list[str]] = []
+        for gid in self.topological_order():
+            if self._chained_to_parent(gid):
+                continue
+            chain = [gid]
+            while True:
+                children = self._children[chain[-1]]
+                if len(children) == 1 and self._chained_to_parent(children[0]):
+                    chain.append(children[0])
+                else:
+                    break
+            chains.append(chain)
+        return chains

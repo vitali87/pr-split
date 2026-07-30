@@ -96,3 +96,44 @@ class TestPlanDAG:
         assert set(dag.leaves()) == {"a", "b", "c"}
         order = dag.topological_order()
         assert set(order) == {"a", "b", "c"}
+
+
+class TestLinearChains:
+    def test_single_node(self) -> None:
+        dag = PlanDAG([_group("a")])
+        assert dag.linear_chains() == [["a"]]
+
+    def test_forest_of_chains(self) -> None:
+        groups = [
+            _group("pr-1"),
+            _group("pr-2"),
+            _group("pr-3", ["pr-2"]),
+            _group("pr-4"),
+            _group("pr-5", ["pr-4"]),
+        ]
+        dag = PlanDAG(groups)
+        assert sorted(dag.linear_chains()) == [
+            ["pr-1"],
+            ["pr-2", "pr-3"],
+            ["pr-4", "pr-5"],
+        ]
+
+    def test_diamond_breaks_chains(self) -> None:
+        groups = [
+            _group("a"),
+            _group("b", ["a"]),
+            _group("c", ["a"]),
+            _group("d", ["b", "c"]),
+        ]
+        dag = PlanDAG(groups)
+        assert sorted(dag.linear_chains()) == [["a"], ["b"], ["c"], ["d"]]
+
+    def test_fan_out_keeps_descendant_runs(self) -> None:
+        groups = [
+            _group("a"),
+            _group("b", ["a"]),
+            _group("c", ["b"]),
+            _group("d", ["a"]),
+        ]
+        dag = PlanDAG(groups)
+        assert sorted(dag.linear_chains()) == [["a"], ["b", "c"], ["d"]]
