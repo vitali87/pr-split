@@ -137,3 +137,17 @@ class TestLinkStack:
     def test_failure_warns_instead_of_raising(self, mock_gh: MagicMock) -> None:
         mock_gh.side_effect = GitOperationError("unknown command: stack")
         link_stack([12, 34])
+
+
+class TestCreatePrDraft:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_draft_flag_forwarded(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "https://github.com/org/repo/pull/7"
+        create_pr("head", "main", "Title", "Body", draft=True)
+        assert "--draft" in mock_gh.call_args.args
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_ready_by_default(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "https://github.com/org/repo/pull/7"
+        create_pr("head", "main", "Title", "Body")
+        assert "--draft" not in mock_gh.call_args.args

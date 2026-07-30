@@ -375,3 +375,18 @@ class TestLinkStacks:
         ]
         _link_stacks(PlanDAG(groups), prs)
         mock_link.assert_called_once_with([12, 13])
+
+
+class TestPushAndCreatePrsDraft:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    def test_draft_forwarded_to_every_pr(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b")]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            _branch_record("pr-2", "pr-split/ns/pr-2"),
+        ]
+        _push_and_create_prs(groups, records, draft=True)
+        assert [call.kwargs["draft"] for call in mock_create.call_args_list] == [True, True]
