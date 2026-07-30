@@ -84,9 +84,11 @@ def materialize_group_files(
                 for line in hunk:
                     if line.is_added or line.is_context:
                         target_lines.append(str(line)[1:])
-            result[assignment.file_path] = "\n".join(target_lines)
-            if target_lines:
-                result[assignment.file_path] += "\n"
+            # Lines from unidiff keep their trailing newline, so they are
+            # concatenated as-is; joining on "\n" double-spaces the file.
+            result[assignment.file_path] = "".join(
+                ln if ln.endswith("\n") else ln + "\n" for ln in target_lines
+            )
             continue
         base_content = _get_base_file_content(assignment.file_path, ref)
         match assignment.assignment_type:
