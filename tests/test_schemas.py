@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pr_split.constants import AssignmentType
-from pr_split.schemas import Group, GroupAssignment
+from pr_split.constants import AssignmentType, Priority
+from pr_split.schemas import Group, GroupAssignment, SplitPlan
 
 
 class TestGroup:
@@ -50,3 +50,21 @@ class TestGroupAssignment:
         )
         assert assignment.assignment_type == AssignmentType.PARTIAL_HUNKS
         assert assignment.hunk_indices == [1]
+
+
+class TestSplitPlanStacked:
+    def test_defaults_to_flat(self) -> None:
+        plan = SplitPlan(
+            dev_branch="dev", base_branch="main", max_loc=400, priority=Priority.ORTHOGONAL
+        )
+        assert plan.stacked is False
+
+    def test_stacked_round_trips_through_plan_file(self) -> None:
+        plan = SplitPlan(
+            dev_branch="dev",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            stacked=True,
+        )
+        assert SplitPlan.model_validate(plan.model_dump()).stacked is True

@@ -7,12 +7,16 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from pr_split.cli import (
+    _create_branches_and_commits,
+    _link_stacks,
     _push_and_create_prs,
     _render_dag,
     _render_dag_markdown,
     _resolve_fork_ref,
 )
-from pr_split.schemas import BranchRecord, Group
+from pr_split.constants import AssignmentType
+from pr_split.graph import PlanDAG
+from pr_split.schemas import BranchRecord, Group, GroupAssignment, PRRecord
 
 
 def _group(gid: str, title: str, depends_on: list[str] | None = None) -> Group:
@@ -236,3 +240,138 @@ class TestPushAndCreatePrs:
         assert mock_push.call_count == 6
         assert mock_create.call_count == 6
         assert max_concurrent_val >= 3
+
+
+class TestCreateBranchesAndCommitsStacked:
+    def _stacked_groups(self) -> list[Group]:
+        return [_group("pr-2", "feat: base"), _group("pr-3", "feat: top", ["pr-2"])]
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_child_branch_starts_from_parent_branch(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        _create_branches_and_commits(
+            self._stacked_groups(), MagicMock(), "main", "base_sha", "ns", stacked=True
+        )
+        start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
+        assert start_points["pr-split/ns/pr-2"] == "base_sha"
+        assert start_points["pr-split/ns/pr-3"] == "pr-split/ns/pr-2"
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_child_pr_base_is_parent_branch(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        records = _create_branches_and_commits(
+            self._stacked_groups(), MagicMock(), "main", "base_sha", "ns", stacked=True
+        )
+        bases = {r.group_id: r.base_branch for r in records}
+        assert bases == {"pr-2": "main", "pr-3": "pr-split/ns/pr-2"}
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_merge_node_falls_back_to_base_branch(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "a"),
+            _group("pr-2", "b"),
+            _group("pr-3", "c", ["pr-1", "pr-2"]),
+        ]
+        records = _create_branches_and_commits(
+            groups, MagicMock(), "main", "base_sha", "ns", stacked=True
+        )
+        bases = {r.group_id: r.base_branch for r in records}
+        assert bases["pr-3"] == "main"
+        start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
+        assert start_points["pr-split/ns/pr-3"] == "base_sha"
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_child_materializes_with_ancestor_hunks(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        parent = _group("pr-2", "feat: base")
+        parent.assignments = [
+            GroupAssignment(
+                file_path="shared.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        child = _group("pr-3", "feat: top", ["pr-2"])
+        child.assignments = [
+            GroupAssignment(
+                file_path="shared.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[1],
+            )
+        ]
+        _create_branches_and_commits(
+            [parent, child], MagicMock(), "main", "base_sha", "ns", stacked=True
+        )
+        child_calls = [
+            call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"
+        ]
+        assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1]
+        assert child_calls[0].args[2] == "base_sha"
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_flat_mode_unchanged(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        records = _create_branches_and_commits(
+            self._stacked_groups(), MagicMock(), "main", "base_sha", "ns"
+        )
+        start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
+        assert set(start_points.values()) == {"base_sha"}
+        assert {r.base_branch for r in records} == {"main"}
+
+
+class TestLinkStacks:
+    @patch("pr_split.cli.link_stack")
+    def test_links_only_chains_of_two_or_more(self, mock_link: MagicMock) -> None:
+        groups = [
+            _group("pr-1", "a"),
+            _group("pr-2", "b"),
+            _group("pr-3", "c", ["pr-2"]),
+        ]
+        prs = [
+            PRRecord(group_id="pr-1", pr_number=11, pr_url="u"),
+            PRRecord(group_id="pr-2", pr_number=12, pr_url="u"),
+            PRRecord(group_id="pr-3", pr_number=13, pr_url="u"),
+        ]
+        _link_stacks(PlanDAG(groups), prs)
+        mock_link.assert_called_once_with([12, 13])

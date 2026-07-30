@@ -12,6 +12,7 @@ from pr_split.git_ops.prs import (
     close_pr,
     create_pr,
     fetch_fork_pr,
+    link_stack,
 )
 
 
@@ -123,3 +124,16 @@ class TestFetchForkPr:
         mock_gh.return_value = json.dumps({"head": "not_a_dict", "base": {"ref": "main"}})
         with pytest.raises(GitOperationError):
             fetch_fork_pr(42)
+
+
+class TestLinkStack:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_links_bottom_to_top(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = ""
+        link_stack([12, 34, 56])
+        mock_gh.assert_called_once_with("stack", "link", "12", "34", "56")
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_failure_warns_instead_of_raising(self, mock_gh: MagicMock) -> None:
+        mock_gh.side_effect = GitOperationError("unknown command: stack")
+        link_stack([12, 34])
