@@ -44,7 +44,7 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PRCreationError, PRSplitError
+from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
 from .git_ops import (
     add_worktree,
     branch_exists,
@@ -63,7 +63,7 @@ from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
-from .planner import plan_split, validate_plan
+from .planner import plan_split, validate_coverage, validate_plan
 from .schemas import (
     BranchRecord,
     GitState,
@@ -1041,6 +1041,12 @@ def execute(
         raise typer.Exit(1)
 
     parsed_diff = parse_diff(plan.raw_diff)
+
+    try:
+        validate_coverage(plan.groups, parsed_diff)
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     _present_plan(plan.groups)
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
