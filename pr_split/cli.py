@@ -448,15 +448,21 @@ def _push_and_create_prs(
     branch_owner = {record_map[g.id].branch_name: g.id for g in groups}
 
     def _base_pushed(group: Group) -> bool:
-        owner = branch_owner.get(record_map[group.id].base_branch)
-        if owner is not None and owner not in pushed:
-            logger.warning(
-                logs.PR_SKIPPED_BASE_NOT_PUSHED.format(
-                    group=group.id, base=record_map[group.id].base_branch
+        # Walk the whole base chain: a pushed leaf must not open a PR when
+        # any ancestor branch in its stack failed to push.
+        gid = group.id
+        while True:
+            owner = branch_owner.get(record_map[gid].base_branch)
+            if owner is None:
+                return True
+            if owner not in pushed:
+                logger.warning(
+                    logs.PR_SKIPPED_BASE_NOT_PUSHED.format(
+                        group=group.id, base=record_map[gid].base_branch
+                    )
                 )
-            )
-            return False
-        return True
+                return False
+            gid = owner
 
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
         future_to_group_id = {
