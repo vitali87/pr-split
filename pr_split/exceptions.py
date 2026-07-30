@@ -1,4 +1,10 @@
+from __future__ import annotations
+
 from enum import StrEnum
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .schemas import PRRecord
 
 
 class ErrorMsg(StrEnum):
@@ -44,3 +50,9 @@ class GitOperationError(PRSplitError):
 
 class LLMError(PRSplitError):
     pass
+
+
+class PRCreationError(PRSplitError):
+    def __init__(self, message: str, pr_records: list[PRRecord]) -> None:
+        super().__init__(message)
+        self.pr_records = pr_records

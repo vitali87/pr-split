@@ -44,7 +44,7 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PRSplitError
+from .exceptions import ErrorMsg, PRCreationError, PRSplitError
 from .git_ops import (
     add_worktree,
     branch_exists,
@@ -234,6 +234,7 @@ def _stacked_batch_args(
     branch_names: dict[str, str],
     base_branch: str,
     merge_base_ref: str,
+    hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
     effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
@@ -242,12 +243,24 @@ def _stacked_batch_args(
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]])
+                merged = merge_chain_assignments(
+                    group, [effective[parents[0]]], hunk_counts
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
+            elif len(parents) > 1:
+                # Native stacks are linear, so a merge node builds from the
+                # merge base and carries every ancestor's changes itself.
+                logger.warning(logs.MERGE_NODE_NOT_STACKED.format(group=gid))
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                    carry_ancestor_files=True,
+                )
+                start_point = merge_base_ref
+                group_base = base_branch
             else:
-                if len(parents) > 1:
-                    logger.warning(logs.MERGE_NODE_NOT_STACKED.format(group=gid))
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
@@ -272,8 +285,9 @@ def _create_branches_and_commits(
         dag = PlanDAG(groups)
         groups_by_id = {g.id: g for g in groups}
         branch_names = {g.id: f"{BRANCH_PREFIX}{namespace}/{g.id}" for g in groups}
+        hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
         batches = _stacked_batch_args(
-            dag, groups_by_id, branch_names, base_branch, merge_base_ref
+            dag, groups_by_id, branch_names, base_branch, merge_base_ref, hunk_counts
         )
     else:
         batches = iter([[(group, base_branch, merge_base_ref) for group in groups]])
@@ -431,13 +445,26 @@ def _push_and_create_prs(
                 logger.error(f"Failed to push branch for {group_id}: {exc}")
                 errors.append((group_id, exc))
 
+    branch_owner = {record_map[g.id].branch_name: g.id for g in groups}
+
+    def _base_pushed(group: Group) -> bool:
+        owner = branch_owner.get(record_map[group.id].base_branch)
+        if owner is not None and owner not in pushed:
+            logger.warning(
+                logs.PR_SKIPPED_BASE_NOT_PUSHED.format(
+                    group=group.id, base=record_map[group.id].base_branch
+                )
+            )
+            return False
+        return True
+
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
         future_to_group_id = {
             executor.submit(
                 _create_single_pr, group, record_map[group.id], groups, draft=draft
             ): group.id
             for group in groups
-            if group.id in pushed
+            if group.id in pushed and _base_pushed(group)
         }
         results: dict[str, PRRecord] = {}
         for future in as_completed(future_to_group_id):
@@ -450,7 +477,10 @@ def _push_and_create_prs(
 
     if errors:
         error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
-        raise PRSplitError(f"{len(errors)} PR(s) failed:\n{error_details}")
+        raise PRCreationError(
+            f"{len(errors)} PR(s) failed:\n{error_details}",
+            pr_records=[results[g.id] for g in groups if g.id in results],
+        )
 
     return [results[g.id] for g in groups]
 
@@ -833,7 +863,14 @@ def split(
     branch_records = _create_branches_and_commits(
         groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
     )
-    pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
+    try:
+        pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
+    except PRCreationError as exc:
+        save_plan(PlanFile(
+            plan=split_plan,
+            git_state=GitState(branches=branch_records, prs=exc.pr_records),
+        ))
+        raise
     if stack:
         _link_stacks(dag, pr_records)
 
@@ -1014,7 +1051,14 @@ def execute(
         author=plan.author,
         stacked=plan.stacked,
     )
-    pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
+    try:
+        pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
+    except PRCreationError as exc:
+        save_plan(PlanFile(
+            plan=plan,
+            git_state=GitState(branches=branch_records, prs=exc.pr_records),
+        ))
+        raise
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
 
