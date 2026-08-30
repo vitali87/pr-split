@@ -1067,7 +1067,11 @@ _AUTO_MERGE_POLL_INTERVAL = 10
 _AUTO_MERGE_POLL_TIMEOUT = 600
 
 
-def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[str]:
+def _poll_for_merged(
+    group_ids: list[str],
+    pr_map: dict[str, PRRecord],
+    fetch_errors: list[str] | None = None,
+) -> set[str]:
     pending = set(group_ids)
     actually_merged: set[str] = set()
     deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
@@ -1086,6 +1090,8 @@ def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[s
                 logger.warning(
                     f"PR #{pr_record.pr_number} ({gid}) {reason} while polling, aborting wait"
                 )
+                if state == "" and fetch_errors is not None:
+                    fetch_errors.append(gid)
                 pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
@@ -1139,6 +1145,7 @@ def merge_all(
     skipped: list[str] = []
     skipped_ids: set[str] = set()
     blocked: list[str] = []
+    fetch_errors: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1157,6 +1164,7 @@ def merge_all(
                     f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
                 )
                 skipped_ids.add(group_id)
+                fetch_errors.append(group_id)
                 skipped.append(f"{group_id} (fetch error)")
                 continue
 
@@ -1216,8 +1224,13 @@ def merge_all(
             queued = [gid for gid in batch if gid not in merged and gid not in skipped_ids]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
-                actually_merged = _poll_for_merged(queued, pr_map)
+                poll_fetch_errors: list[str] = []
+                actually_merged = _poll_for_merged(queued, pr_map, poll_fetch_errors)
                 merged.extend(actually_merged)
+                for gid in poll_fetch_errors:
+                    fetch_errors.append(gid)
+                    skipped_ids.add(gid)
+                    skipped.append(f"{gid} (fetch error)")
 
         if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
             if not stopped:
@@ -1245,12 +1258,19 @@ def merge_all(
             f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
             f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
         )
+    if fetch_errors:
+        console.print(
+            f"[red]Could not fetch PR state for ({len(fetch_errors)}): "
+            f"{', '.join(fetch_errors)}. Check 'gh auth status' and re-run.[/red]"
+        )
     if notify:
         exit_reason = (
             "merge_error"
             if stopped
             else "incomplete_batch"
             if exited_early
+            else "fetch_error"
+            if fetch_errors
             else "unmerged_dependency"
             if blocked
             else "success"
@@ -1263,11 +1283,11 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early or blocked),
+                "success": not (failed or stopped or exited_early or blocked or fetch_errors),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early or blocked:
+    if failed or stopped or exited_early or blocked or fetch_errors:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
