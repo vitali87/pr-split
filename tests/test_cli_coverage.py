@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from pr_split.cli import (
     _build_pr_body,
     _handle_loc_bound_warnings,
+    _interactive_edit,
     _move_assignment,
     _present_plan,
     _resolve_fork_ref,
@@ -259,6 +260,31 @@ class TestShowGroupDetail:
             ],
         )
         _show_group_detail([g], "pr-1")
+
+
+# ---------------------------------------------------------------------------
+# _interactive_edit
+# ---------------------------------------------------------------------------
+class TestInteractiveEditRecomputesLoc:
+    @patch("pr_split.cli.recompute_estimated_loc")
+    @patch("pr_split.cli._move_assignment", return_value=True)
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
+    def test_successful_move_recomputes_loc(
+        self, mock_prompt: MagicMock, mock_move: MagicMock, mock_recompute: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b")]
+        parsed = MagicMock()
+        _interactive_edit(groups, parsed)
+        mock_recompute.assert_called_once_with(groups, parsed)
+
+    @patch("pr_split.cli.recompute_estimated_loc")
+    @patch("pr_split.cli._move_assignment", return_value=False)
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:9 pr-1 pr-2", "done"])
+    def test_failed_move_does_not_recompute(
+        self, mock_prompt: MagicMock, mock_move: MagicMock, mock_recompute: MagicMock
+    ) -> None:
+        _interactive_edit([_group("pr-1", "a", files=["a.py"])], MagicMock())
+        mock_recompute.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
