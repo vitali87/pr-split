@@ -236,7 +236,6 @@ def _stacked_batch_args(
     merge_base_ref: str,
     hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
-    effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
         batch_args: list[tuple[Group, str, str]] = []
         for gid in batch:
@@ -269,7 +268,6 @@ def _stacked_batch_args(
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
-            effective[gid] = merged
             batch_args.append((merged, group_base, start_point))
         yield batch_args
 
