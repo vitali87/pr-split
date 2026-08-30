@@ -330,3 +330,22 @@ class TestFormatGroupCatalogExtended:
     def test_empty_groups(self) -> None:
         result = format_group_catalog([])
         assert result == ""
+
+
+class TestChunkStatsKeepGlobalIndices:
+    def test_second_chunk_summary_uses_per_file_global_indices(self) -> None:
+        from pr_split.diff_ops.parser import parse_diff
+        from pr_split.planner.chunker import build_chunk_stats_from_hunks, build_hunk_sequence
+        from pr_split.planner.prompts import build_chunk_continuation_prompt
+
+        diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n" + "".join(
+            f"@@ -{10 * i + 1},1 +{10 * i + 1},2 @@\n x\n+y{i}\n" for i in range(4)
+        )
+        parsed = parse_diff(diff)
+        refs = build_hunk_sequence(parsed, 0.25)
+        second_chunk = refs[2:]
+        stats = build_chunk_stats_from_hunks(parsed, second_chunk)
+        assert stats["file_summaries"][0]["hunk_indices"] == [2, 3]
+        prompt = build_chunk_continuation_prompt(stats, "diff", 2, 2, "catalog")
+        assert "indices 2, 3 (this chunk only)" in prompt
+        assert "indices 0..1" not in prompt

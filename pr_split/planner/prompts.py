@@ -209,7 +209,17 @@ def _format_file_summary(diff_stats: DiffStats) -> str:
         ]
         flag_str = f" [{', '.join(flags)}]" if flags else ""
         hunk_count = fs["hunk_count"]
-        idx_range = f"indices 0..{hunk_count - 1}" if hunk_count > 0 else "no hunks"
+        indices = fs["hunk_indices"]
+        # In chunked mode a file's hunks in this chunk keep their per-file
+        # global indices, which need not start at 0 or be contiguous; list
+        # them explicitly so the model does not re-use indices from earlier
+        # chunks.
+        if not indices:
+            idx_range = "no hunks"
+        elif indices == list(range(len(indices))):
+            idx_range = f"indices 0..{indices[-1]}"
+        else:
+            idx_range = f"indices {', '.join(str(i) for i in indices)} (this chunk only)"
         lines.append(
             f"  {fs['path']}: +{fs['added']}/-{fs['removed']}"
             f" ({hunk_count} hunks, {idx_range}){flag_str}"

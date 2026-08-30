@@ -23,6 +23,7 @@ class FileSummary(TypedDict):
     is_deleted: bool
     is_renamed: bool
     hunk_count: int
+    hunk_indices: list[int]
 
 
 class ForkPRInfo(TypedDict):

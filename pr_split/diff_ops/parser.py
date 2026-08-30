@@ -60,6 +60,7 @@ class ParsedDiff:
                     is_deleted=pf.is_removed_file,
                     is_renamed=pf.is_rename,
                     hunk_count=len(pf),
+                    hunk_indices=list(range(len(pf))),
                 )
             )
         return DiffStats(
