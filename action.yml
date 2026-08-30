@@ -55,7 +55,14 @@ runs:
 
     - name: Install pr-split
       shell: bash
-      run: uv tool install "${{ github.action_path }}"
+      env:
+        PARTITION_STRATEGY: ${{ inputs.partition-strategy }}
+      run: |
+        if [ "$PARTITION_STRATEGY" = "cp_sat" ]; then
+          uv tool install "${{ github.action_path }}[cp-sat]"
+        else
+          uv tool install "${{ github.action_path }}"
+        fi
 
     - name: Score PR
       id: score
