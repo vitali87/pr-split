@@ -574,3 +574,31 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestRenderDagMultiParent:
+    def _diamond(self) -> list[Group]:
+        return [
+            _group("pr-1", "base"),
+            _group("pr-2", "left", depends_on=["pr-1"]),
+            _group("pr-3", "right", depends_on=["pr-1"]),
+            _group("pr-4", "merge", depends_on=["pr-2", "pr-3"]),
+            _group("pr-5", "after merge", depends_on=["pr-4"]),
+        ]
+
+    def test_markdown_renders_merge_node_and_subtree_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-4")
+        assert result.count("<-- this PR") == 1
+        assert result.count("pr-4: merge (also depends on: pr-2)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
+
+    def test_markdown_marks_descendant_of_merge_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-5")
+        assert result.count("<-- this PR") == 1
+
+    def test_tree_renders_merge_node_once(self) -> None:
+        result = _render_dag(self._diamond())
+        assert result.count("pr-4: merge (depends on: pr-2, pr-3)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
