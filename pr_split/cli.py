@@ -1064,6 +1064,10 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
