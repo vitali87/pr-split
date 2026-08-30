@@ -437,6 +437,36 @@ class TestMergeBlockedDependencies:
     @patch("pr_split.cli.get_pr_state")
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_already_merged_child_under_unmerged_parent_is_not_blocked(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "draft parent", files=["a.py"]),
+            _group("pr-2", "child already merged", depends_on=["pr-1"], files=["b.py"]),
+            _group("pr-3", "grandchild", depends_on=["pr-2"], files=["c.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        states = {
+            1: {"state": "OPEN", "isDraft": True, "reviewDecision": None},
+            2: {"state": "MERGED", "isDraft": False, "reviewDecision": None},
+            3: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+        }
+        mock_state.side_effect = lambda n: states[n]
+
+        result = runner.invoke(app, ["merge"])
+
+        mock_merge.assert_called_once_with(3, auto=False)
+        assert "pr-2 (dependency" not in result.output
+        assert "Merged (2): pr-2, pr-3" in result.output
+
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
     def test_child_of_merged_parent_merges(
         self,
         mock_exists: MagicMock,

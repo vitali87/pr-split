@@ -1145,15 +1145,6 @@ def merge_all(
     exited_early = False
     for batch in dag.iter_ready():
         for group_id in batch:
-            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
-            if unmerged_parents:
-                deps = ", ".join(unmerged_parents)
-                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
-                skipped_ids.add(group_id)
-                blocked.append(group_id)
-                skipped.append(f"{group_id} (dependency {deps} not merged)")
-                continue
-
             pr_record = pr_map.get(group_id)
             if not pr_record:
                 skipped_ids.add(group_id)
@@ -1174,6 +1165,18 @@ def merge_all(
             if state == "MERGED":
                 logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
                 merged.append(group_id)
+                continue
+
+            # Checked after the live state so a PR that already merged on GitHub
+            # (e.g. into a still-open parent branch) counts as merged rather
+            # than being reported as blocked.
+            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
+            if unmerged_parents:
+                deps = ", ".join(unmerged_parents)
+                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
+                skipped_ids.add(group_id)
+                blocked.append(group_id)
+                skipped.append(f"{group_id} (dependency {deps} not merged)")
                 continue
 
             if state != "OPEN":
