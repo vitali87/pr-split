@@ -149,3 +149,44 @@ class TestCreatePrDraft:
         mock_gh.return_value = "https://github.com/org/repo/pull/7"
         create_pr("head", "main", "Title", "Body")
         assert "--draft" not in mock_gh.call_args.args
+
+
+class TestCreatePrBodyLimit:
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_oversized_body_is_truncated_below_the_limit(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import PR_BODY_MAX_CHARS
+
+        create_pr(head="h", base="b", title="t", body="x" * 100_000)
+        args = mock_gh.call_args[0]
+        sent = args[args.index("--body") + 1]
+        assert len(sent) <= PR_BODY_MAX_CHARS
+        assert sent.endswith("_(body truncated: GitHub's limit is 65,536 characters)_")
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_truncation_closes_an_open_code_fence_on_a_line_boundary(
+        self, mock_gh: MagicMock
+    ) -> None:
+        from pr_split.git_ops.prs import PR_BODY_MAX_CHARS
+
+        lines = "\n".join(f"pr-{i}: group {i}" for i in range(6000))
+        body = f"intro\n\n```\n{lines}\n```"
+        create_pr(head="h", base="b", title="t", body=body)
+        args = mock_gh.call_args[0]
+        sent = args[args.index("--body") + 1]
+        assert len(sent) <= PR_BODY_MAX_CHARS
+        assert sent.count("```") % 2 == 0
+        assert sent.endswith("```\n\n_(body truncated: GitHub's limit is 65,536 characters)_")
+        # cut on a line boundary: the line before the closing fence is intact
+        before_close = sent.rsplit("\n```", 1)[0]
+        last_line = before_close.rsplit("\n", 1)[-1]
+        assert last_line.startswith("pr-")
+        assert (
+            last_line
+            == f"{last_line.split(':')[0]}: group {last_line.split('-')[1].split(':')[0]}"
+        )
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_normal_body_is_sent_verbatim(self, mock_gh: MagicMock) -> None:
+        create_pr(head="h", base="b", title="t", body="hello")
+        args = mock_gh.call_args[0]
+        assert args[args.index("--body") + 1] == "hello"
