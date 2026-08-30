@@ -7,6 +7,7 @@ _show_group_detail, _move_assignment, and split command argument validation.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -537,3 +538,33 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+def _flat(output: str) -> str:
+    # Rich draws the error in a box that wraps text (and, on CI, colours it
+    # with ANSI codes); strip both and collapse whitespace so a phrase can be
+    # matched regardless of wrapping.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+
+
+class TestNotifyUrlValidation:
+    @pytest.mark.parametrize("bad", ["file:///tmp/wh.txt", "not-a-url", "ftp://x/y", "https://"])
+    def test_non_http_urls_are_rejected_before_anything_runs(self, bad: str) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge", "--notify", bad])
+        assert result.exit_code == 2
+        assert "must be an http(s) URL" in _flat(result.output)
+        mock_pe.assert_not_called()
+
+    def test_env_var_is_validated_too(self) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge"], env={"PR_SPLIT_WEBHOOK_URL": "file:///x"})
+        assert result.exit_code == 2
+        mock_pe.assert_not_called()
+
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_http_urls_pass(self, mock_pe: MagicMock) -> None:
+        result = runner.invoke(app, ["merge", "--notify", "https://hooks.example/abc"])
+        assert result.exit_code == 0
+        mock_pe.assert_called_once()

@@ -118,7 +118,7 @@ Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 pr-split merge --auto
 ```
 
-Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
+Use `--notify` to POST merge results to an http(s) webhook URL (e.g. Slack, Discord); other schemes are rejected up front, and a delivery failure (timeout, non-2xx) is logged as a warning without changing the exit code:
 
 ```bash
 pr-split merge --notify https://hooks.slack.com/...
