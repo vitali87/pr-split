@@ -31,6 +31,11 @@ class ErrorMsg(StrEnum):
         "Diff contains binary files, which cannot be split into hunks: {files}."
         " Commit them separately and re-run"
     )
+    GH_STACK_MISSING = (
+        "The gh-stack extension is required for stacked PRs;"
+        " run 'gh extension install github/gh-stack'"
+    )
+    STACK_LINK_FAILED = "Failed to link stack for PRs {prs}: {detail}"
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value
