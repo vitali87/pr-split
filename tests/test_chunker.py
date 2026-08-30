@@ -239,6 +239,47 @@ class TestRecomputeEstimatedLoc:
         assert groups[0].estimated_loc == 3
         assert groups[1].estimated_loc == 4
 
+    def test_whole_file_with_empty_indices_counts_every_hunk(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        groups = [_group("g1", [whole])]
+        recompute_estimated_loc(groups, parsed)
+        assert groups[0].estimated_loc == 2
+        assert groups[0].estimated_added == 2
+        assert groups[0].estimated_removed == 0
+        assert whole.hunk_indices == []
+
+    def test_whole_file_with_partial_indices_counts_every_hunk(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+        )
+        groups = [_group("g1", [whole])]
+        recompute_estimated_loc(groups, parsed)
+        assert groups[0].estimated_loc == 2
+        assert whole.hunk_indices == [0]
+
+    def test_whole_file_with_full_indices_matches_partial_hunks(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0, 1]
+        )
+        partial = _ga("c.py", [0, 1])
+        groups = [_group("g1", [whole]), _group("g2", [partial])]
+        recompute_estimated_loc(groups, parsed)
+        assert groups[0].estimated_loc == groups[1].estimated_loc == 2
+
+    def test_whole_file_for_unknown_path_is_zero(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="missing.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        groups = [_group("g1", [whole])]
+        recompute_estimated_loc(groups, parsed)
+        assert groups[0].estimated_loc == 0
+
 
 class TestAssignUncoveredHunks:
     def test_all_covered_returns_zero(self) -> None:

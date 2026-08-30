@@ -204,7 +204,14 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
         removed = 0
         for assignment in group.assignments:
             max_idx = file_hunk_counts.get(assignment.file_path, 0)
-            for idx in assignment.hunk_indices:
+            # A WHOLE_FILE assignment covers every hunk of the file whatever
+            # its hunk_indices list says (empty or partial); count it the way
+            # validate_coverage and the reconstructor do.
+            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
+                indices: list[int] | range = range(max_idx)
+            else:
+                indices = assignment.hunk_indices
+            for idx in indices:
                 if idx >= max_idx:
                     logger.warning(
                         logs.INVALID_HUNK_INDEX.format(
