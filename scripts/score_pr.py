@@ -120,9 +120,14 @@ def main() -> None:
         return
 
     with open(plan_path) as f:
-        plan = json.load(f)
+        plan_file = json.load(f)
 
+    # save_plan writes a PlanFile: {"plan": {..., "groups": [...]}, "git_state": {...}}.
+    plan = plan_file.get("plan") or {}
     groups = plan.get("groups", [])
+    if not groups:
+        _skip("Plan file contains no groups.")
+        return
     total_groups = len(groups)
 
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
