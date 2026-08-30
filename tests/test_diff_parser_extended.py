@@ -107,6 +107,7 @@ class TestExtractDiffSubprocess:
                 "diff",
                 "--no-color",
                 "--no-ext-diff",
+                "--no-textconv",
                 "--no-renames",
                 "-U3",
                 "--src-prefix=a/",

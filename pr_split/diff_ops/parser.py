@@ -14,6 +14,8 @@ from ..types_defs import DiffStats, FileSummary, HunkInfo
 # Flags that pin the diff to the exact unified format the parser and
 # reconstructor expect, regardless of the user's git config:
 #   --no-color / --no-ext-diff  plain unified output, never an external tool
+#   --no-textconv               hunks must be raw blob content, since the
+#                               reconstructor applies them to git show output
 #   --no-renames                renames become delete + add; the reconstructor
 #                               resolves base content by path, so a rename
 #                               reported under its new name would fail
@@ -22,6 +24,7 @@ from ..types_defs import DiffStats, FileSummary, HunkInfo
 DIFF_ARGS: tuple[str, ...] = (
     "--no-color",
     "--no-ext-diff",
+    "--no-textconv",
     "--no-renames",
     "-U3",
     "--src-prefix=a/",
