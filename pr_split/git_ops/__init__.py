@@ -29,6 +29,9 @@ from .branches import (
     merge_base as merge_base,
 )
 from .branches import (
+    prune_remote_tracking_refs as prune_remote_tracking_refs,
+)
+from .branches import (
     push_branch as push_branch,
 )
 from .branches import (

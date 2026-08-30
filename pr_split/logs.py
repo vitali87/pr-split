@@ -74,3 +74,7 @@ MERGE_NODE_NOT_STACKED = (
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
 )
+PRUNE_FAILED = (
+    "Could not prune origin's tracking refs before pushing ({error}); "
+    "a reused branch name may be rejected as stale"
+)

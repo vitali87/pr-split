@@ -627,3 +627,19 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestPushPrunesFirst:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    @patch("pr_split.cli.prune_remote_tracking_refs")
+    def test_tracking_refs_are_refreshed_before_any_push(
+        self, mock_prune: MagicMock, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        order: list[str] = []
+        mock_prune.side_effect = lambda: order.append("prune")
+        mock_push.side_effect = lambda branch: order.append("push")
+        _push_and_create_prs(
+            [_group("pr-1", "feat: a")], [_branch_record("pr-1", "pr-split/ns/pr-1")]
+        )
+        assert order == ["prune", "push"]
