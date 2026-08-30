@@ -125,6 +125,36 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
+def _require_local_branch(base: str) -> None:
+    """Exit unless ``base`` names a local branch head.
+
+    A remote-tracking ref such as origin/main (or a tag or SHA) resolves
+    locally, so the split would run to completion -- branches created and
+    pushed -- and only fail when GitHub is asked to open PRs against a
+    branch it does not have.
+    """
+    if branch_exists(f"refs/heads/{base}"):
+        return
+    remote_prefix = "refs/remotes/" if base.startswith("refs/remotes/") else ""
+    stripped = base.removeprefix(remote_prefix)
+    suggestion = ""
+    if remote_prefix or "/" in stripped:
+        remote, _, name = stripped.partition("/")
+        if name and remote in _remote_names():
+            suggestion = f" (for example '{name}')"
+    console.print(
+        f"[red]{ErrorMsg.BASE_NOT_A_LOCAL_BRANCH(base=base, suggestion=suggestion)}[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _remote_names() -> set[str]:
+    try:
+        return set(run_git("remote").split())
+    except PRSplitError:
+        return set()
+
+
 def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
@@ -132,6 +162,7 @@ def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> No
     if not branch_exists(base):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=base)}[/red]")
         raise typer.Exit(1)
+    _require_local_branch(base)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
@@ -1013,6 +1044,8 @@ def execute(
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
+    # A plan saved by an older version may record a remote-tracking base.
+    _require_local_branch(plan.base_branch)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)

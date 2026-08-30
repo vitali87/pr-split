@@ -74,6 +74,63 @@ class TestValidateInputs:
         with pytest.raises(typer.Exit):
             _validate_inputs("no-such-branch", "main")
 
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists")
+    def test_remote_tracking_base_is_rejected(
+        self, mock_be: MagicMock, mock_auth: MagicMock, mock_clean: MagicMock
+    ) -> None:
+        from pr_split.cli import console
+
+        # origin/main resolves as a ref but is not a local branch head.
+        mock_be.side_effect = lambda ref: ref != "refs/heads/origin/main"
+        with (
+            patch("pr_split.cli._remote_names", return_value={"origin"}),
+            console.capture() as capture,
+            pytest.raises(typer.Exit),
+        ):
+            _validate_inputs("feature", "origin/main")
+        out = " ".join(capture.get().split())
+        assert "Base 'origin/main' is not a local branch" in out
+        assert "for example 'main'" in out
+        mock_clean.assert_not_called()
+
+    @patch("pr_split.cli._remote_names", return_value={"origin"})
+    @patch("pr_split.cli.branch_exists")
+    def test_tag_or_sha_base_gets_no_bogus_suggestion(
+        self, mock_be: MagicMock, mock_remotes: MagicMock
+    ) -> None:
+        from pr_split.cli import console
+
+        mock_be.side_effect = lambda ref: not ref.startswith("refs/heads/")
+        for base in ("v1", "abc123", "feature/topic"):
+            with console.capture() as capture, pytest.raises(typer.Exit):
+                _validate_inputs("feature", base)
+            out = " ".join(capture.get().split())
+            assert f"Base '{base}' is not a local branch" in out
+            assert "for example" not in out
+
+    @patch("pr_split.cli._remote_names", return_value={"origin"})
+    @patch("pr_split.cli.branch_exists")
+    def test_full_remote_ref_suggests_the_branch_name(
+        self, mock_be: MagicMock, mock_remotes: MagicMock
+    ) -> None:
+        from pr_split.cli import console
+
+        mock_be.side_effect = lambda ref: not ref.startswith("refs/heads/")
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _validate_inputs("feature", "refs/remotes/origin/main")
+        assert "for example 'main'" in " ".join(capture.get().split())
+
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_local_base_checks_the_branch_head(
+        self, mock_be: MagicMock, mock_auth: MagicMock, mock_clean: MagicMock
+    ) -> None:
+        _validate_inputs("feature", "main")
+        assert ("refs/heads/main",) in [c.args for c in mock_be.call_args_list]
+
     @patch("pr_split.cli.branch_exists", side_effect=[True, False])
     def test_base_branch_missing(self, mock_be: MagicMock) -> None:
         with pytest.raises(typer.Exit):
@@ -508,6 +565,37 @@ class TestExecuteCommand:
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+
+    @patch("pr_split.cli._remote_names", return_value={"origin"})
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_a_remote_tracking_base_from_an_old_plan(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+        mock_remotes: MagicMock,
+    ) -> None:
+        mock_be.side_effect = lambda ref: ref != "refs/heads/origin/main"
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_plan_file.plan.base_branch = "origin/main"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "Base 'origin/main' is not a local branch" in " ".join(result.output.split())
+        mock_confirm.assert_not_called()
+        mock_create.assert_not_called()
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
