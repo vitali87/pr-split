@@ -664,3 +664,23 @@ class TestRenderDagMultiParent:
         tree = _render_dag(groups)
         assert "pr-3: merge (depends on: pr-1, pr-2)" in tree
         assert "pr-4: after" in tree
+
+    def test_topological_order_draws_merge_node_once(self) -> None:
+        # The natural planner order: pr-2 listed before pr-3. pr-3 is reached
+        # from pr-1 (still mid-walk) and from pr-2; it must be drawn once.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert md.count("pr-3: merge (also depends on:") == 1
+        assert md.count("pr-4: after") == 1
+        assert md.index("pr-3: merge (see below)") < md.index("pr-3: merge (also depends on:")
+        tree = _render_dag(groups)
+        assert tree.count("pr-3: merge (depends on: pr-1, pr-2)") == 1
+        assert tree.count("pr-3: merge (see below)") == 1
+        assert tree.count("pr-4: after") == 1

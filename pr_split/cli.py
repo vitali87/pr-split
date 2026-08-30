@@ -86,8 +86,8 @@ def _reachable_from_roots(groups: list[Group]) -> set[str]:
     """Ids that a root-first walk will actually visit.
 
     A group that is neither a root nor a descendant of one (unknown
-    dependency chain, cycle) is never drawn, so it must not count as a
-    parent still "pending" for stub placement.
+    dependency chain, cycle) is never drawn, so it must not count towards
+    the number of parents a child expects to be visited from.
     """
     children: dict[str, list[str]] = {g.id: [] for g in groups}
     for g in groups:
@@ -105,32 +105,37 @@ def _reachable_from_roots(groups: list[Group]) -> set[str]:
     return reachable
 
 
+def _expected_visits(groups: list[Group]) -> dict[str, int]:
+    """How many times each group will be reached from a drawn parent.
+
+    Every reachable parent is drawn in full exactly once, so a child is
+    visited once per reachable parent. It is rendered as a stub until its
+    final visit, which guarantees the full node (with its subtree and the
+    "<-- this PR" marker) appears exactly once and every stub precedes it.
+    """
+    reachable = _reachable_from_roots(groups)
+    return {g.id: sum(1 for d in g.depends_on if d in reachable) for g in groups}
+
+
 def _render_dag(groups: list[Group]) -> str:
     roots = [g for g in groups if not g.depends_on]
     tree = Tree("Split Plan")
-    known = _reachable_from_roots(groups)
-    # A group with several parents is drawn in full under whichever parent is
-    # visited last, so every "(see below)" stub really does point downward and
-    # the subtree appears exactly once.
-    done: set[str] = set()
+    expected = _expected_visits(groups)
+    seen: dict[str, int] = {g.id: 0 for g in groups}
 
     def _add_children(parent_tree: Tree, parent_id: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for child in children:
-            pending = [d for d in child.depends_on if d != parent_id and d in known - done]
-            if pending:
+            seen[child.id] += 1
+            if seen[child.id] < expected[child.id]:
                 parent_tree.add(f"{child.id}: {child.title} (see below)")
                 continue
             deps_label = ", ".join(child.depends_on)
             branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
-            # Mark on entry: an ancestor still walking its children is not
-            # "pending" for a grandchild that also depends on it.
-            done.add(child.id)
             _add_children(branch, child.id)
 
     for root in roots:
         root_branch = tree.add(f"{root.id}: {root.title}")
-        done.add(root.id)
         _add_children(root_branch, root.id)
 
     with console.capture() as capture:
@@ -141,18 +146,18 @@ def _render_dag(groups: list[Group]) -> str:
 def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     roots = [g for g in groups if not g.depends_on]
     lines: list[str] = []
-    known = _reachable_from_roots(groups)
-    done: set[str] = set()
+    expected = _expected_visits(groups)
+    seen: dict[str, int] = {g.id: 0 for g in groups}
 
     def _add_children(parent_id: str, prefix: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for i, child in enumerate(children):
             is_last = i == len(children) - 1
             connector = "\u2514\u2500\u2500" if is_last else "\u251c\u2500\u2500"
-            pending = [d for d in child.depends_on if d != parent_id and d in known - done]
-            if pending:
-                # Another parent is still to be drawn; the full node (with its
-                # subtree and the "<-- this PR" marker) follows under it.
+            seen[child.id] += 1
+            if seen[child.id] < expected[child.id]:
+                # Another parent will visit this node later; the full node
+                # (with its subtree and the "<-- this PR" marker) follows there.
                 lines.append(f"{prefix}{connector} {child.id}: {child.title} (see below)")
                 continue
             marker = "  <-- this PR" if child.id == current_id else ""
@@ -162,13 +167,11 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
                 also = f" (also depends on: {others})"
             lines.append(f"{prefix}{connector} {child.id}: {child.title}{also}{marker}")
             extension = "    " if is_last else "\u2502   "
-            done.add(child.id)
             _add_children(child.id, prefix + extension)
 
     for root in roots:
         marker = "  <-- this PR" if root.id == current_id else ""
         lines.append(f"{root.id}: {root.title}{marker}")
-        done.add(root.id)
         _add_children(root.id, "")
 
     tree_block = "\n".join(lines)
