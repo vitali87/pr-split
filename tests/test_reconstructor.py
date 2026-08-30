@@ -403,12 +403,14 @@ class TestMaterializeDuplicateAssignments:
                 ),
             ],
         )
-        result = materialize_group_files(parsed, group, "main")
+        with patch("pr_split.diff_ops.reconstructor.logger.info") as mock_log:
+            result = materialize_group_files(parsed, group, "main")
         content = result["example.py"]
         assert content is not None
         assert "inserted_after_1" in content
         assert "inserted_after_11" in content
         assert mock_base.call_count == 1
+        assert "Materializing 1 file" in mock_log.call_args[0][0]
 
     def test_duplicate_assignments_on_new_file_apply_both_hunks(self) -> None:
         parsed = parse_diff(

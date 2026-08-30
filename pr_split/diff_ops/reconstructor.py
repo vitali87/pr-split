@@ -99,13 +99,13 @@ def _assigned_hunk_indices(
 def materialize_group_files(
     parsed_diff: ParsedDiff, group: Group, ref: str
 ) -> dict[str, str | None]:
-    logger.info(logs.MATERIALIZING_FILES.format(count=len(group.assignments), group=group.id))
     pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
     # Several assignments may name the same file (e.g. merged across diff
     # chunks); each file is written once from the union of their hunks.
     assignments_by_path: dict[str, list[GroupAssignment]] = {}
     for assignment in group.assignments:
         assignments_by_path.setdefault(assignment.file_path, []).append(assignment)
+    logger.info(logs.MATERIALIZING_FILES.format(count=len(assignments_by_path), group=group.id))
     result: dict[str, str | None] = {}
     for file_path, assignments in assignments_by_path.items():
         patch_file = pf_map.get(file_path)
