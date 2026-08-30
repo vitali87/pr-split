@@ -1071,6 +1071,7 @@ def _poll_for_merged(
     group_ids: list[str],
     pr_map: dict[str, PRRecord],
     fetch_errors: list[str] | None = None,
+    closed: list[str] | None = None,
 ) -> set[str]:
     pending = set(group_ids)
     actually_merged: set[str] = set()
@@ -1092,6 +1093,8 @@ def _poll_for_merged(
                 )
                 if state == "" and fetch_errors is not None:
                     fetch_errors.append(gid)
+                if state == "CLOSED" and closed is not None:
+                    closed.append(gid)
                 pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
@@ -1225,12 +1228,18 @@ def merge_all(
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
                 poll_fetch_errors: list[str] = []
-                actually_merged = _poll_for_merged(queued, pr_map, poll_fetch_errors)
+                poll_closed: list[str] = []
+                actually_merged = _poll_for_merged(queued, pr_map, poll_fetch_errors, poll_closed)
                 merged.extend(actually_merged)
                 for gid in poll_fetch_errors:
                     fetch_errors.append(gid)
                     skipped_ids.add(gid)
                     skipped.append(f"{gid} (fetch error)")
+                for gid in poll_closed:
+                    # Closed while we waited: report it like a closed PR found
+                    # up front instead of an anonymous incomplete batch.
+                    skipped_ids.add(gid)
+                    skipped.append(f"{gid} (CLOSED)")
 
         if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
             if not stopped:
