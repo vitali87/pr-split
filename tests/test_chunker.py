@@ -4,6 +4,7 @@ import pytest
 
 from pr_split.constants import AssignmentType, ChunkStrategy
 from pr_split.diff_ops.parser import parse_diff
+from pr_split.exceptions import PlanValidationError
 from pr_split.planner.chunker import (
     assign_uncovered_hunks,
     build_chunk_diff_from_hunks,
@@ -223,6 +224,15 @@ class TestRecomputeEstimatedLoc:
         assert groups[0].estimated_added == 3
         assert groups[0].estimated_removed == 0
 
+    def test_whole_file_with_empty_indices_counts_every_hunk(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        groups = [_group("g1", [whole])]
+        recompute_estimated_loc(groups, parsed)
+        assert groups[0].estimated_loc == parsed.stats["total_loc"]
+
     def test_invalid_hunk_index_skipped(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)
         groups = [_group("g1", [_ga("a.py", [0, 99])])]
@@ -249,6 +259,20 @@ class TestAssignUncoveredHunks:
         ]
         count = assign_uncovered_hunks(groups, parsed)
         assert count == 0
+
+    def test_whole_file_with_empty_indices_is_fully_covered(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        groups = [_group("g1", [whole])]
+        assert assign_uncovered_hunks(groups, parsed) == 0
+        assert groups[0].assignments == [whole]
+
+    def test_zero_groups_raises_validation_error(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        with pytest.raises(PlanValidationError, match=r"a\.py\[0\] not assigned"):
+            assign_uncovered_hunks([], parsed)
 
     def test_uncovered_assigned_to_file_group(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)

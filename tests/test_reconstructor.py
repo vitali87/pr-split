@@ -362,6 +362,28 @@ class TestMergeChainAssignmentsCarryAncestorFiles:
         by_path = {a.file_path: a for a in merged.assignments}
         assert by_path["parent_only.py"].hunk_indices == [0]
 
+    def test_stale_whole_file_index_on_ancestor_is_not_carried(self) -> None:
+        stale = Group(
+            id="pr-1",
+            title="stale",
+            description="stale",
+            assignments=[
+                GroupAssignment(
+                    file_path="parent_only.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0, 99],
+                ),
+            ],
+        )
+        merged = merge_chain_assignments(
+            self._child(),
+            [stale],
+            hunk_counts={"parent_only.py": 1, "child.py": 1},
+            carry_ancestor_files=True,
+        )
+        by_path = {a.file_path: a for a in merged.assignments}
+        assert by_path["parent_only.py"].hunk_indices == [0]
+
 
 class TestAddedFileLineEndings:
     def test_added_file_content_is_not_double_spaced(self) -> None:

@@ -7,7 +7,7 @@ from loguru import logger
 from .. import logs
 from ..constants import AssignmentType, ChunkStrategy
 from ..diff_ops import ParsedDiff
-from ..exceptions import ErrorMsg
+from ..exceptions import ErrorMsg, PlanValidationError
 from ..schemas import Group, GroupAssignment
 from ..types_defs import DiffStats, FileSummary, HunkRef
 
@@ -204,7 +204,7 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
         removed = 0
         for assignment in group.assignments:
             max_idx = file_hunk_counts.get(assignment.file_path, 0)
-            for idx in assignment.hunk_indices:
+            for idx in assignment.covered_indices(max_idx):
                 if idx >= max_idx:
                     logger.warning(
                         logs.INVALID_HUNK_INDEX.format(
@@ -224,14 +224,21 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
 
 
 def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
     assigned = {
-        (a.file_path, idx) for g in groups for a in g.assignments for idx in a.hunk_indices
+        (a.file_path, idx)
+        for g in groups
+        for a in g.assignments
+        for idx in a.covered_indices(hunk_counts.get(a.file_path, 0))
     }
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
     unassigned = sorted(all_hunks - assigned)
     if not unassigned:
         return 0
+    if not groups:
+        file_path, idx = unassigned[0]
+        raise PlanValidationError(ErrorMsg.COVERAGE_GAP(file=file_path, index=idx))
 
     file_groups: dict[str, Group] = {}
     for group in groups:
