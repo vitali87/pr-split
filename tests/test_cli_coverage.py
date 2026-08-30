@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from pr_split.cli import (
     _build_pr_body,
     _handle_loc_bound_warnings,
+    _interactive_edit,
     _move_assignment,
     _present_plan,
     _resolve_fork_ref,
@@ -26,6 +27,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
+from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PRSplitError
 from pr_split.schemas import Group, GroupAssignment
 from pr_split.types_defs import ForkPRInfo
@@ -259,6 +261,78 @@ class TestShowGroupDetail:
             ],
         )
         _show_group_detail([g], "pr-1")
+
+
+# ---------------------------------------------------------------------------
+# _interactive_edit
+# ---------------------------------------------------------------------------
+class TestInteractiveEditRecomputesLoc:
+    @patch("pr_split.cli.recompute_estimated_loc")
+    @patch("pr_split.cli._move_assignment", return_value=True)
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
+    def test_successful_move_recomputes_loc(
+        self, mock_prompt: MagicMock, mock_move: MagicMock, mock_recompute: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b")]
+        parsed = MagicMock()
+        _interactive_edit(groups, parsed)
+        mock_recompute.assert_called_once_with(groups, parsed)
+
+    @patch("pr_split.cli.recompute_estimated_loc")
+    @patch("pr_split.cli._move_assignment", return_value=False)
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:9 pr-1 pr-2", "done"])
+    def test_failed_move_does_not_recompute(
+        self, mock_prompt: MagicMock, mock_move: MagicMock, mock_recompute: MagicMock
+    ) -> None:
+        _interactive_edit([_group("pr-1", "a", files=["a.py"])], MagicMock())
+        mock_recompute.assert_not_called()
+
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
+    def test_destination_keeps_whole_file_loc_after_move(self, mock_prompt: MagicMock) -> None:
+        diff = (
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+            "@@ -1,1 +1,3 @@\n x\n+a1\n+a2\n"
+            "@@ -20,1 +22,2 @@\n y\n+a3\n"
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n"
+            "@@ -1,2 +1,4 @@\n-b0\n+b1\n+b2\n+b3\n z\n"
+        )
+        parsed = parse_diff(diff)
+        groups = [
+            Group(
+                id="pr-1",
+                title="a",
+                description="a",
+                assignments=[
+                    GroupAssignment(
+                        file_path="a.py",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[0, 1],
+                    )
+                ],
+                estimated_loc=3,
+            ),
+            Group(
+                id="pr-2",
+                title="b",
+                description="b",
+                assignments=[
+                    GroupAssignment(
+                        file_path="b.py",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[],
+                    )
+                ],
+                estimated_loc=4,
+            ),
+        ]
+
+        result = _interactive_edit(groups, parsed)
+
+        by_id = {g.id: g for g in result}
+        assert by_id["pr-1"].estimated_loc == 1
+        assert by_id["pr-2"].estimated_loc == 6
+        assert by_id["pr-2"].estimated_added == 5
+        assert by_id["pr-2"].estimated_removed == 1
 
 
 # ---------------------------------------------------------------------------
