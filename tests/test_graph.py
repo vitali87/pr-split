@@ -38,6 +38,10 @@ class TestPlanDAG:
         with pytest.raises(PlanValidationError):
             dag.validate_acyclic()
 
+    def test_unknown_dependency_raises(self) -> None:
+        with pytest.raises(PlanValidationError, match="'b' depends on unknown group 'zzz'"):
+            PlanDAG([_group("a"), _group("b", ["zzz"])])
+
     def test_acyclic_passes(self) -> None:
         groups = [_group("a"), _group("b", ["a"])]
         dag = PlanDAG(groups)

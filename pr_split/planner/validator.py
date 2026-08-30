@@ -26,6 +26,12 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
 
+    for key, group_ids in assigned.items():
+        if key not in all_hunks:
+            raise PlanValidationError(
+                ErrorMsg.UNKNOWN_HUNK(file=key[0], index=key[1], group=group_ids[0])
+            )
+
     for key in all_hunks:
         if key not in assigned:
             raise PlanValidationError(ErrorMsg.COVERAGE_GAP(file=key[0], index=key[1]))

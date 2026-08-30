@@ -15,6 +15,8 @@ class PlanDAG:
         self._parents: dict[str, list[str]] = {g.id: list(g.depends_on) for g in groups}
         for g in groups:
             for dep in g.depends_on:
+                if dep not in self._groups:
+                    raise PlanValidationError(ErrorMsg.UNKNOWN_DEPENDENCY(group=g.id, dep=dep))
                 self._children[dep].append(g.id)
 
     def _build_sorter(self) -> TopologicalSorter[str]:
