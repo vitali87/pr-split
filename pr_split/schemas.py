@@ -12,6 +12,18 @@ class GroupAssignment(BaseModel):
     assignment_type: AssignmentType
     hunk_indices: list[int] = Field(default_factory=list)
 
+    def covered_hunks(self, hunk_count: int) -> list[int]:
+        """Hunk indices this assignment claims, given the file's hunk count.
+
+        A WHOLE_FILE assignment covers every hunk whatever its hunk_indices
+        list says (the LLM may leave it empty or partial); PARTIAL_HUNKS
+        covers exactly the listed indices. Every consumer that expands an
+        assignment into hunks must go through this so they cannot disagree.
+        """
+        if self.assignment_type is AssignmentType.WHOLE_FILE:
+            return list(range(hunk_count))
+        return list(self.hunk_indices)
+
 
 class Group(BaseModel):
     id: str

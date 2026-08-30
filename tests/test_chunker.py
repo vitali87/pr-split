@@ -291,6 +291,26 @@ class TestAssignUncoveredHunks:
         count = assign_uncovered_hunks(groups, parsed)
         assert count == 0
 
+    def test_whole_file_with_empty_indices_is_already_covered(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        groups = [_group("g1", [whole])]
+        count = assign_uncovered_hunks(groups, parsed)
+        assert count == 0
+        assert whole.hunk_indices == []
+        assert whole.assignment_type is AssignmentType.WHOLE_FILE
+
+    def test_whole_file_with_partial_indices_is_already_covered(self) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        whole = GroupAssignment(
+            file_path="c.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+        )
+        groups = [_group("g1", [whole])]
+        assert assign_uncovered_hunks(groups, parsed) == 0
+        assert whole.hunk_indices == [0]
+
     def test_uncovered_assigned_to_file_group(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)
         groups = [_group("g1", [_ga("a.py", [0])])]

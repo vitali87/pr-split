@@ -131,6 +131,24 @@ class TestValidateNoConflicts:
         with pytest.raises(PlanValidationError, match="overlapping"):
             validate_no_conflicts(groups, dag)
 
+    def test_whole_file_with_empty_indices_conflicts_with_partial(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("a.py", PARTIAL, [0])], 3),
+        ]
+        dag = PlanDAG(groups)
+        with pytest.raises(PlanValidationError, match="overlapping"):
+            validate_no_conflicts(groups, dag, parsed)
+
+    def test_whole_file_with_empty_indices_and_no_diff_uses_its_list(self) -> None:
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("a.py", PARTIAL, [0])], 3),
+        ]
+        dag = PlanDAG(groups)
+        validate_no_conflicts(groups, dag)
+
     def test_dependent_groups_skip_conflict_check(self) -> None:
         groups = [
             _make_group("g1", [_ga("a.py", PARTIAL, [0])], 3),
@@ -195,3 +213,17 @@ class TestValidateCoverageWholeFileExpansion:
         ]
         with pytest.raises(PlanValidationError, match="multiple groups"):
             validate_coverage(groups, parsed)
+
+
+class TestCoveredHunks:
+    def test_whole_file_ignores_its_list(self) -> None:
+        assert _ga("a.py", WHOLE, []).covered_hunks(3) == [0, 1, 2]
+        assert _ga("a.py", WHOLE, [1]).covered_hunks(3) == [0, 1, 2]
+        assert _ga("a.py", WHOLE, []).covered_hunks(0) == []
+
+    def test_partial_returns_its_list(self) -> None:
+        assignment = _ga("a.py", PARTIAL, [2, 0])
+        covered = assignment.covered_hunks(3)
+        assert covered == [2, 0]
+        covered.append(9)
+        assert assignment.hunk_indices == [2, 0]

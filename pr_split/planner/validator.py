@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .. import logs
-from ..constants import AssignmentType, LocViolationType
+from ..constants import LocViolationType
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
@@ -14,13 +14,7 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
-            # A WHOLE_FILE assignment claims every hunk of the file even when
-            # its hunk_indices list was left empty.
-            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
-                indices = range(hunk_counts.get(assignment.file_path, 0))
-            else:
-                indices = assignment.hunk_indices
-            for idx in indices:
+            for idx in assignment.covered_hunks(hunk_counts.get(assignment.file_path, 0)):
                 key = (assignment.file_path, idx)
                 assigned.setdefault(key, []).append(group.id)
 
@@ -46,12 +40,22 @@ def validate_loc(groups: list[Group], parsed_diff: ParsedDiff) -> None:
         )
 
 
-def validate_no_conflicts(groups: list[Group], dag: PlanDAG) -> None:
+def validate_no_conflicts(
+    groups: list[Group], dag: PlanDAG, parsed_diff: ParsedDiff | None = None
+) -> None:
+    # A WHOLE_FILE assignment can only be expanded to every hunk when the
+    # diff is known; validate_plan always passes it so this agrees with
+    # validate_coverage. Without it, fall back to the assignment's own list.
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set} if parsed_diff else {}
     group_files: dict[str, dict[str, set[int]]] = {}
     for group in groups:
         file_hunks: dict[str, set[int]] = {}
         for assignment in group.assignments:
-            file_hunks.setdefault(assignment.file_path, set()).update(assignment.hunk_indices)
+            count = hunk_counts.get(assignment.file_path)
+            covered = (
+                assignment.covered_hunks(count) if count is not None else assignment.hunk_indices
+            )
+            file_hunks.setdefault(assignment.file_path, set()).update(covered)
         group_files[group.id] = file_hunks
 
     group_ids = [g.id for g in groups]
@@ -140,5 +144,5 @@ def validate_plan(
     dag.validate_acyclic()
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
-    validate_no_conflicts(groups, dag)
+    validate_no_conflicts(groups, dag, parsed_diff)
     return validate_loc_bounds(groups, max_loc, min_loc)

@@ -204,14 +204,7 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
         removed = 0
         for assignment in group.assignments:
             max_idx = file_hunk_counts.get(assignment.file_path, 0)
-            # A WHOLE_FILE assignment covers every hunk of the file whatever
-            # its hunk_indices list says (empty or partial); count it the way
-            # validate_coverage and the reconstructor do.
-            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
-                indices: list[int] | range = range(max_idx)
-            else:
-                indices = assignment.hunk_indices
-            for idx in indices:
+            for idx in assignment.covered_hunks(max_idx):
                 if idx >= max_idx:
                     logger.warning(
                         logs.INVALID_HUNK_INDEX.format(
@@ -231,11 +224,15 @@ def recompute_estimated_loc(groups: list[Group], parsed_diff: ParsedDiff) -> Non
 
 
 def assign_uncovered_hunks(groups: list[Group], parsed_diff: ParsedDiff) -> int:
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
     assigned = {
-        (a.file_path, idx) for g in groups for a in g.assignments for idx in a.hunk_indices
+        (a.file_path, idx)
+        for g in groups
+        for a in g.assignments
+        for idx in a.covered_hunks(hunk_counts.get(a.file_path, 0))
     }
 
-    all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
+    all_hunks = {(path, i) for path, count in hunk_counts.items() for i in range(count)}
     unassigned = sorted(all_hunks - assigned)
     if not unassigned:
         return 0
