@@ -302,7 +302,7 @@ class TestCommitFilesInDir:
         mock_git.side_effect = ["", "", "abc123"]
         sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
         assert sha == "abc123"
-        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "-A", "--", "file.py")
+        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "-A", "-f", "--", "file.py")
 
     @patch("pr_split.git_ops.branches.run_git_in_dir")
     def test_commit_with_author(self, mock_git: MagicMock) -> None:
@@ -369,3 +369,40 @@ class TestCommitsSkipHooks:
             check=True,
         ).stdout
         assert log.strip() == "feat: a"
+
+
+class TestIgnoredPathsAreStillCommitted:
+    def test_file_tracked_on_dev_despite_gitignore_is_committed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        (repo / "build").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        (repo / ".gitignore").write_text("build/\n")
+        (repo / "build" / "out.txt").write_text("artifact\n")
+
+        commit_files_in_dir(str(repo), [".gitignore", "build/out.txt"], "feat: artifact")
+
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.split()
+        assert "build/out.txt" in tracked
+
+    def test_deleted_files_are_still_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        (repo / "a.py").write_text("x\n")
+        commit_files_in_dir(str(repo), ["a.py"], "add")
+        (repo / "a.py").unlink()
+
+        commit_files_in_dir(str(repo), ["a.py"], "remove")
+
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.split()
+        assert tracked == []
