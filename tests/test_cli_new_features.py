@@ -414,3 +414,46 @@ class TestSplitMalformedLlmOutput:
         assert result.exception is None or isinstance(result.exception, SystemExit)
         assert "Failed to parse LLM response" in result.output
         mock_save_plan.assert_not_called()
+
+
+class TestSplitInvalidPlanFromPlanner:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_coverage_gap_is_reported_not_raised(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        mock_extract_diff.return_value = (
+            "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n"
+            "@@ -1 +1 @@\n-a\n+b\n@@ -10 +10 @@\n-c\n+d\n"
+        )
+        only_first_hunk = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+            estimated_loc=2,
+        )
+        mock_plan_split.return_value = [only_first_hunk]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Hunk f.py[1] not assigned to any group" in result.output
+        mock_save_plan.assert_not_called()
