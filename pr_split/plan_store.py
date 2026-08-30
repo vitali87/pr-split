@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from loguru import logger
@@ -32,9 +33,22 @@ def plan_path() -> Path:
 
 
 def save_plan(plan_file: PlanFile) -> None:
+    """Atomically replace the plan file.
+
+    The most important save happens right after PRs are created; a crash or
+    full disk mid-write must not leave truncated JSON that destroys the only
+    record of those PRs and branches. The plan is therefore written to a
+    temporary file in the same directory and renamed over the target, which
+    is atomic on POSIX and Windows alike.
+    """
     plan_dir().mkdir(parents=True, exist_ok=True)
     target = plan_path()
-    target.write_text(plan_file.model_dump_json(indent=2))
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_text(plan_file.model_dump_json(indent=2))
+        os.replace(tmp, target)
+    finally:
+        tmp.unlink(missing_ok=True)
     logger.info(logs.SAVING_PLAN.format(path=target))
 
 
