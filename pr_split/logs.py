@@ -59,6 +59,10 @@ REFINEMENT_RESOLVED = (
 REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
+REFINEMENT_FAILED = (
+    "Refinement iteration {iteration} failed ({error}); keeping the current plan, "
+    "{remaining} violation(s) remain"
+)
 STACK_LINKED = "Linked stack for PRs {prs}"
 STACK_LINK_FAILED = "Could not link stack for PRs {prs}: {detail}"
 MERGE_NODE_NOT_STACKED = (

@@ -460,9 +460,37 @@ class TestRefinePlanWithLlm:
         mock_call_llm.side_effect = LLMError("API failure")
 
         groups = _undersized_groups()
-        result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
         assert len(result) == 2
         mock_call_llm.assert_called_once()
+        warning = mock_logger.warning.call_args[0][0]
+        assert "Refinement iteration 1 failed (API failure)" in warning
+        assert "iteration limit" not in warning
+
+    @patch("pr_split.planner.client._call_llm")
+    def test_malformed_refinement_output_keeps_plan_and_logs_cause(
+        self, mock_call_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=2,
+        )
+        mock_call_llm.return_value = RawToolOutput(groups=[{"id": "g", "title": "t"}])  # type: ignore[typeddict-item]
+
+        groups = _undersized_groups()
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+        assert result == groups
+        mock_call_llm.assert_called_once()
+        warning = mock_logger.warning.call_args[0][0]
+        assert "missing field 'assignments'" in warning
+        assert "keeping the current plan" in warning
 
     def test_no_refinement_when_min_loc_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -986,3 +1014,57 @@ class TestPlanSplitWithLlm:
         result = _plan_split_with_llm(parsed, settings)
         assert len(result) == 1
         mock_chunked.assert_called_once()
+
+
+class TestParseGroupsMalformedOutput:
+    def _entry(self, **overrides: object) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "id": "pr-1",
+            "title": "t",
+            "description": "d",
+            "depends_on": [],
+            "assignments": [
+                {"file_path": "a.py", "assignment_type": "whole_file", "hunk_indices": [0]}
+            ],
+            "estimated_loc": 1,
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_missing_key_is_an_llm_error(self) -> None:
+        entry = self._entry()
+        del entry["depends_on"]
+        with pytest.raises(
+            LLMError, match="Failed to parse LLM response: missing field 'depends_on'"
+        ):
+            _parse_groups(RawToolOutput(groups=[entry]))  # type: ignore[typeddict-item]
+
+    def test_bad_assignment_type_is_an_llm_error(self) -> None:
+        entry = self._entry(
+            assignments=[{"file_path": "a.py", "assignment_type": "whole", "hunk_indices": [0]}]
+        )
+        with pytest.raises(LLMError, match="not a valid AssignmentType"):
+            _parse_groups(RawToolOutput(groups=[entry]))  # type: ignore[typeddict-item]
+
+    def test_wrong_field_type_is_an_llm_error(self) -> None:
+        entry = self._entry(
+            assignments=[
+                {"file_path": "a.py", "assignment_type": "whole_file", "hunk_indices": "0"}
+            ]
+        )
+        with pytest.raises(LLMError, match="Failed to parse LLM response"):
+            _parse_groups(RawToolOutput(groups=[entry]))  # type: ignore[typeddict-item]
+
+    @patch("pr_split.planner.client._call_llm")
+    def test_malformed_chunk_output_is_retried(self, mock_call: MagicMock) -> None:
+        bad = self._entry()
+        del bad["title"]
+        mock_call.side_effect = [
+            RawToolOutput(groups=[bad]),  # type: ignore[typeddict-item]
+            RawToolOutput(groups=[self._entry()]),  # type: ignore[typeddict-item]
+        ]
+        groups = _call_chunk_with_retry(
+            "sys", "user", settings=_make_settings(), chunk_index=1, total_chunks=1
+        )
+        assert [g.id for g in groups] == ["pr-1"]
+        assert mock_call.call_count == 2

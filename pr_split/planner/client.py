@@ -8,6 +8,7 @@ import openai
 import tiktoken
 from anthropic.types.beta import BetaToolUseBlock
 from loguru import logger
+from pydantic import ValidationError
 
 from .. import logs
 from ..config import Settings
@@ -204,6 +205,17 @@ def _call_chunk_with_retry(
 
 
 def _parse_groups(raw: RawToolOutput) -> list[Group]:
+    # Anything malformed in the tool output (missing key, bad enum value,
+    # wrong field type) is an LLMError so the chunk retry loop gets another
+    # attempt and the CLI reports it instead of a traceback.
+    try:
+        return _parse_groups_strict(raw)
+    except (KeyError, TypeError, ValueError, ValidationError) as exc:
+        detail = f"missing field {exc}" if isinstance(exc, KeyError) else str(exc)
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=detail)) from exc
+
+
+def _parse_groups_strict(raw: RawToolOutput) -> list[Group]:
     groups: list[Group] = []
     for entry in raw["groups"]:
         assignments = [
@@ -370,9 +382,11 @@ def _refine_plan_with_llm(
             refined = _parse_groups(raw)
             recompute_estimated_loc(refined, parsed_diff)
             groups = refined
-        except LLMError:
+        except LLMError as exc:
             logger.warning(
-                logs.REFINEMENT_EXHAUSTED.format(iterations=iteration, remaining=len(violations))
+                logs.REFINEMENT_FAILED.format(
+                    iteration=iteration, error=exc, remaining=len(violations)
+                )
             )
             return groups
 
