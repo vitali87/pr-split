@@ -35,7 +35,7 @@ outputs:
     description: "Number of suggested groups"
     value: ${{ steps.score.outputs.total_groups }}
   objective:
-    description: "Plan objective score (lower is better)"
+    description: "Simplified plan score: overflow*1000 + file_scatter*50 + groups (lower is better)"
     value: ${{ steps.score.outputs.objective }}
   should-split:
     description: "Whether the PR should be split (true/false)"
