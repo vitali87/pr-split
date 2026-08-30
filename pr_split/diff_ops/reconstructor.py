@@ -111,7 +111,10 @@ def materialize_group_files(
         patch_file = pf_map.get(file_path)
         if patch_file is None:
             continue
-        if patch_file.is_removed_file:
+        # unidiff's is_removed_file is a heuristic that is also true for a
+        # file truncated to empty (single hunk with target length 0); only a
+        # /dev/null target is a real deletion.
+        if patch_file.target_file == "/dev/null":
             result[file_path] = None
             continue
         indices = _assigned_hunk_indices(patch_file, assignments)
