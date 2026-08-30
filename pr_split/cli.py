@@ -1028,6 +1028,7 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        validate_no_binary_files(parsed_diff)
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
