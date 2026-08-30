@@ -64,6 +64,7 @@ from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_plan
+from .planner.chunker import recompute_estimated_loc
 from .schemas import (
     BranchRecord,
     GitState,
@@ -638,7 +639,10 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             if hunk_index < 0:
                 console.print("[red]Hunk index must be non-negative.[/red]")
                 continue
-            _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id)
+            if _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id):
+                # Keep the per-group LOC estimates in step with the new
+                # assignments; validate_plan and the PR bodies read them.
+                recompute_estimated_loc(groups, parsed_diff)
         else:
             console.print(
                 "[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]"

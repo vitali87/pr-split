@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from pr_split.cli import (
     _build_pr_body,
     _handle_loc_bound_warnings,
+    _interactive_edit,
     _move_assignment,
     _present_plan,
     _resolve_fork_ref,
@@ -26,6 +27,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
+from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PRSplitError
 from pr_split.schemas import Group, GroupAssignment
 from pr_split.types_defs import ForkPRInfo
@@ -537,3 +539,48 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+TWO_HUNK_DIFF = """\
+diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,4 @@
+ x
++one
+ y
+ z
+@@ -20,3 +21,5 @@
+ p
++two
++three
+ q
+ r
+"""
+
+
+class TestInteractiveEditRecomputesLoc:
+    @patch("pr_split.cli.typer.prompt")
+    def test_move_updates_estimated_loc_of_both_groups(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        g1 = _group("pr-1", "src", files=["a.py"], added=3, removed=0)
+        g2 = _group("pr-2", "dst", added=0, removed=0)
+        mock_prompt.side_effect = ["move a.py:1 pr-1 pr-2", "done"]
+
+        result = _interactive_edit([g1, g2], parsed)
+
+        assert result == [g1, g2]
+        assert (g1.estimated_added, g1.estimated_removed, g1.estimated_loc) == (1, 0, 1)
+        assert (g2.estimated_added, g2.estimated_removed, g2.estimated_loc) == (2, 0, 2)
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_failed_move_leaves_estimates_alone(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        g1 = _group("pr-1", "src", files=["a.py"], added=3, removed=0)
+        g2 = _group("pr-2", "dst", added=0, removed=0)
+        mock_prompt.side_effect = ["move a.py:7 pr-1 pr-2", "done"]
+
+        _interactive_edit([g1, g2], parsed)
+
+        assert g1.estimated_loc == 3
+        assert g2.estimated_loc == 0
