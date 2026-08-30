@@ -25,9 +25,9 @@ from pr_split.cli import (
     _validate_inputs,
     app,
 )
-from pr_split.constants import AssignmentType
+from pr_split.constants import AssignmentType, Priority
 from pr_split.exceptions import PRSplitError
-from pr_split.schemas import Group, GroupAssignment
+from pr_split.schemas import GitState, Group, GroupAssignment, PlanFile, PRRecord, SplitPlan
 from pr_split.types_defs import ForkPRInfo
 
 runner = CliRunner()
@@ -522,6 +522,64 @@ class TestExecuteCommand:
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+
+
+class TestSavedPlanDagValidation:
+    RAW_DIFF = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+
+    def _plan_file(self, *, prs: bool) -> PlanFile:
+        groups = [
+            _group("pr-1", "t", files=["a.py"]),
+            _group("pr-2", "u", depends_on=["pr-9"]),
+        ]
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=groups,
+            merge_base_sha="abc123",
+            raw_diff=self.RAW_DIFF,
+        )
+        git_state = GitState(
+            prs=[PRRecord(group_id="pr-1", pr_number=1, pr_url="u")] if prs else []
+        )
+        return PlanFile(plan=plan, git_state=git_state)
+
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_unknown_dependency_before_creating_branches(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._plan_file(prs=False)
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "depends on 'pr-9', which is not a group in the plan" in result.output
+        mock_create.assert_not_called()
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_merge_rejects_unknown_dependency_cleanly(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_file(prs=True)
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "depends on 'pr-9', which is not a group in the plan" in result.output
+        mock_state.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

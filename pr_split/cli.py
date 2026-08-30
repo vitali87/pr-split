@@ -1032,7 +1032,12 @@ def execute(
 
     parsed_diff = parse_diff(plan.raw_diff)
 
+    # A saved plan may have been hand-edited; check the dependency graph as
+    # well as coverage before touching branches, so a bad plan is a message
+    # rather than a traceback halfway through creating branches.
     try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1062,7 +1067,7 @@ def execute(
         )
         raise
     if plan.stacked:
-        _link_stacks(PlanDAG(plan.groups), pr_records)
+        _link_stacks(dag, pr_records)
 
     save_plan(
         PlanFile(
@@ -1144,7 +1149,12 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
