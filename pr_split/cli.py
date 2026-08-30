@@ -1138,12 +1138,22 @@ def merge_all(
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
+    blocked: list[str] = []
     failed: list[str] = []
 
     stopped = False
     exited_early = False
     for batch in dag.iter_ready():
         for group_id in batch:
+            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
+            if unmerged_parents:
+                deps = ", ".join(unmerged_parents)
+                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
+                skipped_ids.add(group_id)
+                blocked.append(group_id)
+                skipped.append(f"{group_id} (dependency {deps} not merged)")
+                continue
+
             pr_record = pr_map.get(group_id)
             if not pr_record:
                 skipped_ids.add(group_id)
@@ -1227,9 +1237,20 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if blocked:
+        console.print(
+            f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
+            f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
+        )
     if notify:
         exit_reason = (
-            "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
+            "merge_error"
+            if stopped
+            else "incomplete_batch"
+            if exited_early
+            else "unmerged_dependency"
+            if blocked
+            else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
         _send_webhook(
@@ -1239,11 +1260,11 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early),
+                "success": not (failed or stopped or exited_early or blocked),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early:
+    if failed or stopped or exited_early or blocked:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
