@@ -605,3 +605,40 @@ class TestWorktreeAppliesFileModes:
         _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
         assert modes["run.sh"] & stat.S_IXUSR
         assert not modes["a.py"] & stat.S_IXUSR
+
+
+class TestWorktreeMaterializesSymlinks:
+    def _run(
+        self, materialized: dict[str, str | None], modes: dict[str, int]
+    ) -> dict[str, object]:
+        import os
+        from pathlib import Path
+
+        seen: dict[str, object] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                p = Path(cwd) / file_path
+                seen[file_path] = (
+                    os.readlink(p) if p.is_symlink() else ("missing" if not p.exists() else "file")
+                )
+            return "sha1"
+
+        with (
+            patch("pr_split.cli.add_worktree"),
+            patch("pr_split.cli.remove_worktree"),
+            patch("pr_split.cli.materialize_group_files", return_value=materialized),
+            patch("pr_split.cli.target_file_modes", return_value=modes),
+            patch("pr_split.cli.commit_files_in_dir", side_effect=capture),
+        ):
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        return seen
+
+    def test_new_symlink_is_created_as_a_link(self) -> None:
+        seen = self._run({"link": "other.py\n", "other.py": "x\n"}, {"link": 0o120000})
+        assert seen["link"] == "other.py"
+        assert seen["other.py"] == "file"
+
+    def test_symlink_without_mode_info_stays_a_plain_file(self) -> None:
+        seen = self._run({"link": "other.py\n"}, {})
+        assert seen["link"] == "file"
