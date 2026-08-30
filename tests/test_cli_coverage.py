@@ -367,6 +367,45 @@ class TestMoveAssignment:
 # ---------------------------------------------------------------------------
 # split command argument validation
 # ---------------------------------------------------------------------------
+class TestSplitResplitStopsOnIncompleteCleanup:
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_resplit_stops_when_cleanup_is_incomplete(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        from pr_split.cli import CleanupResult
+        from pr_split.schemas import PRRecord
+
+        existing = MagicMock()
+        existing.git_state.branches = [MagicMock()]
+        existing.git_state.prs = [PRRecord(group_id="pr-1", pr_number=10, pr_url="u")]
+        mock_load.return_value = existing
+        mock_cleanup.return_value = CleanupResult(1, 0, ["branch b1"])
+
+        result = runner.invoke(
+            app, ["split", "feature-branch"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        flat = " ".join(result.output.split())
+        assert result.exit_code == 1
+        assert "Cleanup incomplete (1 PRs closed, 0 branches deleted)" in flat
+        assert "still to clean (1): branch b1" in flat
+        assert "Cleanup complete" not in flat
+        mock_extract.assert_not_called()
+
+
 class TestSplitCommandValidation:
     @patch("pr_split.cli.parse_diff")
     @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")

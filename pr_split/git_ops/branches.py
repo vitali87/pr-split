@@ -70,11 +70,33 @@ def push_branch(branch: str) -> None:
     run_git("push", "--force-with-lease", "-u", "origin", branch)
 
 
+_REMOTE_REF_MISSING = "remote ref does not exist"
+
+
 def delete_branch(branch: str, *, remote: bool = False) -> None:
-    run_git("branch", "-D", branch)
-    logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    """Delete a branch locally and, with remote=True, on origin as well.
+
+    The two deletes are independent: a local branch that is already gone
+    (``gh pr merge --delete-branch``) or currently checked out must not
+    stop the remote branch from being removed, and a remote branch that no
+    longer exists counts as deleted.
+    """
+    try:
+        run_git("branch", "-D", branch)
+        logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    except GitOperationError as exc:
+        if not remote:
+            raise
+        logger.warning(logs.LOCAL_BRANCH_NOT_DELETED.format(branch=branch, error=exc))
     if remote:
-        run_git("push", "origin", "--delete", branch)
+        try:
+            run_git("push", "origin", "--delete", branch)
+        except GitOperationError as exc:
+            if _REMOTE_REF_MISSING not in str(exc):
+                raise
+            logger.info(logs.REMOTE_BRANCH_ALREADY_GONE.format(branch=branch))
+        else:
+            logger.info(logs.REMOTE_BRANCH_DELETED.format(branch=branch))
 
 
 def merge_base(ref_a: str, ref_b: str) -> str:

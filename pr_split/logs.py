@@ -18,6 +18,11 @@ SAVING_PLAN = "Saving plan to {path}"
 PLAN_LOADED = "Loaded plan with {count} groups from {path}"
 CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
+LOCAL_BRANCH_NOT_DELETED = (
+    "Local branch {branch} not deleted ({error}); still removing it from origin"
+)
+REMOTE_BRANCH_DELETED = "Deleted origin/{branch}"
+REMOTE_BRANCH_ALREADY_GONE = "origin/{branch} was already gone"
 PR_CLOSED = "Closed PR #{number}"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"

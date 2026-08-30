@@ -9,7 +9,7 @@ from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
 import typer
 from loguru import logger
@@ -751,9 +751,16 @@ def split(
                 "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
             )
             if typer.confirm("Clean up and proceed with re-splitting?"):
-                closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
+                result = _cleanup_git_state(existing.git_state)
+                if not result.complete:
+                    # Re-splitting would overwrite the plan and lose the
+                    # record of what is still out there.
+                    _report_incomplete_cleanup(result)
+                    raise typer.Exit(1)
                 logger.success(
-                    logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs)
+                    logs.CLEAN_COMPLETE.format(
+                        branches=result.deleted_branches, prs=result.closed_prs
+                    )
                 )
             else:
                 console.print("[red]Aborting. Run 'pr-split clean' manually first.[/red]")
@@ -920,14 +927,26 @@ def status() -> None:
     console.print(table)
 
 
-def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
+class CleanupResult(NamedTuple):
+    closed_prs: int
+    deleted_branches: int
+    failures: list[str]
+
+    @property
+    def complete(self) -> bool:
+        return not self.failures
+
+
+def _cleanup_git_state(git_state: GitState) -> CleanupResult:
+    failures: list[str] = []
     closed_prs = 0
     for pr_record in git_state.prs:
         try:
             close_pr(pr_record.pr_number)
             closed_prs += 1
-        except PRSplitError:
-            logger.warning(f"Could not close PR #{pr_record.pr_number}")
+        except PRSplitError as exc:
+            logger.warning(f"Could not close PR #{pr_record.pr_number}: {exc}")
+            failures.append(f"PR #{pr_record.pr_number}")
 
     logger.info(logs.CLEANING_BRANCHES)
     deleted_branches = 0
@@ -935,14 +954,27 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         try:
             delete_branch(branch_record.branch_name, remote=True)
             deleted_branches += 1
-        except PRSplitError:
-            logger.warning(f"Could not delete branch {branch_record.branch_name}")
+        except PRSplitError as exc:
+            logger.warning(f"Could not delete branch {branch_record.branch_name}: {exc}")
+            failures.append(f"branch {branch_record.branch_name}")
 
-    plan_path = Path(PLAN_FILE)
-    if plan_path.exists():
-        plan_path.unlink()
+    # The plan is the only record of what was created; keep it while
+    # anything is still left so the user can re-run clean.
+    if not failures:
+        plan_path = Path(PLAN_FILE)
+        if plan_path.exists():
+            plan_path.unlink()
 
-    return closed_prs, deleted_branches
+    return CleanupResult(closed_prs, deleted_branches, failures)
+
+
+def _report_incomplete_cleanup(result: CleanupResult) -> None:
+    console.print(
+        f"[red]Cleanup incomplete ({result.closed_prs} PRs closed, "
+        f"{result.deleted_branches} branches deleted); still to clean "
+        f"({len(result.failures)}): {', '.join(result.failures)}. The plan file was kept; "
+        f"fix the cause and run 'pr-split clean' again.[/red]"
+    )
 
 
 @app.command(help="Close all split PRs and delete their branches.")
@@ -954,10 +986,19 @@ def clean() -> None:
     plan_file = load_plan()
     git_state = plan_file.git_state
 
+    if git_state.prs and not check_gh_auth():
+        console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
+        raise typer.Exit(1)
+
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
-    closed_prs, deleted_branches = _cleanup_git_state(git_state)
-    logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
+    result = _cleanup_git_state(git_state)
+    if not result.complete:
+        _report_incomplete_cleanup(result)
+        raise typer.Exit(1)
+    logger.success(
+        logs.CLEAN_COMPLETE.format(branches=result.deleted_branches, prs=result.closed_prs)
+    )
 
 
 @app.command(

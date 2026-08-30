@@ -173,7 +173,7 @@ Running `split` again when a plan already exists will prompt you to clean up exi
 pr-split clean
 ```
 
-Closes all split PRs, deletes their branches (local and remote), and removes the plan file.
+Closes all split PRs, deletes their branches (local and remote), and removes the plan file. A branch that is already gone locally or currently checked out is still removed from `origin`. If anything could not be closed or deleted, the plan file is kept and `clean` exits 1 so you can fix the cause and run it again.
 
 ## Configuration
 

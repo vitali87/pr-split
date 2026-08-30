@@ -144,9 +144,10 @@ class TestCleanupGitState:
                 PRRecord(group_id="pr-2", pr_number=11, pr_url="url2"),
             ],
         )
-        closed, deleted = _cleanup_git_state(git_state)
-        assert closed == 2
-        assert deleted == 2
+        result = _cleanup_git_state(git_state)
+        assert (result.closed_prs, result.deleted_branches) == (2, 2)
+        assert result.complete
+        mock_path.return_value.unlink.assert_called_once()
         mock_close.assert_any_call(10)
         mock_close.assert_any_call(11)
         mock_delete.assert_any_call("pr-split/ns/pr-1", remote=True)
@@ -176,9 +177,64 @@ class TestCleanupGitState:
                 PRRecord(group_id="pr-2", pr_number=11, pr_url="url2"),
             ],
         )
-        closed, deleted = _cleanup_git_state(git_state)
-        assert closed == 1
-        assert deleted == 1
+        result = _cleanup_git_state(git_state)
+        assert (result.closed_prs, result.deleted_branches) == (1, 1)
+        assert result.failures == ["PR #11", "branch b1"]
+        mock_path.return_value.unlink.assert_not_called()
+
+
+class TestCleanCommandKeepsPlanOnFailure:
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_incomplete_cleanup_exits_nonzero(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_auth: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        from pr_split.cli import CleanupResult
+
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=10, pr_url="u")]
+        mock_load.return_value = plan_file
+        mock_cleanup.return_value = CleanupResult(0, 1, ["PR #10"])
+
+        result = runner.invoke(app, ["clean"])
+
+        assert result.exit_code == 1
+        flat = " ".join(result.output.split())
+        assert "Cleanup incomplete (0 PRs closed, 1 branches deleted)" in flat
+        assert "still to clean (1): PR #10" in flat
+        assert "plan file was kept" in flat
+        assert "Cleanup complete" not in flat
+
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_requires_gh_auth_when_prs_exist(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_auth: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=10, pr_url="u")]
+        mock_load.return_value = plan_file
+
+        result = runner.invoke(app, ["clean"])
+
+        assert result.exit_code == 1
+        assert "GitHub CLI authentication failed" in result.output
+        mock_cleanup.assert_not_called()
 
 
 class TestGetPrState:

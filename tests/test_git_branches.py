@@ -130,6 +130,35 @@ class TestDeleteBranch:
         delete_branch("pr-split/pr-1", remote=True)
         assert mock_git.call_count == 2
 
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_remote_is_deleted_even_when_local_branch_is_gone(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [GitOperationError("error: branch 'pr-split/pr-1' not found."), ""]
+        delete_branch("pr-split/pr-1", remote=True)
+        assert mock_git.call_args_list[1].args == ("push", "origin", "--delete", "pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_local_failure_still_raises_without_remote(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("checked out")
+        with pytest.raises(GitOperationError, match="checked out"):
+            delete_branch("pr-split/pr-1")
+        assert mock_git.call_count == 1
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_missing_remote_ref_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            "",
+            GitOperationError(
+                "error: unable to delete 'pr-split/pr-1': remote ref does not exist"
+            ),
+        ]
+        delete_branch("pr-split/pr-1", remote=True)
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_other_remote_failure_raises(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", GitOperationError("fatal: could not read from remote")]
+        with pytest.raises(GitOperationError, match="could not read from remote"):
+            delete_branch("pr-split/pr-1", remote=True)
+
 
 class TestDeriveSplitNamespace:
     def test_simple_branch(self) -> None:
