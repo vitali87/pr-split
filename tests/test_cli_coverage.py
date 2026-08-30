@@ -203,7 +203,7 @@ class TestBuildPrBodyOsError:
         mock_path = MagicMock()
         mock_path.exists.return_value = True
         mock_path.read_text.side_effect = OSError("Permission denied")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", mock_path)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: mock_path)
 
         group = _group("pr-1", "t", files=["a.py"])
         with pytest.raises(PRSplitError, match="Could not read PR template"):
