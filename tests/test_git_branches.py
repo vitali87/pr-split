@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -143,6 +144,44 @@ class TestDeleteBranch:
         with pytest.raises(GitOperationError):
             delete_branch("pr-split/pr-1")
         mock_git.assert_called_once()
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_already_deleted_locally_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        # `pr-split merge` deletes the local branch; cleanup must not fail on it.
+        mock_git.side_effect = [GitOperationError("error: branch 'pr-split/pr-1' not found."), ""]
+        delete_branch("pr-split/pr-1", remote=True)
+        mock_git.assert_any_call("push", "origin", "--delete", "pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_already_deleted_on_origin_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            "",
+            GitOperationError(
+                "error: unable to delete 'pr-split/pr-1': remote ref does not exist"
+            ),
+        ]
+        delete_branch("pr-split/pr-1", remote=True)
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_gone_everywhere_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            GitOperationError("error: branch 'pr-split/pr-1' not found."),
+            GitOperationError(
+                "error: unable to delete 'pr-split/pr-1': remote ref does not exist"
+            ),
+        ]
+        delete_branch("pr-split/pr-1", remote=True)
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_missing_local_branch_without_remote_is_fine(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("error: branch 'pr-split/pr-1' not found.")
+        delete_branch("pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_other_remote_failure_still_raises(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", GitOperationError("fatal: could not read from remote")]
+        with pytest.raises(GitOperationError, match="could not read from remote"):
+            delete_branch("pr-split/pr-1", remote=True)
 
 
 class TestDeriveSplitNamespace:
@@ -328,3 +367,35 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestGitLocaleIsPinned:
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_run_git_forces_the_c_locale(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="", stderr=""
+        )
+        run_git("status")
+        env = mock_run.call_args.kwargs["env"]
+        assert env["LC_ALL"] == "C"
+        assert env["LANGUAGE"] == "C"
+
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_run_git_in_dir_forces_the_c_locale(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="", stderr=""
+        )
+        run_git_in_dir("/tmp", "status")
+        assert mock_run.call_args.kwargs["env"]["LC_ALL"] == "C"
+
+    def test_localised_git_still_reports_already_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+        monkeypatch.setenv("LANGUAGE", "de")
+        # never existed: must be treated as already deleted, not as an error
+        delete_branch("pr-split/ns/never")

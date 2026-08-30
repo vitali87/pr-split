@@ -398,3 +398,33 @@ class TestCleanupSkipsFinishedPrs:
         assert closed == 0
         assert "Could not close PR #7: gh: rate limited" in str(mock_logger.warning.call_args)
         mock_path.return_value.unlink.assert_not_called()
+
+
+class TestCleanupAfterMergeDeletedBranches:
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "MERGED"})
+    @patch("pr_split.cli.shutil.rmtree")
+    @patch("pr_split.cli.Path")
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.cli.close_pr")
+    def test_fully_merged_split_cleans_up_completely(
+        self,
+        mock_close: MagicMock,
+        mock_git: MagicMock,
+        mock_path: MagicMock,
+        mock_rmtree: MagicMock,
+        mock_state: MagicMock,
+    ) -> None:
+        mock_path.return_value.exists.return_value = True
+        # merge --delete-branch already removed both local and remote branches
+        mock_git.side_effect = [
+            GitOperationError("error: branch 'b1' not found."),
+            GitOperationError("error: unable to delete 'b1': remote ref does not exist"),
+        ]
+        git_state = GitState(
+            branches=[BranchRecord(group_id="pr-1", branch_name="b1", base_branch="main")],
+            prs=[PRRecord(group_id="pr-1", pr_number=7, pr_url="u")],
+        )
+        closed, deleted = _cleanup_git_state(git_state)
+        assert (closed, deleted) == (1, 1)
+        mock_close.assert_not_called()
+        mock_path.return_value.unlink.assert_called_once()
