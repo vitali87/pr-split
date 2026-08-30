@@ -95,7 +95,18 @@ class TestValidateCoverage:
             _make_group("g1", [_ga("a.py", WHOLE, [0]), _ga("ghost.py", PARTIAL, [0])], 3),
             _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
         ]
-        with pytest.raises(PlanValidationError, match=r"ghost\.py\[0\]"):
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_unknown_whole_file_path_raises(self) -> None:
+        # A WHOLE_FILE assignment for a path outside the diff expands to zero
+        # hunks, so it must be rejected before expansion.
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, []), _ga("ghost.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
             validate_coverage(groups, parsed)
 
     def test_duplicate_assignment_raises(self) -> None:

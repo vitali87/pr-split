@@ -14,6 +14,10 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
+            if assignment.file_path not in hunk_counts:
+                raise PlanValidationError(
+                    ErrorMsg.UNKNOWN_FILE(file=assignment.file_path, group=group.id)
+                )
             # A WHOLE_FILE assignment claims every hunk of the file even when
             # its hunk_indices list was left empty.
             if assignment.assignment_type is AssignmentType.WHOLE_FILE:

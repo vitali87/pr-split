@@ -15,6 +15,7 @@ class ErrorMsg(StrEnum):
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"
     UNKNOWN_HUNK = "Hunk {file}[{index}] assigned to group '{group}' does not exist in the diff"
+    UNKNOWN_FILE = "File '{file}' assigned to group '{group}' does not exist in the diff"
     UNKNOWN_DEPENDENCY = "Group '{group}' depends on unknown group '{dep}'"
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
