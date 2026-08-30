@@ -12,11 +12,16 @@ from ..types_defs import ForkPRInfo
 
 
 def _run_gh(*args: str) -> str:
-    result = subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        # Callers only expect GitOperationError; a missing binary must not
+        # escape as a raw traceback (or make check_gh_auth raise).
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="gh")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
     return result.stdout.strip()

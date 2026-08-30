@@ -537,3 +537,135 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestMissingCliToolsAreReportedFirst:
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    @patch("pr_split.cli.require_tools", return_value="git")
+    def test_split_reports_missing_git_before_anything_else(
+        self, mock_req: MagicMock, mock_be: MagicMock
+    ) -> None:
+        result = runner.invoke(app, ["split", "feature", "--dry-run"])
+        assert result.exit_code == 1
+        assert "'git' is not installed or not on PATH" in result.output
+        mock_be.assert_not_called()
+
+    @patch("pr_split.cli.require_tools")
+    def test_dry_run_does_not_require_gh(self, mock_req: MagicMock) -> None:
+        mock_req.return_value = None
+        with (
+            patch("pr_split.cli.branch_exists", return_value=True),
+            patch("pr_split.cli._validate_inputs", side_effect=typer.Exit(0)),
+        ):
+            runner.invoke(app, ["split", "feature", "--dry-run"])
+        assert [c.args for c in mock_req.call_args_list] == [("git",)]
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_merge_reports_missing_gh_instead_of_fetch_errors(
+        self,
+        mock_req: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=1, pr_url="u")]
+        mock_load.return_value = plan_file
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        assert "fetch error" not in result.output
+        mock_state.assert_not_called()
+
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_clean_reports_missing_gh_and_keeps_the_plan(
+        self,
+        mock_req: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=1, pr_url="u")]
+        mock_load.return_value = plan_file
+        result = runner.invoke(app, ["clean"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+        assert mock_req.call_args.args == ("git", "gh")
+
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.require_tools")
+    def test_resplit_cleanup_in_dry_run_still_needs_gh(
+        self,
+        mock_req: MagicMock,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        mock_req.side_effect = lambda *tools: "gh" if "gh" in tools else None
+        existing = MagicMock()
+        existing.git_state.branches = [MagicMock()]
+        existing.git_state.prs = [PRRecord(group_id="pr-1", pr_number=7, pr_url="u")]
+        mock_load.return_value = existing
+
+        result = runner.invoke(
+            app, ["split", "feature", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    @patch("pr_split.cli.require_tools")
+    def test_dry_run_of_a_pr_number_still_needs_gh(
+        self, mock_req: MagicMock, mock_be: MagicMock, mock_auth: MagicMock
+    ) -> None:
+        mock_req.side_effect = lambda *tools: "gh" if "gh" in tools else None
+        result = runner.invoke(app, ["split", "#123", "--dry-run"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        assert "authentication failed" not in result.output
+        mock_auth.assert_not_called()
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_execute_reports_missing_gh(
+        self, mock_req: MagicMock, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output

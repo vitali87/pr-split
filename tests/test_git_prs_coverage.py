@@ -164,3 +164,29 @@ class TestFetchForkBranch:
 
         with pytest.raises(GitOperationError, match="Failed to fetch"):
             fetch_fork_branch("user", "branch")
+
+
+class TestMissingCliTools:
+    @patch(
+        "pr_split.git_ops.prs.subprocess.run",
+        side_effect=FileNotFoundError(2, "No such file", "gh"),
+    )
+    def test_missing_gh_is_a_git_operation_error(self, mock_run: MagicMock) -> None:
+        from pr_split.git_ops.prs import _run_gh, check_gh_auth
+
+        with pytest.raises(GitOperationError, match="'gh' is not installed or not on PATH"):
+            _run_gh("auth", "status")
+        assert check_gh_auth() is False
+        assert get_pr_state(1) == {}
+
+    @patch(
+        "pr_split.git_ops.branches.subprocess.run",
+        side_effect=FileNotFoundError(2, "No such file", "git"),
+    )
+    def test_missing_git_is_a_git_operation_error(self, mock_run: MagicMock) -> None:
+        from pr_split.git_ops.branches import run_git, run_git_in_dir
+
+        with pytest.raises(GitOperationError, match="'git' is not installed or not on PATH"):
+            run_git("status")
+        with pytest.raises(GitOperationError, match="'git' is not installed"):
+            run_git_in_dir("/tmp", "status")
