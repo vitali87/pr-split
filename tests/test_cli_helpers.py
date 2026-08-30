@@ -597,5 +597,10 @@ class TestWorktreeWritesPreserveCrlf:
             return "sha1"
 
         mock_commit.side_effect = capture
-        _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        # On POSIX write_text only translates "\n" (a no-op), so also assert the
+        # newline="" argument that keeps CRLF intact on Windows.
+        with patch.object(Path, "write_text", autospec=True, side_effect=Path.write_text) as wt:
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
         assert written["c.txt"] == b"a\r\nb\r\n"
+        content_writes = [c for c in wt.call_args_list if c.args[1] == "a\r\nb\r\n"]
+        assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)
