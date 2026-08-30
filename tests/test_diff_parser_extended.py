@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -104,6 +106,8 @@ class TestExtractDiffSubprocess:
         mock_run.assert_called_once_with(
             [
                 "git",
+                "-c",
+                "core.quotePath=false",
                 "diff",
                 "--no-color",
                 "--no-ext-diff",
@@ -146,3 +150,34 @@ class TestExtractDiffPreservesCarriageReturns:
         assert "\r\n" in result
         assert result == raw.decode()
         assert mock_run.call_args.kwargs.get("text") is not True
+
+
+class TestNonAsciiPaths:
+    def test_unicode_paths_survive_extraction_and_parsing(self, tmp_path: Path) -> None:
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        git("init", "-q", "-b", "main")
+        (tmp_path / "ünï.txt").write_text("one\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "dev")
+        (tmp_path / "ünï.txt").write_text("two\n", encoding="utf-8")
+        (tmp_path / "new file ü.txt").write_text("x\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "dev")
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            parsed = parse_diff(extract_diff("dev", "main"))
+        finally:
+            os.chdir(cwd)
+
+        assert sorted(pf.path for pf in parsed.patch_set) == ["new file ü.txt", "ünï.txt"]
