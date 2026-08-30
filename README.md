@@ -219,7 +219,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: vitali87/pr-split@main
+      - uses: vitali87/pr-split@v1.0.0
         with:
           max-loc: "400"
           partition-strategy: "graph"
