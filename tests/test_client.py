@@ -1032,3 +1032,17 @@ class TestTruncationIsRetried:
         )
         assert [g.id for g in groups] == [g["id"] for g in _SAMPLE_RAW_GROUPS]
         assert mock_call.call_count == 2
+
+
+class TestOpenAIFailedResponse:
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_raises_with_error_message(self, mock_cls: MagicMock) -> None:
+        mock_response = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(code="server_error", message="upstream exploded"),
+            output=[],
+        )
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        with pytest.raises(LLMError, match="response failed: upstream exploded"):
+            _call_openai("sys", "usr", settings=settings)

@@ -164,6 +164,10 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     except openai.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
     status = getattr(response, "status", None)
+    if status == "failed":
+        error = getattr(response, "error", None)
+        detail = getattr(error, "message", None) or str(error) or "unknown error"
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"response failed: {detail}"))
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
         reason = getattr(details, "reason", None) or "unknown"
