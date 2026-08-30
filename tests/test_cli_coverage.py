@@ -601,3 +601,138 @@ class TestRichEscapingOfPlanText:
         assert "Hunk src/[id].py:9 not found in pr-1." in out
         assert "Group '[pr-1]' or 'pr-2' not found." in out
         assert "Group '[pr-9]' not found." in out
+
+
+class TestRichEscapingOfStatusAndSummaries:
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN", "reviewDecision": None})
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_status_table_keeps_bracketed_title(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, PRRecord, SplitPlan
+
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=[_group("pr-1", "Add [core] typing")],
+        )
+        git_state = GitState(
+            branches=[BranchRecord(group_id="pr-1", branch_name="b[1]", base_branch="main")],
+            prs=[PRRecord(group_id="pr-1", pr_number=7, pr_url="u")],
+        )
+        mock_load.return_value = PlanFile(plan=plan, git_state=git_state)
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert "Add [core] typing" in result.output
+        assert "b[1]" in result.output
+
+    def test_error_echo_keeps_bracketed_path(self) -> None:
+        from pr_split.cli import _handle_loc_bound_warnings, console
+
+        # The strict path prints each warning in red (the non-strict path only logs).
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _handle_loc_bound_warnings(
+                ["Group 'pr-1' touches src/[id].py"], strict_loc_bounds=True
+            )
+        assert "src/[id].py" in capture.get()
+
+    def test_editor_same_group_message_keeps_bracketed_id(self) -> None:
+        from pr_split.cli import console
+
+        with console.capture() as capture:
+            assert not _move_assignment([], MagicMock(), "a.py", 0, "[pr-1]", "[pr-1]")
+        assert "Source and destination are the same ('[pr-1]')" in capture.get()
+
+
+class TestRichEscapingOfMergeSummary:
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_summary_lines_keep_bracketed_group_ids(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.exceptions import GitOperationError
+        from pr_split.schemas import GitState, PlanFile, PRRecord, SplitPlan
+
+        groups = [_group("[pr-1]", "a"), _group("[pr-2]", "b"), _group("[pr-3]", "c")]
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=groups,
+        )
+        prs = [PRRecord(group_id=g.id, pr_number=i + 1, pr_url="u") for i, g in enumerate(groups)]
+        mock_load.return_value = PlanFile(plan=plan, git_state=GitState(prs=prs))
+        states = {
+            1: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+            2: {"state": "OPEN", "isDraft": True, "reviewDecision": None},
+            3: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+        }
+        mock_state.side_effect = lambda n: states[n]
+
+        def merge(n: int, *, auto: bool = False) -> None:
+            if n == 3:
+                raise GitOperationError("conflict")
+
+        mock_merge.side_effect = merge
+
+        result = runner.invoke(app, ["merge"])
+
+        flat = " ".join(result.output.split())
+        assert "Merged (1): [pr-1]" in flat
+        assert "Skipped (1): [pr-2] (draft)" in flat
+        assert "Failed (1): [pr-3]" in flat
+
+
+class TestRichEscapingOfEmptyGroupsError:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_empty_groups_message_keeps_bracketed_ids(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [_group("[pr-1]", "a", files=["a.py"])]
+        mock_interactive_edit.return_value = [_group("[pr-1]", "emptied")]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert "Groups ['[pr-1]'] are empty after editing." in " ".join(result.output.split())
