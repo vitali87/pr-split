@@ -9,6 +9,7 @@ from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.prs import (
     _run_gh,
     check_gh_auth,
+    check_gh_stack,
     close_pr,
     create_pr,
     fetch_fork_pr,
@@ -132,9 +133,33 @@ class TestLinkStack:
         mock_gh.assert_called_once_with("stack", "link", "12", "34", "56")
 
     @patch("pr_split.git_ops.prs._run_gh")
-    def test_failure_warns_instead_of_raising(self, mock_gh: MagicMock) -> None:
+    def test_failure_raises(self, mock_gh: MagicMock) -> None:
         mock_gh.side_effect = GitOperationError("unknown command: stack")
-        link_stack([12, 34])
+        with pytest.raises(GitOperationError, match="Failed to link stack for PRs \\[12, 34\\]"):
+            link_stack([12, 34])
+
+
+class TestCheckGhStack:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_installed(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "gh stack\tgithub/gh-stack\tv0.1.0\ngh dash\tdlvhdr/gh-dash\tv4.0.0"
+        assert check_gh_stack() is True
+        mock_gh.assert_called_once_with("extension", "list")
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_not_installed(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "gh dash\tdlvhdr/gh-dash\tv4.0.0"
+        assert check_gh_stack() is False
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_lookalike_name_does_not_count(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = "gh stack\tsomeone/github-gh-stack-fork\tv1.0.0"
+        assert check_gh_stack() is False
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_gh_failure(self, mock_gh: MagicMock) -> None:
+        mock_gh.side_effect = GitOperationError("gh not found")
+        assert check_gh_stack() is False
 
 
 class TestCreatePrDraft:
