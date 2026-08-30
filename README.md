@@ -58,6 +58,14 @@ pr-split split feature-branch --base main
 pr-split split '#42' --base main
 ```
 
+A bare number (with or without `#`) is always treated as a PR number, even if a
+local branch or abbreviated commit hash with the same digits exists. To split a
+local branch literally named like a number, pass its full ref:
+
+```bash
+pr-split split refs/heads/1006 --base main
+```
+
 ### Split a fork PR by user:branch
 
 ```bash
