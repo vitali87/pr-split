@@ -26,7 +26,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
-from pr_split.exceptions import PRSplitError
+from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.schemas import Group, GroupAssignment
 from pr_split.types_defs import ForkPRInfo
 
@@ -463,6 +463,23 @@ class TestSplitCommandValidation:
     ) -> None:
         result = runner.invoke(app, ["split", "#42", "--dry-run"])
         assert result.exit_code != 0
+
+    @patch("pr_split.cli._resolve_fork_ref", side_effect=GitOperationError("PR #999 not found"))
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_fork_ref_error_is_reported_not_raised(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "#999", "--dry-run"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "PR #999 not found" in result.output
+        assert "Traceback" not in result.output
 
     @patch("pr_split.cli._resolve_fork_ref", return_value=None)
     @patch("pr_split.cli.is_worktree_clean", return_value=True)

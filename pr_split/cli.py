@@ -732,7 +732,11 @@ def split(
         if not is_worktree_clean():
             console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
             raise typer.Exit(1)
-        fork_info = _resolve_fork_ref(dev_branch)
+        try:
+            fork_info = _resolve_fork_ref(dev_branch)
+        except PRSplitError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
         if not fork_info:
             console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
             raise typer.Exit(1)
