@@ -4,6 +4,7 @@ import json as json_mod
 import shutil
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 from collections.abc import Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1102,6 +1103,21 @@ def _poll_for_merged(
     return actually_merged
 
 
+def _validate_webhook_url(value: str | None) -> str | None:
+    """Accept only http(s) webhook URLs.
+
+    urllib happily opens file:// (and reports "Webhook notification sent"),
+    and a bare hostname fails only after the merges with an obscure
+    "unknown url type" warning.
+    """
+    if value is None:
+        return None
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise typer.BadParameter(f"must be an http(s) URL, got '{value}'")
+    return value
+
+
 def _send_webhook(url: str, payload: dict[str, object]) -> None:
     try:
         data = json_mod.dumps(payload).encode("utf-8")
@@ -1125,8 +1141,9 @@ def merge_all(
         str | None,
         typer.Option(
             "--notify",
-            help="Webhook URL to POST merge results to",
+            help="Webhook URL (http/https) to POST merge results to",
             envvar="PR_SPLIT_WEBHOOK_URL",
+            callback=_validate_webhook_url,
         ),
     ] = None,
 ) -> None:
