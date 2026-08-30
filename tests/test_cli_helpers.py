@@ -264,6 +264,32 @@ class TestCreateBranchesAndCommitsFailureCleanup:
         deleted = {call.args[0] for call in mock_delete.call_args_list}
         assert deleted == {"pr-split/ns/pr-1", "pr-split/ns/pr-2"}
 
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_branch_restored_by_add_worktree_is_not_deleted(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        # add_worktree restores a pre-existing branch when it fails; the
+        # cleanup must not then delete that restored branch.
+        def add(path: str, branch_name: str, start_point: str) -> None:
+            if branch_name.endswith("pr-2"):
+                raise GitOperationError("worktree add failed")
+
+        mock_add.side_effect = add
+        groups = [_group("pr-1", "a"), _group("pr-2", "b")]
+        with pytest.raises(PRSplitError):
+            _create_branches_and_commits(groups, MagicMock(), "main", "base_sha", "ns")
+        deleted = {call.args[0] for call in mock_delete.call_args_list}
+        assert deleted == {"pr-split/ns/pr-1"}
+
 
 class TestCreateBranchesAndCommitsStacked:
     def _stacked_groups(self) -> list[Group]:

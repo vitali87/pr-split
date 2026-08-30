@@ -202,6 +202,13 @@ _WORKTREE_MAX_WORKERS = 4
 _worktree_ref_lock = Lock()
 
 
+def _discard_worktree(worktree_path: str) -> None:
+    try:
+        remove_worktree(worktree_path)
+    except PRSplitError as exc:
+        logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+
+
 def _create_single_branch_and_commit(
     group: Group,
     parsed_diff: ParsedDiff,
@@ -236,11 +243,18 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
-    finally:
+    except Exception:
+        # add_worktree succeeded, so this run created branch_name (a
+        # pre-existing branch of that name was already replaced). Delete it
+        # here, where that is known for certain: if add_worktree itself had
+        # failed it restores the previous branch and never reaches this path.
+        _discard_worktree(worktree_path)
         try:
-            remove_worktree(worktree_path)
+            delete_branch(branch_name)
         except PRSplitError as exc:
-            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+            logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+        raise
+    _discard_worktree(worktree_path)
 
     return BranchRecord(
         group_id=group.id,
@@ -342,16 +356,13 @@ def _create_branches_and_commits(
                 break
 
         if errors:
-            # add_worktree creates the branch before the commit step, so a
-            # group that failed mid-way has a branch too; include those.
-            created = [record.branch_name for record in results.values()]
-            failed = [f"{BRANCH_PREFIX}{namespace}/{gid}" for gid, _ in errors]
-            for branch_name in created + failed:
+            # Failed groups already removed their own branch inside the
+            # worker; only the successful ones remain to roll back.
+            for record in results.values():
                 try:
-                    delete_branch(branch_name)
+                    delete_branch(record.branch_name)
                 except PRSplitError as exc:
-                    if branch_name in created:
-                        logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+                    logger.warning(f"Could not clean up branch {record.branch_name}: {exc}")
             error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
             raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
     finally:
