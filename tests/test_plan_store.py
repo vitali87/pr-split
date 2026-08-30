@@ -7,7 +7,7 @@ import pytest
 
 from pr_split.constants import Priority
 from pr_split.exceptions import PRSplitError
-from pr_split.plan_store import load_plan, plan_exists, save_plan
+from pr_split.plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
 from pr_split.schemas import (
     BranchRecord,
     GitState,
@@ -191,3 +191,38 @@ class TestPlanPathsResolveAgainstTheRepoRoot:
         (repo / ".pr-split" / "template.md").write_text("# {title}")
         monkeypatch.chdir(repo / "src")
         assert _pr_template_path().read_text() == "# {title}"
+
+
+class TestSavePlanIsAtomic:
+    def test_no_temp_file_left_behind(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        save_plan(_make_plan_file())
+        leftovers = [p.name for p in plan_dir().iterdir() if p.name != "plan.json"]
+        assert leftovers == []
+
+    def test_failed_write_preserves_the_previous_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A crash mid-write must not destroy the only record of created PRs."""
+        monkeypatch.chdir(tmp_path)
+        save_plan(_make_plan_file())
+        before = plan_path().read_text()
+
+        def exploding_write(self: Path, *args: object, **kwargs: object) -> int:
+            # Emulate a crash/disk-full: leave a truncated temp file behind.
+            Path(str(self)).parent.mkdir(parents=True, exist_ok=True)
+            with open(self, "w") as fh:
+                fh.write('{"plan": {"dev_branch"')
+            raise OSError(28, "No space left on device")
+
+        # A nested patch context: monkeypatch.undo() would also undo chdir.
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(Path, "write_text", exploding_write)
+            with pytest.raises(OSError):
+                save_plan(_make_plan_file())
+
+        assert plan_path().read_text() == before
+        loaded = load_plan()
+        assert loaded.plan.dev_branch == _make_plan_file().plan.dev_branch
