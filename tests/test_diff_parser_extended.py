@@ -7,7 +7,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_split.diff_ops.parser import extract_diff, parse_diff, unquote_git_path
+from pr_split.diff_ops.parser import (
+    _normalize_quoted_headers,
+    extract_diff,
+    parse_diff,
+    unquote_git_path,
+)
 from pr_split.exceptions import GitOperationError
 
 SAMPLE_DIFF = (
@@ -251,3 +256,102 @@ class TestUnquoteGitPath:
 
         assert sorted(pf.path for pf in parsed.patch_set) == sorted(names)
         assert all(pf.is_added_file for pf in parsed.patch_set)
+
+
+class TestQuotedPathsWithSpaces:
+    def test_header_spaces_are_escaped_but_hunk_content_is_not(self) -> None:
+        raw = (
+            'diff --git "a/my \\"notes\\".md" "b/my \\"notes\\".md"\n'
+            "index 1..2 100644\n"
+            '--- "a/my \\"notes\\".md"\t\n'
+            '+++ "b/my \\"notes\\".md"\t\n'
+            "@@ -1 +1 @@\n"
+            '-a "quoted line" here\n'
+            '+--- "not a header" line\n'
+        )
+        normalized = _normalize_quoted_headers(raw)
+        assert normalized.splitlines()[0] == (
+            'diff --git "a/my\\040\\"notes\\".md" "b/my\\040\\"notes\\".md"'
+        )
+        assert normalized.splitlines()[2] == '--- "a/my\\040\\"notes\\".md"\t'
+        assert normalized.splitlines()[5:] == raw.splitlines()[5:]
+
+    def test_diff_without_quotes_is_returned_unchanged(self) -> None:
+        raw = (
+            "diff --git a/plain name.md b/plain name.md\n"
+            "--- a/plain name.md\n"
+            "+++ b/plain name.md\n"
+        )
+        assert _normalize_quoted_headers(raw) is raw
+
+    def test_modified_quoted_path_with_space_parses_to_one_file(self) -> None:
+        raw = (
+            'diff --git "a/my \\"notes\\".md" "b/my \\"notes\\".md"\n'
+            "index 1..2 100644\n"
+            '--- "a/my \\"notes\\".md"\n'
+            '+++ "b/my \\"notes\\".md"\n'
+            "@@ -1 +1 @@\n"
+            "-a\n"
+            "+b\n"
+        )
+        parsed = parse_diff(raw)
+        assert [(pf.path, len(pf)) for pf in parsed.patch_set] == [('my "notes".md', 1)]
+        assert parsed.stats["total_files"] == 1
+
+    def test_added_and_deleted_quoted_paths_with_spaces_parse(self) -> None:
+        raw = (
+            'diff --git "a/new \\"file\\".txt" "b/new \\"file\\".txt"\n'
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            '+++ "b/new \\"file\\".txt"\n'
+            "@@ -0,0 +1 @@\n"
+            "+x\n"
+            'diff --git "a/old \\"file\\".txt" "b/old \\"file\\".txt"\n'
+            "deleted file mode 100644\n"
+            '--- "a/old \\"file\\".txt"\n'
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            "-y\n"
+        )
+        parsed = parse_diff(raw)
+        assert [pf.path for pf in parsed.patch_set] == ['new "file".txt', 'old "file".txt']
+        assert parsed.patch_set[0].is_added_file
+        assert parsed.patch_set[1].is_removed_file
+
+    def test_real_git_diff_with_quoted_spaced_paths(self, tmp_path: Path) -> None:
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        git("init", "-q", "-b", "main")
+        modified = 'my "notes".md'
+        deleted = 'old "file".txt'
+        (tmp_path / modified).write_text("a\n", encoding="utf-8")
+        (tmp_path / deleted).write_text("y\n", encoding="utf-8")
+        (tmp_path / "plain name.md").write_text("p\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "dev")
+        (tmp_path / modified).write_text("b\n", encoding="utf-8")
+        (tmp_path / deleted).unlink()
+        (tmp_path / "plain name.md").write_text("q\n", encoding="utf-8")
+        (tmp_path / 'new "file".txt').write_text("x\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "dev")
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            parsed = parse_diff(extract_diff("dev", "main"))
+        finally:
+            os.chdir(cwd)
+
+        assert sorted((pf.path, len(pf)) for pf in parsed.patch_set) == sorted(
+            [(modified, 1), (deleted, 1), ("plain name.md", 1), ('new "file".txt', 1)]
+        )
+        assert parsed.stats["total_files"] == 4
