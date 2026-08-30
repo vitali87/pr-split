@@ -60,7 +60,7 @@ from .git_ops import (
     remove_worktree,
 )
 from .git_ops.branches import run_git
-from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
+from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr, retarget_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_plan
@@ -1138,6 +1138,10 @@ def merge_all(
     plan = plan_file.plan
     git_state = plan_file.git_state
     pr_map = {r.group_id: r for r in git_state.prs}
+    # Stacked children were opened against their parent's split branch.
+    stacked_children = {
+        r.group_id for r in git_state.branches if r.base_branch != plan.base_branch
+    }
 
     if not pr_map:
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
@@ -1215,6 +1219,13 @@ def merge_all(
                 continue
 
             try:
+                if group_id in stacked_children:
+                    # Its parent has merged by now (iter_ready + the guard
+                    # above), but the PR still targets the parent's branch.
+                    # Merging there -- which `--auto` does silently, since gh
+                    # skips deleting the head branch in auto mode -- would
+                    # never reach the base branch.
+                    retarget_pr(pr_record.pr_number, plan.base_branch)
                 merge_pr(pr_record.pr_number, auto=auto)
                 if not auto:
                     merged.append(group_id)

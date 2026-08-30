@@ -69,3 +69,7 @@ MERGE_NODE_NOT_STACKED = (
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
 )
+PR_RETARGETED = "Retargeted PR #{number} at {base} before merging"
+PR_RETARGET_NATIVE_STACK = (
+    "PR #{number} is in a native stack; GitHub retargets it when its parent merges"
+)

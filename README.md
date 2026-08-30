@@ -92,7 +92,7 @@ pr-split split feature-branch --base main --dry-run
 pr-split split feature-branch --base main --stack
 ```
 
-Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
+Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff and compiles standalone. When `pr-split merge` reaches a stacked child it retargets the PR at the base branch (`gh pr edit --base`) right before merging it, since GitHub only does that itself for native stacks or when the parent's head branch is deleted (which `gh pr merge --auto` skips).
 
 Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
@@ -110,7 +110,7 @@ Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/
 pr-split merge
 ```
 
-Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed, any PR was left blocked, or a PR's state could not be fetched from GitHub (check `gh auth status`), so re-run once the cause is resolved.
+Walks the dependency DAG and merges each PR in topological order. For plans created with `split --stack` (or `execute --stack`), each child PR is retargeted at the base branch right before it is merged (native-stack PRs are left to GitHub). Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed, any PR was left blocked, or a PR's state could not be fetched from GitHub (check `gh auth status`), so re-run once the cause is resolved.
 
 Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 
