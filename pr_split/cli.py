@@ -59,7 +59,7 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import run_git
+from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
@@ -847,9 +847,13 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
-    branch_records = _create_branches_and_commits(
-        groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     except PRCreationError as exc:
@@ -1009,6 +1013,13 @@ def execute(
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
         raise typer.Exit(1)
+    if not commit_exists(plan.merge_base_sha):
+        console.print(
+            f"[red]Plan's merge base {plan.merge_base_sha} is not in this repository "
+            "(plan copied from another checkout, or history rewritten). "
+            "Fetch it or re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
+        raise typer.Exit(1)
 
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
@@ -1032,15 +1043,19 @@ def execute(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
-    branch_records = _create_branches_and_commits(
-        plan.groups,
-        parsed_diff,
-        plan.base_branch,
-        plan.merge_base_sha,
-        namespace,
-        author=plan.author,
-        stacked=plan.stacked,
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            plan.groups,
+            parsed_diff,
+            plan.base_branch,
+            plan.merge_base_sha,
+            namespace,
+            author=plan.author,
+            stacked=plan.stacked,
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     except PRCreationError as exc:

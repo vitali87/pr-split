@@ -509,6 +509,66 @@ class TestExecuteCommand:
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli.commit_exists", return_value=False)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_unknown_merge_base_sha_is_a_clean_error(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_commit: MagicMock
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "0123456789abcdef"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "merge base 0123456789abcdef is not in this repository" in result.output
+        mock_commit.assert_called_once_with("0123456789abcdef")
+
+    @patch(
+        "pr_split.cli._create_branches_and_commits",
+        side_effect=PRSplitError("3 branch(es) failed"),
+    )
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_branch_creation_failure_is_a_clean_error(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_commit: MagicMock,
+        mock_parse: MagicMock,
+        mock_validate: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_plan_file.plan.stacked = False
+        mock_plan_file.plan.dev_branch_arg = "feature"
+        mock_plan_file.plan.dev_branch = "feature"
+        mock_plan_file.plan.base_branch = "main"
+        mock_plan_file.plan.groups = [_group("pr-1", "t", files=["a.py"])]
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "3 branch(es) failed" in result.output
+
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
     def test_execute_missing_merge_base_sha(
