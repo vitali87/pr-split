@@ -557,3 +557,47 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestRichEscapingOfPlanText:
+    def test_present_plan_keeps_brackets_in_title_and_paths(self) -> None:
+        from pr_split.cli import _present_plan, console
+
+        g = _group("pr-1", "Add [core] typing", files=["src/[id].py"])
+        # _render_dag captures on the same console, which would reset an
+        # enclosing capture; it has its own test below.
+        with patch("pr_split.cli._render_dag", return_value=""), console.capture() as capture:
+            _present_plan([g])
+        out = capture.get()
+        assert "Add [core] typing" in out
+        assert "src/[id].py" in out
+
+    def test_render_dag_keeps_brackets(self) -> None:
+        from pr_split.cli import _render_dag
+
+        root = _group("pr-1", "Root [v2]")
+        child = _group("pr-2", "Child [x]", depends_on=["pr-1"])
+        out = _render_dag([root, child])
+        assert "pr-1: Root [v2]" in out
+        assert "pr-2: Child [x] (depends on: pr-1)" in out
+
+    def test_move_messages_keep_bracketed_paths(self) -> None:
+        from pr_split.cli import console
+
+        g1 = _group("pr-1", "src", files=["src/[id].py"])
+        g2 = _group("pr-2", "dst")
+        pf = MagicMock()
+        pf.path = "src/[id].py"
+        pf.__len__ = MagicMock(return_value=2)
+        parsed = MagicMock()
+        parsed.patch_set = [pf]
+        with console.capture() as capture:
+            assert _move_assignment([g1, g2], parsed, "src/[id].py", 1, "pr-1", "pr-2")
+            assert not _move_assignment([g1, g2], parsed, "src/[id].py", 9, "pr-1", "pr-2")
+            assert not _move_assignment([g1, g2], parsed, "a.py", 0, "[pr-1]", "pr-2")
+            _show_group_detail([g1], "[pr-9]")
+        out = capture.get()
+        assert "Moved src/[id].py:1 from pr-1 to pr-2" in out
+        assert "Hunk src/[id].py:9 not found in pr-1." in out
+        assert "Group '[pr-1]' or 'pr-2' not found." in out
+        assert "Group '[pr-9]' not found." in out
