@@ -94,7 +94,7 @@ new file mode 100644
 
 
 class TestExtractDiffSubprocess:
-    @patch("pr_split.diff_ops.parser.subprocess.run")
+    @patch("pr_split.git_ops.branches.subprocess.run")
     def test_extract_diff_success(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE, stderr=""
@@ -105,9 +105,10 @@ class TestExtractDiffSubprocess:
             ["git", "diff", "main...feature"],
             capture_output=True,
             text=True,
+            cwd=None,
         )
 
-    @patch("pr_split.diff_ops.parser.subprocess.run")
+    @patch("pr_split.git_ops.branches.subprocess.run")
     def test_extract_diff_failure(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["git", "diff"],

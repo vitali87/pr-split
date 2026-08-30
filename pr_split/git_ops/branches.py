@@ -1,36 +1,50 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 
 from loguru import logger
 
 from .. import logs
 from ..constants import BRANCH_PREFIX
-from ..exceptions import GitOperationError
+from ..exceptions import ErrorMsg, GitOperationError
+
+
+def _git(args: tuple[str, ...], cwd: str | None = None, *, strip: bool = True) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+        )
+    except FileNotFoundError as exc:
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="git")) from exc
+    if result.returncode != 0:
+        raise GitOperationError(result.stderr.strip())
+    return result.stdout.strip() if strip else result.stdout
 
 
 def run_git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout.strip()
+    return _git(args)
+
+
+def run_git_raw(*args: str) -> str:
+    """Like run_git but returns stdout verbatim (diff and blob content)."""
+    return _git(args, strip=False)
 
 
 def run_git_in_dir(cwd: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout.strip()
+    return _git(args, cwd=cwd)
+
+
+def require_tools(*tools: str) -> str | None:
+    """Return the first of ``tools`` that is not on PATH, or None."""
+    for tool in tools:
+        if shutil.which(tool) is None:
+            return tool
+    return None
 
 
 def branch_exists(branch: str) -> bool:

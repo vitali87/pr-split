@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import subprocess
-
 from loguru import logger
 from unidiff import PatchedFile
 
 from .. import logs
 from ..constants import AssignmentType
-from ..exceptions import GitOperationError
+from ..git_ops.branches import run_git_raw
 from ..schemas import Group, GroupAssignment
 from .parser import ParsedDiff
 
@@ -60,14 +58,7 @@ def merge_chain_assignments(
 
 
 def _get_base_file_content(file_path: str, ref: str) -> str:
-    result = subprocess.run(
-        ["git", "show", f"{ref}:{file_path}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout
+    return run_git_raw("show", f"{ref}:{file_path}")
 
 
 def apply_hunks(base_content: str, patch_file: PatchedFile, assigned_indices: list[int]) -> str:

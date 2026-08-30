@@ -112,13 +112,13 @@ class TestApplyHunks:
 
 
 class TestGetBaseFileContent:
-    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    @patch("pr_split.git_ops.branches.subprocess.run")
     def test_success(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=0, stdout="file content\n", stderr="")
         result = _get_base_file_content("foo.py", "abc123")
         assert result == "file content\n"
 
-    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    @patch("pr_split.git_ops.branches.subprocess.run")
     def test_failure_raises(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
         with pytest.raises(GitOperationError):
@@ -180,7 +180,7 @@ class TestMaterializeGroupFilesNewFile:
 
 
 class TestGetBaseFileContentExtended:
-    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    @patch("pr_split.git_ops.branches.subprocess.run")
     def test_empty_file_returns_empty(self, mock_run: MagicMock) -> None:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = _get_base_file_content("empty.py", "abc123")

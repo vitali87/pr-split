@@ -59,7 +59,7 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import run_git
+from .git_ops.branches import require_tools, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
@@ -123,6 +123,13 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
 
     tree_block = "\n".join(lines)
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
+
+
+def _require_cli_tools(*tools: str) -> None:
+    missing = require_tools(*tools)
+    if missing is not None:
+        console.print(f"[red]{ErrorMsg.TOOL_NOT_FOUND(tool=missing)}[/red]")
+        raise typer.Exit(1)
 
 
 def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
@@ -725,7 +732,14 @@ def split(
     author: str | None = None
     fork_info: ForkPRInfo | None = None
 
+    # Say "git/gh is not installed" before any helper turns that into a
+    # misleading "branch not found" or "authentication failed".
+    _require_cli_tools("git", *(() if dry_run else ("gh",)))
+
     if not branch_exists(dev_branch):
+        # A PR number or user:branch has to be fetched with gh even for a
+        # dry run.
+        _require_cli_tools("gh")
         if not check_gh_auth():
             console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
             raise typer.Exit(1)
@@ -750,6 +764,7 @@ def split(
             console.print(
                 "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
             )
+            _require_cleanup_tools(existing.git_state)
             if typer.confirm("Clean up and proceed with re-splitting?"):
                 closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
                 logger.success(
@@ -920,6 +935,14 @@ def status() -> None:
     console.print(table)
 
 
+def _require_cleanup_tools(git_state: GitState) -> None:
+    # Every close/delete failure inside _cleanup_git_state is swallowed as a
+    # warning, so a missing binary would otherwise look like a successful
+    # cleanup that then deletes the plan. Both callers (clean and the
+    # re-split prompt in split) go through here before asking to proceed.
+    _require_cli_tools("git", *(("gh",) if git_state.prs else ()))
+
+
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
@@ -953,6 +976,8 @@ def clean() -> None:
 
     plan_file = load_plan()
     git_state = plan_file.git_state
+
+    _require_cleanup_tools(git_state)
 
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
@@ -1010,6 +1035,7 @@ def execute(
         )
         raise typer.Exit(1)
 
+    _require_cli_tools("git", "gh")
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
@@ -1133,6 +1159,10 @@ def merge_all(
     if not pr_map:
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
+
+    # Without gh every PR would be skipped as a "fetch error" and the run
+    # would still report success.
+    _require_cli_tools("gh")
 
     dag = PlanDAG(plan.groups)
     merged: list[str] = []

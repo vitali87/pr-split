@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -8,20 +7,14 @@ from loguru import logger
 from unidiff import PatchSet
 
 from .. import logs
-from ..exceptions import DiffParseError, GitOperationError
+from ..exceptions import DiffParseError
+from ..git_ops.branches import run_git_raw
 from ..types_defs import DiffStats, FileSummary, HunkInfo
 
 
 def extract_diff(dev_branch: str, base_branch: str) -> str:
     logger.info(logs.EXTRACTING_DIFF.format(base=base_branch, dev=dev_branch))
-    result = subprocess.run(
-        ["git", "diff", f"{base_branch}...{dev_branch}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout
+    return run_git_raw("diff", f"{base_branch}...{dev_branch}")
 
 
 def parse_diff(raw_diff: str) -> ParsedDiff:

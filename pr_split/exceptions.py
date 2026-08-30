@@ -11,6 +11,7 @@ class ErrorMsg(StrEnum):
     BRANCH_NOT_FOUND = "Branch '{branch}' does not exist"
     DIRTY_WORKTREE = "Working tree has uncommitted changes; commit or stash first"
     GH_AUTH_FAILED = "GitHub CLI authentication failed; run 'gh auth login'"
+    TOOL_NOT_FOUND = "'{tool}' is not installed or not on PATH"
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"

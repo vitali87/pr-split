@@ -314,3 +314,15 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestRequireTools:
+    def test_returns_first_missing_tool(self) -> None:
+        from pr_split.git_ops.branches import require_tools
+
+        with patch(
+            "pr_split.git_ops.branches.shutil.which",
+            side_effect=lambda t: None if t == "gh" else "/usr/bin/x",
+        ):
+            assert require_tools("git", "gh") == "gh"
+            assert require_tools("git") is None
