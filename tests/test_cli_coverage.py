@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from pr_split.cli import (
     _build_pr_body,
+    _drop_empty_groups,
     _handle_loc_bound_warnings,
     _interactive_edit,
     _move_assignment,
@@ -611,3 +612,109 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+TWO_HUNK_DIFF = """\
+diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1,3 +1,4 @@
+ x
++one
+ y
+ z
+@@ -20,3 +21,5 @@
+ p
++two
++three
+ q
+ r
+"""
+
+
+class TestDropEmptyGroups:
+    def test_no_empty_groups_returns_same_list(self) -> None:
+        groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", files=["b.py"])]
+        assert _drop_empty_groups(groups) is groups
+
+    def test_empty_group_is_dropped_and_dependants_inherit_its_parents(self) -> None:
+        root = _group("pr-1", "root", files=["a.py"])
+        emptied = _group("pr-2", "emptied", depends_on=["pr-1"])
+        leaf = _group("pr-3", "leaf", depends_on=["pr-2"], files=["c.py"])
+        from pr_split.cli import console
+
+        with console.capture() as capture:
+            result = _drop_empty_groups([root, emptied, leaf])
+
+        assert [g.id for g in result] == ["pr-1", "pr-3"]
+        assert result[1].depends_on == ["pr-1"]
+        assert "Dropped empty group(s) after editing: pr-2" in capture.get()
+
+    def test_dropping_a_root_leaves_dependants_as_roots(self) -> None:
+        emptied = _group("pr-1", "emptied")
+        leaf = _group("pr-2", "leaf", depends_on=["pr-1"], files=["b.py"])
+        result = _drop_empty_groups([emptied, leaf])
+        assert [g.id for g in result] == ["pr-2"]
+        assert result[0].depends_on == []
+
+    def test_chain_of_empty_groups_collapses_transitively(self) -> None:
+        root = _group("pr-1", "root", files=["a.py"])
+        e1 = _group("pr-2", "e1", depends_on=["pr-1"])
+        e2 = _group("pr-3", "e2", depends_on=["pr-2"])
+        leaf = _group("pr-4", "leaf", depends_on=["pr-3"], files=["d.py"])
+        result = _drop_empty_groups([root, e1, e2, leaf])
+        assert [g.id for g in result] == ["pr-1", "pr-4"]
+        assert result[1].depends_on == ["pr-1"]
+
+    def test_chain_with_direct_edge_does_not_duplicate(self) -> None:
+        root = _group("pr-1", "root", files=["a.py"])
+        e1 = _group("pr-2", "e1", depends_on=["pr-1"])
+        e2 = _group("pr-3", "e2", depends_on=["pr-2"])
+        leaf = _group("pr-4", "leaf", depends_on=["pr-3", "pr-1"], files=["d.py"])
+        result = _drop_empty_groups([root, e1, e2, leaf])
+        assert result[1].depends_on == ["pr-1"]
+
+    def test_diamond_through_dropped_groups(self) -> None:
+        a = _group("pr-1", "a", files=["a.py"])
+        b = _group("pr-2", "b", files=["b.py"])
+        e1 = _group("pr-3", "e1", depends_on=["pr-1"])
+        e2 = _group("pr-4", "e2", depends_on=["pr-2"])
+        e3 = _group("pr-5", "e3", depends_on=["pr-3", "pr-4"])
+        leaf = _group("pr-6", "leaf", depends_on=["pr-5"], files=["f.py"])
+        result = _drop_empty_groups([a, b, e1, e2, e3, leaf])
+        assert [g.id for g in result] == ["pr-1", "pr-2", "pr-6"]
+        assert result[2].depends_on == ["pr-1", "pr-2"]
+
+
+class TestEditorEmptiedGroupEndToEnd:
+    @patch("pr_split.cli.typer.prompt")
+    def test_moving_the_last_hunk_out_yields_a_valid_one_group_plan(
+        self, mock_prompt: MagicMock
+    ) -> None:
+        from pr_split.cli import _drop_empty_groups, _interactive_edit
+        from pr_split.diff_ops.parser import parse_diff
+        from pr_split.graph import PlanDAG
+        from pr_split.planner.validator import validate_plan
+
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        g1 = _group("pr-1", "first", added=1, removed=0)
+        g1.assignments = [
+            GroupAssignment(
+                file_path="a.py", assignment_type=AssignmentType.PARTIAL_HUNKS, hunk_indices=[0]
+            )
+        ]
+        g2 = _group("pr-2", "second", depends_on=["pr-1"], added=2, removed=0)
+        g2.assignments = [
+            GroupAssignment(
+                file_path="a.py", assignment_type=AssignmentType.PARTIAL_HUNKS, hunk_indices=[1]
+            )
+        ]
+        mock_prompt.side_effect = ["move a.py:1 pr-2 pr-1", "done"]
+
+        edited = _interactive_edit([g1, g2], parsed)
+        groups = _drop_empty_groups(edited)
+
+        assert [g.id for g in groups] == ["pr-1"]
+        assert groups[0].assignments[0].hunk_indices == [0, 1]
+        assert groups[0].estimated_loc == 3
+        assert validate_plan(groups, parsed, PlanDAG(groups), max_loc=400) == []

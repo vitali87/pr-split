@@ -590,6 +590,43 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     console.print()
 
 
+def _drop_empty_groups(groups: list[Group]) -> list[Group]:
+    """Remove groups the user emptied in the editor and unlink them from the DAG.
+
+    Moving every hunk out of a group is a legitimate way to dissolve it;
+    aborting the session there would throw away all the other edits. A
+    dropped group's own dependencies are inherited by its dependants so
+    ordering is preserved.
+    """
+    dropped = {g.id: list(g.depends_on) for g in groups if not g.assignments}
+    if not dropped:
+        return groups
+
+    def _surviving(dep: str, seen: set[str]) -> list[str]:
+        # Walk through chains of dropped groups to the nearest kept ancestors.
+        if dep not in dropped:
+            return [dep]
+        out: list[str] = []
+        for parent in dropped[dep]:
+            if parent not in seen:
+                seen.add(parent)
+                out.extend(_surviving(parent, seen))
+        return out
+
+    kept: list[Group] = []
+    for group in groups:
+        if group.id in dropped:
+            continue
+        deps: list[str] = []
+        for dep in group.depends_on:
+            for candidate in _surviving(dep, set()):
+                if candidate not in deps and candidate != group.id:
+                    deps.append(candidate)
+        kept.append(group.model_copy(update={"depends_on": deps}))
+    console.print(f"[yellow]Dropped empty group(s) after editing: {', '.join(dropped)}[/yellow]")
+    return kept
+
+
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
@@ -806,10 +843,9 @@ def split(
     groups = _interactive_edit(groups, parsed_diff)
 
     # Re-validate after user edits
-    empty_groups = [g for g in groups if not g.assignments]
-    if empty_groups:
-        empty_ids = [g.id for g in empty_groups]
-        console.print(f"[red]Groups {empty_ids} are empty after editing.[/red]")
+    groups = _drop_empty_groups(groups)
+    if not groups:
+        console.print("[red]Every group is empty after editing; nothing to split.[/red]")
         raise typer.Exit(1)
     try:
         dag = PlanDAG(groups)
