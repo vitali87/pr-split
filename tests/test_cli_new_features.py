@@ -14,7 +14,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
-from pr_split.exceptions import GitOperationError, PRSplitError
+from pr_split.exceptions import GitOperationError, PlanValidationError, PRSplitError
 from pr_split.git_ops.prs import get_pr_state, merge_pr
 from pr_split.schemas import (
     BranchRecord,
@@ -331,4 +331,129 @@ class TestSplitCliEnvVars:
         assert result.exit_code == 1
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
+        mock_save_plan.assert_not_called()
+
+
+class TestSplitPlannerErrors:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.plan_split", side_effect=PlanValidationError("Dependency cycle detected"))
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_planner_error_is_reported_not_raised(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        mock_parse_diff.return_value = parsed_diff
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Dependency cycle detected" in result.output
+        mock_save_plan.assert_not_called()
+
+
+class TestSplitMalformedLlmOutput:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.planner.client._count_tokens", return_value=10)
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_invalid_assignment_type_is_reported_not_raised(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_call_llm: MagicMock,
+        mock_count_tokens: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        mock_extract_diff.return_value = (
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        mock_call_llm.return_value = {
+            "groups": [
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "description": "d",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "bogus", "hunk_indices": [0]}
+                    ],
+                }
+            ]
+        }
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Failed to parse LLM response" in result.output
+        mock_save_plan.assert_not_called()
+
+
+class TestSplitInvalidPlanFromPlanner:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_coverage_gap_is_reported_not_raised(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        mock_extract_diff.return_value = (
+            "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n"
+            "@@ -1 +1 @@\n-a\n+b\n@@ -10 +10 @@\n-c\n+d\n"
+        )
+        only_first_hunk = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+            estimated_loc=2,
+        )
+        mock_plan_split.return_value = [only_first_hunk]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Hunk f.py[1] not assigned to any group" in result.output
         mock_save_plan.assert_not_called()

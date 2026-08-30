@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from pr_split.constants import AssignmentType
+from pr_split.exceptions import PlanValidationError
 from pr_split.planner.scoring import score_plan
 from pr_split.schemas import Group, GroupAssignment
 
@@ -66,3 +69,18 @@ class TestScorePlan:
         metrics = score_plan(groups, 100, min_loc=50)
         assert metrics.loc_underflow == 30
         assert metrics.undersized_groups == 1
+
+
+class TestScorePlanCycles:
+    def test_cyclic_plan_raises_plan_validation_error(self) -> None:
+        groups = [
+            _group("g1", "a.py", [0], 50, depends_on=["g2"]),
+            _group("g2", "b.py", [0], 50, depends_on=["g1"]),
+        ]
+        with pytest.raises(PlanValidationError, match="cycle"):
+            score_plan(groups, 100)
+
+    def test_self_dependency_raises_plan_validation_error(self) -> None:
+        groups = [_group("g1", "a.py", [0], 50, depends_on=["g1"])]
+        with pytest.raises(PlanValidationError, match="cycle"):
+            score_plan(groups, 100)

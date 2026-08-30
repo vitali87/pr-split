@@ -31,6 +31,7 @@ def _dag_depth(dag: PlanDAG) -> int:
 
 def score_plan(groups: list[Group], max_loc: int, min_loc: int | None = None) -> PlanMetrics:
     dag = PlanDAG(groups)
+    dag.validate_acyclic()
 
     max_group_loc = max((group.estimated_loc for group in groups), default=0)
     loc_underflow = (
