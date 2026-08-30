@@ -91,11 +91,13 @@ def _render_dag(groups: list[Group]) -> str:
         children = [g for g in groups if parent_id in g.depends_on]
         for child in children:
             deps_label = ", ".join(child.depends_on)
-            branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
+            branch = parent_tree.add(
+                escape(f"{child.id}: {child.title} (depends on: {deps_label})")
+            )
             _add_children(branch, child.id)
 
     for root in roots:
-        root_branch = tree.add(f"{root.id}: {root.title}")
+        root_branch = tree.add(escape(f"{root.id}: {root.title}"))
         _add_children(root_branch, root.id)
 
     with console.capture() as capture:
@@ -164,12 +166,13 @@ def _present_plan(groups: list[Group]) -> None:
         files = ", ".join(a.file_path for a in group.assignments)
         deps = ", ".join(group.depends_on) if group.depends_on else ""
         diff_str = f"+{group.estimated_added}/-{group.estimated_removed}"
+        # Plan text is LLM/user-written; "[...]" in it is Rich markup unless escaped.
         table.add_row(
-            group.id,
-            group.title,
+            escape(group.id),
+            escape(group.title),
             diff_str,
-            deps,
-            files,
+            escape(deps),
+            escape(files),
         )
 
     console.print(table)
@@ -515,7 +518,7 @@ def _move_assignment(
     src = group_map.get(from_id)
     dst = group_map.get(to_id)
     if not src or not dst:
-        console.print(f"[red]Group '{from_id}' or '{to_id}' not found.[/red]")
+        console.print(f"[red]Group '{escape(from_id)}' or '{escape(to_id)}' not found.[/red]")
         return False
 
     pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
@@ -542,7 +545,9 @@ def _move_assignment(
             break
 
     if not found:
-        console.print(f"[red]Hunk {file_path}:{hunk_index} not found in {from_id}.[/red]")
+        console.print(
+            f"[red]Hunk {escape(file_path)}:{hunk_index} not found in {escape(from_id)}.[/red]"
+        )
         return False
 
     dst_assignment = next((a for a in dst.assignments if a.file_path == file_path), None)
@@ -564,7 +569,10 @@ def _move_assignment(
             )
         )
 
-    console.print(f"[green]Moved {file_path}:{hunk_index} from {from_id} to {to_id}[/green]")
+    console.print(
+        f"[green]Moved {escape(file_path)}:{hunk_index} from {escape(from_id)} "
+        f"to {escape(to_id)}[/green]"
+    )
     return True
 
 
@@ -572,7 +580,7 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     group_map = {g.id: g for g in groups}
     group = group_map.get(group_id)
     if not group:
-        console.print(f"[red]Group '{group_id}' not found.[/red]")
+        console.print(f"[red]Group '{escape(group_id)}' not found.[/red]")
         return
     # Titles, descriptions and paths come from the plan (LLM-written); any
     # "[...]" in them would be swallowed as Rich markup unless escaped.
