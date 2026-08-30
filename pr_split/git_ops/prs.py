@@ -34,10 +34,13 @@ GH_STACK_EXTENSION = "github/gh-stack"
 
 
 def check_gh_stack() -> bool:
-    try:
-        installed = _run_gh("extension", "list")
-    except GitOperationError:
-        return False
+    """Return whether the gh-stack extension is installed.
+
+    Raises GitOperationError if ``gh extension list`` itself fails, so an
+    operational problem (gh missing, auth rejected) is not mistaken for a
+    missing extension.
+    """
+    installed = _run_gh("extension", "list")
     return any(GH_STACK_EXTENSION in line.split() for line in installed.splitlines())
 
 

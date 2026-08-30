@@ -44,7 +44,13 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    ErrorMsg,
+    GitOperationError,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
@@ -126,6 +132,17 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
+def _require_gh_stack() -> None:
+    try:
+        installed = check_gh_stack()
+    except GitOperationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not installed:
+        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
+        raise typer.Exit(1)
+
+
 def _validate_inputs(
     dev_branch: str, base: str, *, dry_run: bool = False, stacked: bool = False
 ) -> None:
@@ -141,9 +158,8 @@ def _validate_inputs(
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
-    if not dry_run and stacked and not check_gh_stack():
-        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
-        raise typer.Exit(1)
+    if not dry_run and stacked:
+        _require_gh_stack()
 
 
 def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
@@ -1024,9 +1040,8 @@ def execute(
     if not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
-    if plan.stacked and not check_gh_stack():
-        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
-        raise typer.Exit(1)
+    if plan.stacked:
+        _require_gh_stack()
 
     parsed_diff = parse_diff(plan.raw_diff)
 

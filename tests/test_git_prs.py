@@ -157,9 +157,10 @@ class TestCheckGhStack:
         assert check_gh_stack() is False
 
     @patch("pr_split.git_ops.prs._run_gh")
-    def test_gh_failure(self, mock_gh: MagicMock) -> None:
+    def test_gh_failure_propagates(self, mock_gh: MagicMock) -> None:
         mock_gh.side_effect = GitOperationError("gh not found")
-        assert check_gh_stack() is False
+        with pytest.raises(GitOperationError, match="gh not found"):
+            check_gh_stack()
 
 
 class TestCreatePrDraft:
