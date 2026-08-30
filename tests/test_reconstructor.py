@@ -379,3 +379,74 @@ class TestAddedFileLineEndings:
         )
         result = materialize_group_files(parsed, group, "abc123")
         assert result["new_file.py"] == 'def hello():\n    return "world"\n\n'
+
+
+class TestMissingTrailingNewline:
+    NO_EOL_PATCH = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\\ No newline at end of file
++c
+\\ No newline at end of file
+"""
+
+    def test_existing_file_keeps_missing_trailing_newline(self) -> None:
+        patch_file = PatchSet(self.NO_EOL_PATCH)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nc"
+
+    def test_newline_added_when_dev_branch_adds_one(self) -> None:
+        patch = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\\ No newline at end of file
++b
+"""
+        patch_file = PatchSet(patch)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nb\n"
+
+    def test_marker_after_removed_line_does_not_strip_target(self) -> None:
+        patch = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
++c
+-b
+\\ No newline at end of file
+"""
+        patch_file = PatchSet(patch)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nc\n"
+
+    def test_new_file_without_trailing_newline(self) -> None:
+        diff = """\
+diff --git a/n.txt b/n.txt
+new file mode 100644
+--- /dev/null
++++ b/n.txt
+@@ -0,0 +1,2 @@
++x
++y
+\\ No newline at end of file
+"""
+        parsed = parse_diff(diff)
+        group = Group(
+            id="g",
+            title="g",
+            description="g",
+            depends_on=[],
+            assignments=[
+                GroupAssignment(
+                    file_path="n.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+            estimated_loc=2,
+        )
+        assert materialize_group_files(parsed, group, "base")["n.txt"] == "x\ny"

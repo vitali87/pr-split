@@ -30,6 +30,20 @@ def check_gh_auth() -> bool:
     return True
 
 
+GH_STACK_EXTENSION = "github/gh-stack"
+
+
+def check_gh_stack() -> bool:
+    """Return whether the gh-stack extension is installed.
+
+    Raises GitOperationError if ``gh extension list`` itself fails, so an
+    operational problem (gh missing, auth rejected) is not mistaken for a
+    missing extension.
+    """
+    installed = _run_gh("extension", "list")
+    return any(GH_STACK_EXTENSION in line.split() for line in installed.splitlines())
+
+
 def create_pr(
     head: str, base: str, title: str, body: str, *, draft: bool = False
 ) -> tuple[int, str]:
@@ -83,8 +97,7 @@ def link_stack(pr_numbers: list[int]) -> None:
     try:
         _run_gh("stack", "link", *[str(n) for n in pr_numbers])
     except GitOperationError as exc:
-        logger.warning(logs.STACK_LINK_FAILED.format(prs=pr_numbers, detail=exc))
-        return
+        raise GitOperationError(ErrorMsg.STACK_LINK_FAILED(prs=pr_numbers, detail=exc)) from exc
     logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
 
 

@@ -36,12 +36,16 @@ uv tool install pr-split
 
 # With pip
 pip install pr-split
+
+# With the optional CP-SAT partitioning backend
+uv tool install "pr-split[cp-sat]"
 ```
 
 ## Prerequisites
 
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
+- [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`) when using `--stack`
 - `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend
 
 ## Usage
@@ -95,7 +99,7 @@ pr-split split feature-branch --base main --stack
 
 Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
 
-Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
+Linear chains in the plan are registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack), which is **required** for `--stack`: install it with `gh extension install github/gh-stack`. `pr-split` checks for it up front and refuses to run a stacked split (or `execute` a stacked plan) without it; a `--dry-run` does not need it. If linking fails after the PRs are created, the command exits with an error — the plan state is already saved, so `pr-split clean` can undo the split. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
 ### Check status of an existing split
 
@@ -221,7 +225,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: vitali87/pr-split@main
+      - uses: vitali87/pr-split@v1.0.0
         with:
           max-loc: "400"
           partition-strategy: "graph"
@@ -234,7 +238,7 @@ jobs:
 |-------|---------|-------------|
 | `max-loc` | `400` | Maximum target diff lines per sub-PR |
 | `min-loc` | (unset) | Minimum target diff lines per sub-PR |
-| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`) |
+| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). Automatic `ortools` install for `cp_sat` needs a release newer than `v1.0.0`; pin the action to that release or `@main` when using it |
 | `priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `threshold-groups` | `2` | Minimum suggested groups before posting the split plan |
 | `python-version` | `3.12` | Python version to use |
@@ -256,7 +260,7 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package to be installed in the runtime environment.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 
