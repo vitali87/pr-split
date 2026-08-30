@@ -413,10 +413,14 @@ class TestMaterializeDuplicateAssignments:
         assert "Materializing 1 file" in mock_log.call_args[0][0]
 
     def test_duplicate_assignments_on_new_file_apply_both_hunks(self) -> None:
+        # Two hunks in a new file (unidiff splits them when the context gap
+        # is large enough), each claimed by a separate PARTIAL assignment.
         parsed = parse_diff(
             "diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
             "@@ -0,0 +1,2 @@\n+one\n+two\n"
+            "@@ -0,0 +10,1 @@\n+ten\n"
         )
+        assert len(parsed.patch_set[0]) == 2
         group = Group(
             id="pr-1",
             title="t",
@@ -429,9 +433,9 @@ class TestMaterializeDuplicateAssignments:
                 ),
                 GroupAssignment(
                     file_path="n.py",
-                    assignment_type=AssignmentType.WHOLE_FILE,
-                    hunk_indices=[],
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
                 ),
             ],
         )
-        assert materialize_group_files(parsed, group, "main")["n.py"] == "one\ntwo\n"
+        assert materialize_group_files(parsed, group, "main")["n.py"] == "one\ntwo\nten\n"
