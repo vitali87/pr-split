@@ -63,6 +63,7 @@ from .git_ops import (
     fetch_fork_pr,
     is_worktree_clean,
     merge_base,
+    prune_remote_tracking_refs,
     push_branch,
     remove_worktree,
 )
@@ -462,6 +463,11 @@ def _push_and_create_prs(
 ) -> list[PRRecord]:
     record_map = {r.group_id: r for r in branch_records}
     errors: list[tuple[str, Exception]] = []
+
+    # Branch names are reused across runs; drop tracking refs left by an
+    # earlier split whose remote branch was merged or deleted since, or
+    # force-with-lease rejects every push as stale.
+    prune_remote_tracking_refs()
 
     # Children target parent branches, so every branch is pushed before any PR opens.
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:

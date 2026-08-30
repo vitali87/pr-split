@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import subprocess
@@ -110,8 +111,34 @@ def delete_branch(branch: str, *, remote: bool = False) -> None:
             if _REMOTE_REF_MISSING not in str(exc):
                 raise
             logger.info(logs.BRANCH_ALREADY_GONE.format(branch=branch, where=" on origin"))
+        # Either way the remote branch is gone; drop the local tracking ref
+        # too, or the next `push --force-with-lease` of a reused branch name
+        # is rejected as "stale info" against a ref origin no longer has.
+        forget_remote_tracking_ref(branch)
     if local_error is not None:
         raise local_error
+
+
+def forget_remote_tracking_ref(branch: str) -> None:
+    with contextlib.suppress(GitOperationError):
+        run_git("update-ref", "-d", f"refs/remotes/origin/{branch}")
+
+
+def prune_remote_tracking_refs() -> None:
+    """Drop tracking refs whose remote branch no longer exists.
+
+    Split branch names are reused across runs; after a merge or `clean` the
+    remote branch is gone but `refs/remotes/origin/pr-split/...` may still
+    point at the old head, and every `push --force-with-lease` would be
+    rejected as stale. Only *gone* refs are dropped (`git remote prune`, no
+    fetch): refreshing the refs that still exist would make the lease
+    compare against origin's current tip and silently force over commits
+    someone else pushed to a reused branch.
+    """
+    try:
+        run_git("remote", "prune", "origin")
+    except GitOperationError as exc:
+        logger.warning(logs.PRUNE_FAILED.format(error=exc))
 
 
 def merge_base(ref_a: str, ref_b: str) -> str:
