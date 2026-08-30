@@ -42,6 +42,24 @@ class TestGroupAssignment:
         )
         assert assignment.assignment_type == AssignmentType.WHOLE_FILE
 
+    def test_whole_file_covers_exactly_the_parsed_range(self) -> None:
+        for stored in ([], [1], [0, 1, 2], [99]):
+            assignment = GroupAssignment(
+                file_path="hello.py",
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=stored,
+            )
+            assert assignment.covered_indices(3) == [0, 1, 2]
+            assert assignment.hunk_indices == stored
+
+    def test_partial_hunks_cover_exactly_what_they_list(self) -> None:
+        assignment = GroupAssignment(
+            file_path="hello.py",
+            assignment_type=AssignmentType.PARTIAL_HUNKS,
+            hunk_indices=[2, 0],
+        )
+        assert assignment.covered_indices(3) == [2, 0]
+
     def test_partial_hunks_assignment(self) -> None:
         assignment = GroupAssignment(
             file_path="hello.py",
