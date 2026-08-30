@@ -9,7 +9,7 @@ import pytest
 from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
-from pr_split.exceptions import LLMError, PRSplitError
+from pr_split.exceptions import ErrorMsg, LLMError, PRSplitError
 from pr_split.planner.client import (
     RawToolOutput,
     _call_anthropic,
@@ -656,7 +656,7 @@ class TestCallAnthropic:
         )
         mock_cls.return_value.beta.messages.create.return_value = mock_response
         settings = _make_settings(Provider.ANTHROPIC)
-        with pytest.raises(LLMError, match="cut off.*stop_reason=max_tokens"):
+        with pytest.raises(LLMError, match=r"cut off.*stop_reason=max_tokens"):
             _call_anthropic("sys", "usr", settings=settings)
 
 
@@ -1003,7 +1003,7 @@ class TestOpenAIIncompleteResponse:
         )
         mock_cls.return_value.responses.create.return_value = mock_response
         settings = _make_settings(Provider.OPENAI)
-        with pytest.raises(LLMError, match="cut off.*max_output_tokens"):
+        with pytest.raises(LLMError, match=r"cut off.*max_output_tokens"):
             _call_openai("sys", "usr", settings=settings)
 
     @patch("pr_split.planner.client.openai.OpenAI")
@@ -1017,3 +1017,18 @@ class TestOpenAIIncompleteResponse:
         mock_cls.return_value.responses.create.return_value = mock_response
         settings = _make_settings(Provider.OPENAI)
         assert _call_openai("sys", "usr", settings=settings)["groups"] == _SAMPLE_RAW_GROUPS
+
+
+class TestTruncationIsRetried:
+    @patch("pr_split.planner.client._call_llm")
+    def test_chunk_retry_recovers_from_truncated_first_attempt(self, mock_call: MagicMock) -> None:
+        mock_call.side_effect = [
+            LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail="stop_reason=max_tokens")),
+            {"groups": _SAMPLE_RAW_GROUPS},
+        ]
+        settings = _make_settings(Provider.ANTHROPIC)
+        groups = _call_chunk_with_retry(
+            "sys", "usr", settings=settings, chunk_index=1, total_chunks=2
+        )
+        assert [g.id for g in groups] == [g["id"] for g in _SAMPLE_RAW_GROUPS]
+        assert mock_call.call_count == 2
