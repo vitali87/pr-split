@@ -34,18 +34,21 @@ def _write_comment(body: str) -> None:
     _set_output("comment_path", str(comment_path))
 
 
-def _skip(reason: str) -> None:
+def _skip(reason: str, *, within_limits: bool = False) -> None:
     print(reason)
     _set_output("total_groups", "1")
     _set_output("objective", "0")
     _set_output("should_split", "false")
-    # Still emit a comment body so an earlier "please split" comment on this
-    # PR is updated (the action only ever updates an existing marker comment
-    # when should_split is false; it never creates one).
-    _write_comment(
-        f"{COMMENT_MARKER}\n## pr-split analysis\n\n{reason}\n\n"
-        "This PR is within acceptable size limits."
-    )
+    if within_limits:
+        # Emit a comment body so an earlier "please split" comment on this
+        # PR is refreshed once it shrinks under the threshold (the action
+        # only updates an existing marker comment when should_split is
+        # false; it never creates one). Failure paths deliberately write no
+        # body so a transient error cannot overwrite a valid plan comment.
+        _write_comment(
+            f"{COMMENT_MARKER}\n## pr-split analysis\n\n{reason}\n\n"
+            "This PR is within acceptable size limits."
+        )
 
 
 def _md_escape(s: str) -> str:
@@ -100,7 +103,10 @@ def main() -> None:
     _set_output("total_loc", str(total_loc))
 
     if total_loc <= max_loc:
-        _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
+        _skip(
+            f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.",
+            within_limits=True,
+        )
         return
 
     # Create local branch refs for pr-split
