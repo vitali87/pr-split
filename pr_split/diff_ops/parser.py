@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from functools import cached_property
@@ -8,14 +9,18 @@ from loguru import logger
 from unidiff import PatchSet
 
 from .. import logs
-from ..exceptions import DiffParseError, GitOperationError
+from ..exceptions import DiffParseError, ErrorMsg, GitOperationError
 from ..types_defs import DiffStats, FileSummary, HunkInfo
 
 
 def extract_diff(dev_branch: str, base_branch: str) -> str:
     logger.info(logs.EXTRACTING_DIFF.format(base=base_branch, dev=dev_branch))
     result = subprocess.run(
-        ["git", "diff", f"{base_branch}...{dev_branch}"],
+        # --submodule=short: with diff.submodule=log|diff in the user's
+        # config a gitlink change has no "index … 160000" header and would
+        # slip past the submodule check below (or show up as a bogus
+        # vendor/<file> diff).
+        ["git", "diff", "--submodule=short", f"{base_branch}...{dev_branch}"],
         capture_output=True,
         text=True,
     )
@@ -24,11 +29,32 @@ def extract_diff(dev_branch: str, base_branch: str) -> str:
     return result.stdout
 
 
+_GITLINK_MODE = "160000"
+
+
+def _submodule_paths(patch_set: PatchSet) -> list[str]:
+    """Files whose diff header carries the gitlink mode (a submodule pointer)."""
+    paths: list[str] = []
+    for patch_file in patch_set:
+        header = "\n".join(patch_file.patch_info or [])
+        if re.search(
+            rf"^index [0-9a-f]+\.\.[0-9a-f]+ {_GITLINK_MODE}$", header, re.M
+        ) or re.search(rf"^(?:new|deleted) file mode {_GITLINK_MODE}$", header, re.M):
+            paths.append(patch_file.path)
+    return paths
+
+
 def parse_diff(raw_diff: str) -> ParsedDiff:
     try:
         patch_set = PatchSet(raw_diff)
     except Exception as exc:
         raise DiffParseError(str(exc)) from exc
+    # A submodule bump looks like a one-hunk text change ("-Subproject
+    # commit …"), so it would plan and validate fine and only fail with
+    # "bad object" while materializing, after the user confirmed.
+    submodules = _submodule_paths(patch_set)
+    if submodules:
+        raise DiffParseError(ErrorMsg.SUBMODULE_UNSUPPORTED(paths=", ".join(submodules)))
     return ParsedDiff(patch_set=patch_set, raw_diff=raw_diff)
 
 

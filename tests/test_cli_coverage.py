@@ -509,6 +509,43 @@ class TestExecuteCommand:
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_a_saved_submodule_plan(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_validate: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_plan_file.plan.raw_diff = (
+            "diff --git a/vendor b/vendor\n"
+            "index 0ebfaa8..2f687ea 160000\n"
+            "--- a/vendor\n"
+            "+++ b/vendor\n"
+            "@@ -1 +1 @@\n"
+            "-Subproject commit 0ebfaa8000000000000000000000000000000000\n"
+            "+Subproject commit 2f687ea000000000000000000000000000000000\n"
+        )
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Submodule changes are not supported (pointer bump at vendor)" in " ".join(
+            result.output.split()
+        )
+        mock_validate.assert_not_called()
+
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
     def test_execute_missing_merge_base_sha(
