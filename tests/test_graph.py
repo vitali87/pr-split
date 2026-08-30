@@ -137,3 +137,21 @@ class TestLinearChains:
         ]
         dag = PlanDAG(groups)
         assert sorted(dag.linear_chains()) == [["a"], ["b", "c"], ["d"]]
+
+
+class TestPlanDAGRejectsMalformedGroups:
+    def test_unknown_dependency_is_a_validation_error(self) -> None:
+        with pytest.raises(PlanValidationError) as exc_info:
+            PlanDAG([_group("pr-1"), _group("pr-2", ["pr-9"])])
+        assert str(exc_info.value) == (
+            "Group 'pr-2' depends on 'pr-9', which is not a group in the plan"
+        )
+
+    def test_duplicate_group_id_is_a_validation_error(self) -> None:
+        with pytest.raises(PlanValidationError, match="'pr-1' is used more than once"):
+            PlanDAG([_group("pr-1"), _group("pr-1")])
+
+    def test_self_dependency_still_reports_a_cycle(self) -> None:
+        dag = PlanDAG([_group("pr-1", ["pr-1"])])
+        with pytest.raises(PlanValidationError, match="cycle"):
+            dag.validate_acyclic()

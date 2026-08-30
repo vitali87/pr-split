@@ -10,11 +10,19 @@ from .schemas import Group
 
 class PlanDAG:
     def __init__(self, groups: list[Group]) -> None:
-        self._groups: dict[str, Group] = {g.id: g for g in groups}
+        self._groups: dict[str, Group] = {}
+        for g in groups:
+            # Silently collapsing duplicates would drop a group and later
+            # surface as a bogus merge conflict between a group and itself.
+            if g.id in self._groups:
+                raise PlanValidationError(ErrorMsg.DUPLICATE_GROUP_ID(group=g.id))
+            self._groups[g.id] = g
         self._children: dict[str, list[str]] = {g.id: [] for g in groups}
         self._parents: dict[str, list[str]] = {g.id: list(g.depends_on) for g in groups}
         for g in groups:
             for dep in g.depends_on:
+                if dep not in self._children:
+                    raise PlanValidationError(ErrorMsg.UNKNOWN_DEPENDENCY(group=g.id, dep=dep))
                 self._children[dep].append(g.id)
 
     def _build_sorter(self) -> TopologicalSorter[str]:

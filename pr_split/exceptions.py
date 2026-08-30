@@ -12,6 +12,8 @@ class ErrorMsg(StrEnum):
     DIRTY_WORKTREE = "Working tree has uncommitted changes; commit or stash first"
     GH_AUTH_FAILED = "GitHub CLI authentication failed; run 'gh auth login'"
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
+    DUPLICATE_GROUP_ID = "Group id '{group}' is used more than once"
+    UNKNOWN_DEPENDENCY = "Group '{group}' depends on '{dep}', which is not a group in the plan"
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
