@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 import subprocess
+import tempfile
+from pathlib import Path
 
 from loguru import logger
 
@@ -103,11 +105,31 @@ def add_worktree(path: str, branch_name: str, start_point: str) -> None:
         prev_sha = run_git("rev-parse", branch_name)
         run_git("branch", "-D", branch_name)
     try:
-        run_git("worktree", "add", "-b", branch_name, path, start_point)
+        # A repository post-checkout hook (husky, lint-staged installers)
+        # runs inside the throwaway worktree, where it has no toolchain and
+        # can only fail; pointing hooksPath at an empty directory for this
+        # one command disables it.
+        run_git(
+            "-c",
+            f"core.hooksPath={_no_hooks_dir()}",
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            path,
+            start_point,
+        )
     except GitOperationError:
         if prev_sha is not None:
             run_git("branch", branch_name, prev_sha)
         raise
+
+
+def _no_hooks_dir() -> str:
+    """An empty directory to use as core.hooksPath (no hooks run)."""
+    path = Path(tempfile.gettempdir()) / "pr-split-no-hooks"
+    path.mkdir(exist_ok=True)
+    return str(path)
 
 
 def remove_worktree(path: str) -> None:
