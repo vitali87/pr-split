@@ -147,7 +147,7 @@ def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) 
     if strict_loc_bounds and warnings:
         console.print(f"[red]{ErrorMsg.LOC_BOUNDS_STRICT_FAILED()}[/red]")
         for warning in warnings:
-            console.print(f"[red]- {warning}[/red]")
+            console.print(f"[red]- {escape(warning)}[/red]")
         raise typer.Exit(1)
 
     for warning in warnings:
@@ -510,7 +510,7 @@ def _move_assignment(
     if from_id == to_id:
         console.print(
             f"[yellow]Source and destination are the same"
-            f" ('{from_id}'). No move performed.[/yellow]"
+            f" ('{escape(from_id)}'). No move performed.[/yellow]"
         )
         return False
 
@@ -798,7 +798,7 @@ def split(
             partition_strategy=partition_strategy,
         )
     except (ValidationError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
 
@@ -817,7 +817,7 @@ def split(
     empty_groups = [g for g in groups if not g.assignments]
     if empty_groups:
         empty_ids = [g.id for g in empty_groups]
-        console.print(f"[red]Groups {empty_ids} are empty after editing.[/red]")
+        console.print(f"[red]Groups {escape(str(empty_ids))} are empty after editing.[/red]")
         raise typer.Exit(1)
     try:
         dag = PlanDAG(groups)
@@ -831,7 +831,7 @@ def split(
         _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
         logger.success("Edited plan validation passed")
     except PRSplitError as exc:
-        console.print(f"[red]Edited plan is invalid: {exc}[/red]")
+        console.print(f"[red]Edited plan is invalid: {escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
 
     merge_base_ref = merge_base(base, dev_branch)
@@ -928,7 +928,9 @@ def status() -> None:
             live = live_states.get(pr_record.pr_number, {})
             pr_state = live.get("state", pr_record.state.value).upper()
             review = (live.get("reviewDecision") or "").replace("_", " ").title()
-        table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
+        table.add_row(
+            escape(group.id), escape(group.title), escape(branch_name), pr_info, pr_state, review
+        )
 
     console.print(table)
 
@@ -1038,7 +1040,7 @@ def execute(
     try:
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
-        console.print(f"[red]{exc}[/red]")
+        console.print(f"[red]{escape(str(exc))}[/red]")
         raise typer.Exit(1) from exc
 
     _present_plan(plan.groups)
@@ -1235,11 +1237,11 @@ def merge_all(
 
     console.print()
     if merged:
-        console.print(f"[green]Merged ({len(merged)}): {', '.join(merged)}[/green]")
+        console.print(f"[green]Merged ({len(merged)}): {escape(', '.join(merged))}[/green]")
     if skipped:
-        console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
+        console.print(f"[yellow]Skipped ({len(skipped)}): {escape(', '.join(skipped))}[/yellow]")
     if failed:
-        console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+        console.print(f"[red]Failed ({len(failed)}): {escape(', '.join(failed))}[/red]")
     if notify:
         exit_reason = (
             "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
