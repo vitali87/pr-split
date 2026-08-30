@@ -69,3 +69,7 @@ MERGE_NODE_NOT_STACKED = (
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
 )
+CP_SAT_NOT_OPTIMAL = (
+    "CP-SAT stopped at the {timeout:.1f}s limit with a feasible but unproven-optimal plan "
+    "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
+)
