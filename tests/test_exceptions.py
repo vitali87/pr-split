@@ -34,6 +34,10 @@ class TestErrorMsg:
         assert "bar.py" in result
         assert "g1, g2" in result
 
+    def test_coverage_duplicate(self) -> None:
+        result = ErrorMsg.COVERAGE_DUPLICATE(file="bar.py", index=1, group="g1")
+        assert result == "Hunk bar.py[1] listed more than once in group 'g1'"
+
     def test_loc_mismatch(self) -> None:
         result = ErrorMsg.LOC_MISMATCH(actual=10, expected=20)
         assert "10" in result

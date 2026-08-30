@@ -22,7 +22,14 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
                 indices = assignment.hunk_indices
             for idx in indices:
                 key = (assignment.file_path, idx)
-                assigned.setdefault(key, []).append(group.id)
+                owners = assigned.setdefault(key, [])
+                if group.id in owners:
+                    # The same group claiming a hunk twice is a malformed
+                    # plan, not an overlap between groups.
+                    raise PlanValidationError(
+                        ErrorMsg.COVERAGE_DUPLICATE(file=key[0], index=key[1], group=group.id)
+                    )
+                owners.append(group.id)
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
 

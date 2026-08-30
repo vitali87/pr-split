@@ -90,7 +90,31 @@ class TestValidateCoverage:
                 7,
             ),
         ]
-        with pytest.raises(PlanValidationError, match="multiple groups"):
+        with pytest.raises(PlanValidationError, match="multiple groups: g1, g2"):
+            validate_coverage(groups, parsed)
+
+    def test_same_group_listing_hunk_twice_is_reported_as_duplicate(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group(
+                "g1",
+                [_ga("a.py", PARTIAL, [0]), _ga("a.py", WHOLE, [])],
+                3,
+            ),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_coverage(groups, parsed)
+        assert str(exc_info.value) == "Hunk a.py[0] listed more than once in group 'g1'"
+        assert "multiple groups" not in str(exc_info.value)
+
+    def test_repeated_index_in_one_assignment_is_reported_as_duplicate(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [0, 0])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"more than once in group 'g1'"):
             validate_coverage(groups, parsed)
 
 
