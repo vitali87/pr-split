@@ -99,7 +99,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{description}\n\nFiles: {files}\nLOC: {loc}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"], added=10, removed=5)
         body = _build_pr_body(group, [group])
@@ -114,7 +114,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{nonexistent}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"])
         with pytest.raises(PRSplitError, match="Invalid PR template"):

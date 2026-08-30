@@ -146,3 +146,48 @@ class TestPlanStoreCorruptFiles:
         (tmp_path / ".pr-split" / "plan.json").mkdir()
         with pytest.raises(PRSplitError, match="Cannot load split plan"):
             load_plan()
+
+
+class TestPlanPathsResolveAgainstTheRepoRoot:
+    def _repo(self, tmp_path: Path) -> Path:
+        import subprocess
+
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        return repo
+
+    def test_plan_saved_from_a_subdirectory_is_found_from_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.plan_store import plan_path
+
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo / "src")
+        save_plan(_make_plan_file())
+        assert (repo / ".pr-split" / "plan.json").exists()
+        assert not (repo / "src" / ".pr-split").exists()
+        assert plan_path() == (repo / ".pr-split" / "plan.json").resolve()
+
+        monkeypatch.chdir(repo)
+        assert plan_exists()
+        assert load_plan().plan.dev_branch == "feat/big"
+
+    def test_outside_a_repository_the_cwd_is_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.plan_store import plan_path
+
+        monkeypatch.chdir(tmp_path)
+        assert plan_path() == tmp_path / ".pr-split" / "plan.json"
+
+    def test_template_is_read_from_the_repo_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.cli import _pr_template_path
+
+        repo = self._repo(tmp_path)
+        (repo / ".pr-split").mkdir()
+        (repo / ".pr-split" / "template.md").write_text("# {title}")
+        monkeypatch.chdir(repo / "src")
+        assert _pr_template_path().read_text() == "# {title}"
