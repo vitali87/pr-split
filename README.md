@@ -165,7 +165,7 @@ Available placeholders: `{description}`, `{files}`, `{added}`, `{removed}`, `{lo
 
 ### Re-split with different parameters
 
-Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten.
+Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten. With `--dry-run`, `split` never closes PRs or deletes branches: if the saved plan has already been executed it exits 1 and asks you to run `pr-split clean` first.
 
 ### Clean up
 
