@@ -407,7 +407,14 @@ def _plan_split_with_llm(
         logger.warning(logs.DIFF_TOO_LARGE.format(tokens=token_count, limit=effective_limit))
         groups = _plan_split_chunked(parsed_diff, settings, system, token_count)
         logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
-        return _refine_plan_with_llm(groups, parsed_diff, settings, system)
+        # The refinement prompt embeds the full labeled diff, which is exactly
+        # what did not fit; sending it would fail and be swallowed as an
+        # exhausted refinement. Say so instead of wasting the call.
+        if settings.max_refinement_iterations > 0:
+            violations = detect_loc_bound_violations(groups, settings.max_loc, settings.min_loc)
+            if violations:
+                logger.warning(logs.REFINEMENT_SKIPPED_CHUNKED.format(remaining=len(violations)))
+        return groups
 
     logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
     raw = _call_llm(system=system, user=user, settings=settings)

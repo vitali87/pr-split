@@ -986,3 +986,38 @@ class TestPlanSplitWithLlm:
         result = _plan_split_with_llm(parsed, settings)
         assert len(result) == 1
         mock_chunked.assert_called_once()
+
+
+class TestChunkedPlanningSkipsRefinement:
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.planner.client._plan_split_chunked")
+    @patch("pr_split.planner.client._count_tokens", return_value=10**9)
+    def test_no_refinement_call_after_chunking(
+        self, mock_count: MagicMock, mock_chunked: MagicMock, mock_call: MagicMock
+    ) -> None:
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = _make_settings(
+            Provider.ANTHROPIC, max_refinement_iterations=2, min_loc=50, max_loc=100
+        )
+        oversized = Group(id="pr-1", title="t", description="d", estimated_loc=500)
+        mock_chunked.return_value = [oversized]
+
+        result = _plan_split_with_llm(parsed, settings)
+
+        assert result == [oversized]
+        mock_call.assert_not_called()
+
+    @patch("pr_split.planner.client._refine_plan_with_llm")
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.planner.client._count_tokens", return_value=1)
+    def test_single_shot_planning_still_refines(
+        self, mock_count: MagicMock, mock_call: MagicMock, mock_refine: MagicMock
+    ) -> None:
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = _make_settings(Provider.ANTHROPIC, max_refinement_iterations=2)
+        mock_call.return_value = {"groups": []}
+        mock_refine.return_value = []
+
+        _plan_split_with_llm(parsed, settings)
+
+        mock_refine.assert_called_once()
