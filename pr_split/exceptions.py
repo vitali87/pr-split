@@ -27,6 +27,10 @@ class ErrorMsg(StrEnum):
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
     MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
     LOC_BOUNDS_STRICT_FAILED = "Plan violates configured LOC bounds"
+    BINARY_FILES_UNSUPPORTED = (
+        "Diff contains binary files, which cannot be split into hunks: {files}."
+        " Commit them separately and re-run"
+    )
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

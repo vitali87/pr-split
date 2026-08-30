@@ -63,7 +63,7 @@ from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
-from .planner import plan_split, validate_coverage, validate_plan
+from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .schemas import (
     BranchRecord,
     GitState,
@@ -787,6 +787,11 @@ def split(
     except (ValidationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+    try:
+        validate_no_binary_files(parsed_diff)
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
 
     logger.info(logs.VALIDATING_PLAN)
@@ -1023,6 +1028,7 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        validate_no_binary_files(parsed_diff)
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
