@@ -204,6 +204,16 @@ def _call_chunk_with_retry(
 
 
 def _parse_groups(raw: RawToolOutput) -> list[Group]:
+    # Malformed shapes (missing keys, bad enum values, wrong types) must
+    # surface as LLMError so the chunk retry loop and the refinement
+    # fallback can handle them; pydantic's ValidationError is a ValueError.
+    try:
+        return _parse_groups_strict(raw)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"{type(exc).__name__}: {exc}")) from exc
+
+
+def _parse_groups_strict(raw: RawToolOutput) -> list[Group]:
     groups: list[Group] = []
     for entry in raw["groups"]:
         assignments = [
