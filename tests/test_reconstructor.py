@@ -526,3 +526,17 @@ class TestTargetFileModes:
             "@@ -1 +0,0 @@\n-x\n"
         )
         assert target_file_modes(parsed, self._group("d.sh")) == {}
+
+    def test_symlink_mode_is_not_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n"
+            "@@ -0,0 +1 @@\n+other.py\n\\ No newline at end of file\n"
+        )
+        assert target_file_modes(parsed, self._group("link")) == {}
+
+    def test_mode_change_back_to_non_executable_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100644\n"
+            "--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("run.sh")) == {"run.sh": 0o100644}

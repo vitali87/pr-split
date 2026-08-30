@@ -154,6 +154,12 @@ def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
             continue
         header = "".join(str(line) for line in patch_file.patch_info or [])
         match = _TARGET_MODE_RE.search(header)
-        if match:
-            modes[patch_file.path] = int(match.group(1), 8)
+        if not match:
+            continue
+        mode = int(match.group(1), 8)
+        # Only regular files (100644 / 100755): a symlink's 120000 would mask
+        # to 000 and make the written file unreadable. Symlinks are written as
+        # plain files by the reconstructor, unchanged from before.
+        if mode & 0o170000 == 0o100000:
+            modes[patch_file.path] = mode
     return modes
