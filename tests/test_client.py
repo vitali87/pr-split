@@ -1054,3 +1054,13 @@ class TestOpenAIFailedResponse:
         )
         with pytest.raises(LLMError, match="response failed: unknown error"):
             _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_falls_back_to_error_code(self, mock_cls: MagicMock) -> None:
+        mock_cls.return_value.responses.create.return_value = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(code="rate_limit_exceeded", message=None),
+            output=[],
+        )
+        with pytest.raises(LLMError, match="response failed: rate_limit_exceeded"):
+            _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))
