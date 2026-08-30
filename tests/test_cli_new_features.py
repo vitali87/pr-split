@@ -122,6 +122,7 @@ class TestBuildPrBody:
 
 
 class TestCleanupGitState:
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.Path")
     @patch("pr_split.cli.delete_branch")
@@ -132,6 +133,7 @@ class TestCleanupGitState:
         mock_delete: MagicMock,
         mock_path: MagicMock,
         mock_rmtree: MagicMock,
+        mock_state: MagicMock,
     ) -> None:
         mock_path.return_value.exists.return_value = True
         git_state = GitState(
@@ -152,6 +154,7 @@ class TestCleanupGitState:
         mock_delete.assert_any_call("pr-split/ns/pr-1", remote=True)
         mock_delete.assert_any_call("pr-split/ns/pr-2", remote=True)
 
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.Path")
     @patch("pr_split.cli.delete_branch")
@@ -162,6 +165,7 @@ class TestCleanupGitState:
         mock_delete: MagicMock,
         mock_path: MagicMock,
         mock_rmtree: MagicMock,
+        mock_state: MagicMock,
     ) -> None:
         mock_path.return_value.exists.return_value = True
         mock_close.side_effect = [None, PRSplitError("fail")]
@@ -334,3 +338,63 @@ class TestSplitCliEnvVars:
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
         mock_save_plan.assert_not_called()
+
+
+class TestCleanupSkipsFinishedPrs:
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.shutil.rmtree")
+    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.close_pr")
+    def test_merged_and_closed_prs_are_not_closed_again_but_count_as_done(
+        self,
+        mock_close: MagicMock,
+        mock_delete: MagicMock,
+        mock_path: MagicMock,
+        mock_rmtree: MagicMock,
+        mock_state: MagicMock,
+    ) -> None:
+        mock_path.return_value.exists.return_value = True
+        mock_state.side_effect = lambda n: {
+            7: {"state": "MERGED"},
+            8: {"state": "CLOSED"},
+            9: {"state": "OPEN"},
+        }[n]
+        git_state = GitState(
+            prs=[
+                PRRecord(group_id="pr-1", pr_number=7, pr_url="u"),
+                PRRecord(group_id="pr-2", pr_number=8, pr_url="u"),
+                PRRecord(group_id="pr-3", pr_number=9, pr_url="u"),
+            ]
+        )
+        with patch("pr_split.cli.logger") as mock_logger:
+            closed, deleted = _cleanup_git_state(git_state)
+
+        assert (closed, deleted) == (3, 0)
+        mock_close.assert_called_once_with(9)
+        mock_logger.warning.assert_not_called()
+        infos = " ".join(str(c.args[0]) for c in mock_logger.info.call_args_list)
+        assert "PR #7 is already merged" in infos
+        assert "PR #8 is already closed" in infos
+        mock_path.return_value.unlink.assert_called_once()
+
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
+    @patch("pr_split.cli.shutil.rmtree")
+    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.close_pr", side_effect=GitOperationError("gh: rate limited"))
+    def test_close_failure_warning_includes_the_reason(
+        self,
+        mock_close: MagicMock,
+        mock_delete: MagicMock,
+        mock_path: MagicMock,
+        mock_rmtree: MagicMock,
+        mock_state: MagicMock,
+    ) -> None:
+        mock_path.return_value.exists.return_value = True
+        git_state = GitState(prs=[PRRecord(group_id="pr-1", pr_number=7, pr_url="u")])
+        with patch("pr_split.cli.logger") as mock_logger:
+            closed, _ = _cleanup_git_state(git_state)
+        assert closed == 0
+        assert "Could not close PR #7: gh: rate limited" in str(mock_logger.warning.call_args)
+        mock_path.return_value.unlink.assert_not_called()
