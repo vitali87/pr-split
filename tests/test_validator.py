@@ -131,6 +131,14 @@ class TestValidateNoConflicts:
         with pytest.raises(PlanValidationError, match="overlapping"):
             validate_no_conflicts(groups, dag)
 
+    def test_whole_file_with_empty_indices_conflicts_with_partial(self) -> None:
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("a.py", PARTIAL, [0])], 0),
+        ]
+        with pytest.raises(PlanValidationError, match=r"overlapping regions in 'a\.py'"):
+            validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})
+
     def test_dependent_groups_skip_conflict_check(self) -> None:
         groups = [
             _make_group("g1", [_ga("a.py", PARTIAL, [0])], 3),
