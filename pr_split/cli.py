@@ -342,11 +342,16 @@ def _create_branches_and_commits(
                 break
 
         if errors:
-            for record in results.values():
+            # add_worktree creates the branch before the commit step, so a
+            # group that failed mid-way has a branch too; include those.
+            created = [record.branch_name for record in results.values()]
+            failed = [f"{BRANCH_PREFIX}{namespace}/{gid}" for gid, _ in errors]
+            for branch_name in created + failed:
                 try:
-                    delete_branch(record.branch_name)
+                    delete_branch(branch_name)
                 except PRSplitError as exc:
-                    logger.warning(f"Could not clean up branch {record.branch_name}: {exc}")
+                    if branch_name in created:
+                        logger.warning(f"Could not clean up branch {branch_name}: {exc}")
             error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])
             raise PRSplitError(f"{len(errors)} branch(es) failed:\n{error_details}")
     finally:
@@ -959,8 +964,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
+    complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
     plan_path = Path(PLAN_FILE)
-    if plan_path.exists():
+    if complete and plan_path.exists():
         plan_path.unlink()
 
     return closed_prs, deleted_branches
@@ -978,6 +984,9 @@ def clean() -> None:
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
+    if closed_prs < len(git_state.prs) or deleted_branches < len(git_state.branches):
+        console.print(f"[yellow]{logs.CLEAN_INCOMPLETE}[/yellow]")
+        raise typer.Exit(1)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
