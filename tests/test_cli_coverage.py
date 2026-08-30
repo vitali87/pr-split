@@ -597,3 +597,58 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestDryRunWithClosedStdin:
+    """`split --dry-run < /dev/null` must save the plan, not abort.
+
+    The interactive editor is entered unconditionally; with a closed stdin
+    (scripts, CI) `typer.prompt` raises EOFError, which used to become
+    typer.Abort before the plan was ever saved.
+    """
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_closed_stdin_accepts_the_plan_and_saves_it(
+        self,
+        mock_plan_exists: MagicMock,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 10,
+            "total_removed": 5,
+            "total_loc": 15,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        group = _group("pr-1", "feat: auth", files=["a.py"])
+        mock_plan_split.return_value = [group]
+
+        # No `input=` and no patched _interactive_edit: the editor really runs
+        # and hits EOF on the runner's empty stdin.
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 0
+        assert "accepting the plan as-is" in result.output.replace("\n", " ")
+        mock_save_plan.assert_called_once()
