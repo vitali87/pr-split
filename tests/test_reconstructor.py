@@ -115,13 +115,13 @@ class TestApplyHunks:
 class TestGetBaseFileContent:
     @patch("pr_split.diff_ops.reconstructor.subprocess.run")
     def test_success(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="file content\n", stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout=b"file content\n", stderr=b"")
         result = _get_base_file_content("foo.py", "abc123")
         assert result == "file content\n"
 
     @patch("pr_split.diff_ops.reconstructor.subprocess.run")
     def test_failure_raises(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="not found")
+        mock_run.return_value = MagicMock(returncode=1, stdout=b"", stderr=b"not found")
         with pytest.raises(GitOperationError):
             _get_base_file_content("missing.py", "abc123")
 
@@ -183,7 +183,7 @@ class TestMaterializeGroupFilesNewFile:
 class TestGetBaseFileContentExtended:
     @patch("pr_split.diff_ops.reconstructor.subprocess.run")
     def test_empty_file_returns_empty(self, mock_run: MagicMock) -> None:
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+        mock_run.return_value = MagicMock(returncode=0, stdout=b"", stderr=b"")
         result = _get_base_file_content("empty.py", "abc123")
         assert result == ""
 
@@ -479,3 +479,59 @@ class TestApplyHunksWithSplitlinesSeparators:
         diff = "--- a/f.txt\n+++ b/f.txt\n@@ -7,5 +7,5 @@\n h\n i\n j\n-k\n+K\n l\n"
         pf = PatchSet(diff)[0]
         assert apply_hunks(base, pf, [0]) == dev
+
+
+class TestCrlfPreserved:
+    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    def test_base_content_keeps_crlf(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = MagicMock(returncode=0, stdout=b"a\r\nb\r\n", stderr=b"")
+        assert _get_base_file_content("c.txt", "main") == "a\r\nb\r\n"
+
+    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    def test_partial_change_to_crlf_file_keeps_endings(self, mock_run: MagicMock) -> None:
+        base = "".join(f"line{i}\r\n" for i in range(1, 8))
+        mock_run.return_value = MagicMock(returncode=0, stdout=base.encode(), stderr=b"")
+        diff = (
+            "diff --git a/c.txt b/c.txt\n--- a/c.txt\n+++ b/c.txt\n"
+            "@@ -1,6 +1,6 @@\n line1\r\n line2\r\n-line3\r\n+LINE3\r\n"
+            " line4\r\n line5\r\n line6\r\n"
+        )
+        parsed = parse_diff(diff)
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="c.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        result = materialize_group_files(parsed, group, "main")
+        assert result["c.txt"] == base.replace("line3\r\n", "LINE3\r\n")
+
+    @patch("pr_split.diff_ops.reconstructor.subprocess.run")
+    def test_bare_carriage_return_does_not_shift_hunks(self, mock_run: MagicMock) -> None:
+        # A lone CR is not a line break for git; with base content no longer
+        # newline-translated, splitting on it would misplace every later hunk.
+        mock_run.return_value = MagicMock(returncode=0, stdout=b"x\ry\nz\n", stderr=b"")
+        diff = (
+            "diff --git a/c.txt b/c.txt\n--- a/c.txt\n+++ b/c.txt\n"
+            "@@ -1,2 +1,2 @@\n x\ry\n-z\n+Z\n"
+        )
+        parsed = parse_diff(diff)
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="c.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main")["c.txt"] == "x\ry\nZ\n"

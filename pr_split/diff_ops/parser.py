@@ -34,14 +34,16 @@ DIFF_ARGS: tuple[str, ...] = (
 
 def extract_diff(dev_branch: str, base_branch: str) -> str:
     logger.info(logs.EXTRACTING_DIFF.format(base=base_branch, dev=dev_branch))
+    # Capture bytes: text mode applies universal-newline translation, which
+    # turns CRLF into LF and would make every sub-PR rewrite the file's
+    # line endings.
     result = subprocess.run(
         ["git", "diff", *DIFF_ARGS, f"{base_branch}...{dev_branch}"],
         capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout
+        raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
+    return result.stdout.decode("utf-8")
 
 
 def parse_diff(raw_diff: str) -> ParsedDiff:
