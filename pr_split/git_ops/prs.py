@@ -59,9 +59,7 @@ def create_pr(
 
 def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
     try:
-        raw = _run_gh(
-            "pr", "view", str(pr_number), "--json", "state,reviewDecision,isDraft"
-        )
+        raw = _run_gh("pr", "view", str(pr_number), "--json", "state,reviewDecision,isDraft")
         return json.loads(raw)
     except (GitOperationError, json.JSONDecodeError) as exc:
         logger.debug(f"Failed to fetch live state for PR #{pr_number}: {exc}")

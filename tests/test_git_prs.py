@@ -87,9 +87,7 @@ class TestCreatePrUrlParsingExtended:
 
     @patch("pr_split.git_ops.prs._run_gh")
     def test_multiline_output_uses_last_line(self, mock_gh: MagicMock) -> None:
-        mock_gh.return_value = (
-            "Creating PR...\nhttps://github.com/org/repo/pull/55"
-        )
+        mock_gh.return_value = "Creating PR...\nhttps://github.com/org/repo/pull/55"
         number, url = create_pr("head", "base", "Title", "Body")
         assert number == 55
         assert url == "https://github.com/org/repo/pull/55"

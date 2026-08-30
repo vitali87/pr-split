@@ -42,9 +42,7 @@ def _group(
     removed: int = 5,
 ) -> Group:
     assignments = [
-        GroupAssignment(
-            file_path=f, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
-        )
+        GroupAssignment(file_path=f, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[])
         for f in (files or [])
     ]
     return Group(
@@ -197,9 +195,7 @@ class TestPresentPlan:
 # _build_pr_body template OSError path
 # ---------------------------------------------------------------------------
 class TestBuildPrBodyOsError:
-    def test_template_os_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_template_os_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         template_file = tmp_path / "template.md"
         template_file.write_text("{description}")
 
@@ -494,9 +490,7 @@ class TestExecuteCommand:
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
-    def test_execute_already_has_git_state(
-        self, mock_pe: MagicMock, mock_load: MagicMock
-    ) -> None:
+    def test_execute_already_has_git_state(self, mock_pe: MagicMock, mock_load: MagicMock) -> None:
         mock_plan_file = MagicMock()
         mock_plan_file.git_state.branches = [MagicMock()]
         mock_plan_file.git_state.prs = []
@@ -506,9 +500,7 @@ class TestExecuteCommand:
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
-    def test_execute_missing_raw_diff(
-        self, mock_pe: MagicMock, mock_load: MagicMock
-    ) -> None:
+    def test_execute_missing_raw_diff(self, mock_pe: MagicMock, mock_load: MagicMock) -> None:
         mock_plan_file = MagicMock()
         mock_plan_file.git_state.branches = []
         mock_plan_file.git_state.prs = []

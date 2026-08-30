@@ -4,12 +4,8 @@ SENDING_TO_LLM = "Sending diff to LLM for analysis ({model})"
 LLM_RESPONSE_RECEIVED = "Received split plan with {count} groups"
 VALIDATING_PLAN = "Validating split plan"
 VALIDATION_PASSED = "Plan validation passed"
-LOC_MIN_WARN = (
-    "Group '{group}' has {loc} diff lines (+{added}/-{removed}) below minimum: {limit}"
-)
-LOC_MAX_WARN = (
-    "Group '{group}' has {loc} diff lines (+{added}/-{removed}) above maximum: {limit}"
-)
+LOC_MIN_WARN = "Group '{group}' has {loc} diff lines (+{added}/-{removed}) below minimum: {limit}"
+LOC_MAX_WARN = "Group '{group}' has {loc} diff lines (+{added}/-{removed}) above maximum: {limit}"
 PRESENTING_PLAN = "Split plan ready for review"
 CREATING_BRANCH = "Creating branch {branch} from {base}"
 CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"

@@ -51,9 +51,7 @@ def score_plan(groups: list[Group], max_loc: int, min_loc: int | None = None) ->
 
     undersized_groups = (
         # Includes empty groups (estimated_loc == 0), unlike tiny_groups below.
-        sum(1 for group in groups if group.estimated_loc < min_loc)
-        if min_loc is not None
-        else 0
+        sum(1 for group in groups if group.estimated_loc < min_loc) if min_loc is not None else 0
     )
     tiny_threshold = max(1, max_loc // 4)
     tiny_groups = sum(1 for group in groups if 0 < group.estimated_loc < tiny_threshold)

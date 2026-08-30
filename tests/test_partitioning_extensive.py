@@ -146,9 +146,7 @@ class TestPartitionDiffGraphExtensive:
         assert all(len(group.assignments) == 1 for group in groups)
         _assert_valid_plan(groups, UNRELATED_DIFF, 10)
 
-    def test_logical_groups_related_files_together(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_logical_groups_related_files_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         settings = _settings(
             monkeypatch,
             max_loc=10,
@@ -237,9 +235,7 @@ class TestPartitionDiffCpSatExtensive:
         assert all(len(group.assignments) == 1 for group in groups)
         _assert_valid_plan(groups, UNRELATED_DIFF, 10)
 
-    def test_logical_groups_related_files_together(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_logical_groups_related_files_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.importorskip("ortools.sat.python.cp_model")
         settings = _settings(
             monkeypatch,
