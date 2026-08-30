@@ -15,6 +15,7 @@ import typer
 from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
@@ -573,9 +574,11 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     if not group:
         console.print(f"[red]Group '{group_id}' not found.[/red]")
         return
-    console.print(f"\n[bold]{group.id}[/bold]: {group.title}")
-    console.print(f"  Description: {group.description}")
-    console.print(f"  Depends on: {', '.join(group.depends_on) or 'none'}")
+    # Titles, descriptions and paths come from the plan (LLM-written); any
+    # "[...]" in them would be swallowed as Rich markup unless escaped.
+    console.print(f"\n[bold]{escape(group.id)}[/bold]: {escape(group.title)}")
+    console.print(f"  Description: {escape(group.description)}")
+    console.print(f"  Depends on: {escape(', '.join(group.depends_on) or 'none')}")
     console.print(
         f"  Estimated: +{group.estimated_added}/-{group.estimated_removed}"
         f" ({group.estimated_loc} LOC)"
@@ -585,7 +588,9 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
             hunks_str = "all"
         else:
             hunks_str = ", ".join(str(i) for i in a.hunk_indices)
-        console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{hunks_str}]")
+        # Square brackets are Rich markup; without escaping "[whole_file]"
+        # is treated as a style tag and silently dropped from the output.
+        console.print(escape(f"  {a.file_path} [{a.assignment_type.value}] hunks: [{hunks_str}]"))
     console.print()
 
 
