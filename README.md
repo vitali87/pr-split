@@ -118,6 +118,8 @@ Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 pr-split merge --auto
 ```
 
+`--auto` is not fire-and-forget: after queueing a batch, `merge` waits for every PR in it to reach `MERGED` before moving on to the dependent batch, polling GitHub every 10 seconds for up to 10 minutes per batch. If a PR is still unmerged when the timeout expires, or gets closed while waiting, the command stops before the dependent batch and exits 1 (webhook `exit_reason: incomplete_batch`); re-run `pr-split merge --auto` once CI has caught up to continue from where it left off.
+
 Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
 
 ```bash
