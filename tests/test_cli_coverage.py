@@ -509,6 +509,42 @@ class TestSplitCommandValidation:
         mock_auth.assert_called_once()
 
 
+class TestSplitValidatesSettingsBeforeCleanup:
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_bad_settings_never_reach_the_destructive_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = [MagicMock()]
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        result = runner.invoke(
+            app,
+            ["split", "feature", "--min-loc", "500", "--max-loc", "400"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert "min_loc 500 must be less than max_loc 400" in " ".join(result.output.split())
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+        mock_extract.assert_not_called()
+
+
 class TestSplitDryRunWithExecutedPlan:
     @patch("pr_split.cli._cleanup_git_state")
     @patch("pr_split.cli.typer.confirm")
@@ -530,7 +566,9 @@ class TestSplitDryRunWithExecutedPlan:
         existing.git_state.prs = [MagicMock()]
         mock_load.return_value = existing
 
-        result = runner.invoke(app, ["split", "feature", "--dry-run"])
+        result = runner.invoke(
+            app, ["split", "feature", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
 
         assert result.exit_code == 1
         assert "Run 'pr-split clean' first" in result.output

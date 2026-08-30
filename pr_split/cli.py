@@ -753,6 +753,24 @@ def split(
 
     _validate_inputs(dev_branch, base, dry_run=dry_run)
 
+    # Validate settings before anything destructive: the existing-plan
+    # cleanup below closes PRs and deletes branches, and a bad --min-loc or
+    # a missing API key must not be discovered only after that.
+    try:
+        settings = Settings(
+            min_loc=min_loc,
+            max_loc=max_loc,
+            strict_loc_bounds=strict_loc_bounds,
+            max_refinement_iterations=max_refinement_iterations,
+            cp_sat_timeout=cp_sat_timeout,
+            priority=priority,
+            chunk_strategy=chunk_strategy,
+            partition_strategy=partition_strategy,
+        )
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
     if plan_exists():
         existing = load_plan()
         has_git_state = existing.git_state.branches or existing.git_state.prs
@@ -794,20 +812,6 @@ def split(
         )
     )
 
-    try:
-        settings = Settings(
-            min_loc=min_loc,
-            max_loc=max_loc,
-            strict_loc_bounds=strict_loc_bounds,
-            max_refinement_iterations=max_refinement_iterations,
-            cp_sat_timeout=cp_sat_timeout,
-            priority=priority,
-            chunk_strategy=chunk_strategy,
-            partition_strategy=partition_strategy,
-        )
-    except (ValidationError, ValueError) as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
 
     logger.info(logs.VALIDATING_PLAN)
