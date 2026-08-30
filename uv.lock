@@ -624,6 +624,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+cp-sat = [
+    { name = "ortools" },
+]
 dev = [
     { name = "ruff" },
 ]
@@ -644,6 +647,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.42.0" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "openai", specifier = ">=2.24.0" },
+    { name = "ortools", marker = "extra == 'cp-sat'", specifier = ">=9.15.6755" },
     { name = "ortools", marker = "extra == 'test'", specifier = ">=9.15.6755" },
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pydantic-settings", specifier = ">=2.7.0" },
@@ -653,7 +657,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.0" },
     { name = "unidiff", specifier = ">=0.7.5" },
 ]
-provides-extras = ["dev", "test"]
+provides-extras = ["cp-sat", "dev", "test"]
 
 [package.metadata.requires-dev]
 dev = [
