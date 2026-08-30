@@ -332,3 +332,35 @@ class TestSplitCliEnvVars:
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
         mock_save_plan.assert_not_called()
+
+
+class TestSplitRejectsSubmoduleDiffs:
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_submodule_diff_is_a_clean_error(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_plan_split: MagicMock,
+    ) -> None:
+        mock_extract_diff.return_value = (
+            "diff --git a/vendor b/vendor\n"
+            "index 0ebfaa8..2f687ea 160000\n"
+            "--- a/vendor\n"
+            "+++ b/vendor\n"
+            "@@ -1 +1 @@\n"
+            "-Subproject commit 0ebfaa8000000000000000000000000000000000\n"
+            "+Subproject commit 2f687ea000000000000000000000000000000000\n"
+        )
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Submodule changes are not supported (pointer bump at vendor)" in " ".join(
+            result.output.split()
+        )
+        mock_plan_split.assert_not_called()

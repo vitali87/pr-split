@@ -44,7 +44,13 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    DiffParseError,
+    ErrorMsg,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
@@ -762,7 +768,11 @@ def split(
             logger.info("Overwriting existing dry-run plan")
 
     raw_diff = extract_diff(dev_branch, base)
-    parsed_diff = parse_diff(raw_diff)
+    try:
+        parsed_diff = parse_diff(raw_diff)
+    except DiffParseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     stats = parsed_diff.stats
     logger.info(
         logs.DIFF_STATS.format(
@@ -1020,7 +1030,11 @@ def execute(
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
 
-    parsed_diff = parse_diff(plan.raw_diff)
+    try:
+        parsed_diff = parse_diff(plan.raw_diff)
+    except DiffParseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     try:
         validate_coverage(plan.groups, parsed_diff)
