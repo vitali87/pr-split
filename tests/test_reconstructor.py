@@ -439,3 +439,45 @@ class TestMaterializeDuplicateAssignments:
             ],
         )
         assert materialize_group_files(parsed, group, "main")["n.py"] == "one\ntwo\nten\n"
+
+
+class TestTruncatedFileIsNotDeleted:
+    @patch("pr_split.diff_ops.reconstructor._get_base_file_content", return_value="x\ny\n")
+    def test_file_emptied_on_dev_is_written_empty(self, mock_base: MagicMock) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.txt b/a.txt\nindex 1111111..e69de29 100644\n"
+            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        assert parsed.patch_set[0].is_removed_file  # the heuristic that misled us
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main") == {"a.txt": ""}
+
+    def test_real_deletion_still_removes(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.txt b/a.txt\ndeleted file mode 100644\nindex 1111111..0000000\n"
+            "--- a/a.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main") == {"a.txt": None}
