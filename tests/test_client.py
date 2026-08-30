@@ -969,6 +969,29 @@ class TestPlanSplitWithLlm:
         mock_llm.assert_called_once()
 
     @patch("pr_split.planner.client._refine_plan_with_llm")
+    @patch("pr_split.planner.client.recompute_estimated_loc")
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.planner.client._count_tokens", return_value=100)
+    def test_min_loc_reaches_the_system_prompt(
+        self,
+        mock_count: MagicMock,
+        mock_llm: MagicMock,
+        mock_recompute: MagicMock,
+        mock_refine: MagicMock,
+    ) -> None:
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = _make_settings(
+            Provider.ANTHROPIC, partition_strategy=PartitionStrategy.LLM, min_loc=50, max_loc=400
+        )
+        mock_llm.return_value = RawToolOutput(groups=_SAMPLE_RAW_GROUPS)
+        mock_refine.side_effect = lambda groups, *a, **kw: groups
+
+        _plan_split_with_llm(parsed, settings)
+
+        system = mock_llm.call_args.kwargs["system"]
+        assert "not be smaller than about 50 lines" in system
+
+    @patch("pr_split.planner.client._refine_plan_with_llm")
     @patch("pr_split.planner.client._plan_split_chunked")
     @patch("pr_split.planner.client._count_tokens", return_value=999_999_999)
     def test_large_diff_uses_chunking(
