@@ -243,7 +243,14 @@ def _stacked_batch_args(
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Files are rebuilt from the merge base, so a child must carry
+                # every ancestor's hunks for the files it touches - not only
+                # its direct parent's - or it silently reverts them.
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
