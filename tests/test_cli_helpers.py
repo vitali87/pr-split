@@ -646,3 +646,21 @@ class TestRenderDagMultiParent:
         tree = _render_dag(groups)
         assert "pr-2: leaf (depends on: pr-1, pr-9)" in tree
         assert "pr-5: after" in tree
+
+    def test_parent_still_being_walked_is_not_pending(self) -> None:
+        # pr-3 depends on pr-1 (its grandparent, mid-walk) and pr-2 (a sibling
+        # listed after it); it must be drawn in full under pr-2.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert "pr-3: merge (also depends on: pr-1)" in md
+        assert "pr-4: after  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-3: merge (depends on: pr-1, pr-2)" in tree
+        assert "pr-4: after" in tree

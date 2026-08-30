@@ -123,13 +123,15 @@ def _render_dag(groups: list[Group]) -> str:
                 continue
             deps_label = ", ".join(child.depends_on)
             branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
-            _add_children(branch, child.id)
+            # Mark on entry: an ancestor still walking its children is not
+            # "pending" for a grandchild that also depends on it.
             done.add(child.id)
+            _add_children(branch, child.id)
 
     for root in roots:
         root_branch = tree.add(f"{root.id}: {root.title}")
-        _add_children(root_branch, root.id)
         done.add(root.id)
+        _add_children(root_branch, root.id)
 
     with console.capture() as capture:
         console.print(tree)
@@ -160,14 +162,14 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
                 also = f" (also depends on: {others})"
             lines.append(f"{prefix}{connector} {child.id}: {child.title}{also}{marker}")
             extension = "    " if is_last else "\u2502   "
-            _add_children(child.id, prefix + extension)
             done.add(child.id)
+            _add_children(child.id, prefix + extension)
 
     for root in roots:
         marker = "  <-- this PR" if root.id == current_id else ""
         lines.append(f"{root.id}: {root.title}{marker}")
-        _add_children(root.id, "")
         done.add(root.id)
+        _add_children(root.id, "")
 
     tree_block = "\n".join(lines)
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
