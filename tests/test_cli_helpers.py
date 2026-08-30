@@ -574,3 +574,34 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestWorktreeAppliesFileModes:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.target_file_modes", return_value={"run.sh": 0o100755})
+    @patch("pr_split.cli.materialize_group_files", return_value={"run.sh": "x\n", "a.py": "y\n"})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_executable_bit_applied_only_where_diff_says(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_modes: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        import os
+        import stat
+        from pathlib import Path
+
+        modes: dict[str, int] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                modes[file_path] = stat.S_IMODE(os.stat(Path(cwd) / file_path).st_mode)
+            return "sha1"
+
+        mock_commit.side_effect = capture
+        _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert modes["run.sh"] & stat.S_IXUSR
+        assert not modes["a.py"] & stat.S_IXUSR

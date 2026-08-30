@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 
 from loguru import logger
@@ -134,3 +135,33 @@ def materialize_group_files(
         base_content = _get_base_file_content(file_path, ref)
         result[file_path] = apply_hunks(base_content, patch_file, indices)
     return result
+
+
+_TARGET_MODE_RE = re.compile(r"^(?:new file mode|new mode) (\d{6})$", re.MULTILINE)
+
+
+def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
+    """Map each file the group materializes to the mode the diff gives it.
+
+    unidiff parses ``old mode``/``new mode``/``new file mode`` headers into
+    ``patch_info`` only; nothing else applies them, so without this a
+    ``chmod +x`` that comes with a content change silently loses the bit.
+    """
+    wanted = {assignment.file_path for assignment in group.assignments}
+    modes: dict[str, int] = {}
+    for patch_file in parsed_diff.patch_set:
+        # target_file, not is_removed_file: the latter is also true for a file
+        # truncated to empty, which still needs its mode applied.
+        if patch_file.path not in wanted or patch_file.target_file == "/dev/null":
+            continue
+        header = "".join(str(line) for line in patch_file.patch_info or [])
+        match = _TARGET_MODE_RE.search(header)
+        if not match:
+            continue
+        mode = int(match.group(1), 8)
+        # Only regular files (100644 / 100755): a symlink's 120000 would mask
+        # to 000 and make the written file unreadable. Symlinks are written as
+        # plain files by the reconstructor, unchanged from before.
+        if mode & 0o170000 == 0o100000:
+            modes[patch_file.path] = mode
+    return modes
