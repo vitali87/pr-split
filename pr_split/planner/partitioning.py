@@ -10,7 +10,7 @@ from loguru import logger
 
 from .. import logs
 from ..constants import AssignmentType, PartitionStrategy, Priority
-from ..exceptions import PRSplitError
+from ..exceptions import ErrorMsg, PRSplitError
 from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
 
@@ -426,8 +426,14 @@ def _group_units_cp_sat(
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = settings.cp_sat_timeout
     status = solver.Solve(model)
+    if status == cp_model.UNKNOWN:
+        # The time limit expired before any solution was found; that is not
+        # infeasibility, and the fix (more time or another backend) differs.
+        raise PRSplitError(
+            ErrorMsg.CP_SAT_TIMED_OUT(timeout=settings.cp_sat_timeout, units=len(units))
+        )
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-        raise PRSplitError("CP-SAT partitioning failed to find a feasible hunk assignment")
+        raise PRSplitError(ErrorMsg.CP_SAT_INFEASIBLE())
 
     assignments: dict[int, list[PartitionUnit]] = defaultdict(list)
     for unit_idx, unit in enumerate(units):

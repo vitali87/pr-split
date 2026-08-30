@@ -27,6 +27,11 @@ class ErrorMsg(StrEnum):
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
     MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
     LOC_BOUNDS_STRICT_FAILED = "Plan violates configured LOC bounds"
+    CP_SAT_TIMED_OUT = (
+        "CP-SAT found no hunk assignment within {timeout:.1f}s ({units} units); "
+        "raise --cp-sat-timeout or use --partition-strategy graph"
+    )
+    CP_SAT_INFEASIBLE = "CP-SAT partitioning failed to find a feasible hunk assignment"
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

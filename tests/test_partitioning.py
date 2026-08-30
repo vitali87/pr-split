@@ -141,6 +141,32 @@ class TestPartitionDiffCpSat:
         assert "0.5s limit" in warning
         assert "raise --cp-sat-timeout" in warning
 
+    @pytest.mark.parametrize(
+        ("status_name", "expected"),
+        [("UNKNOWN", "found no hunk assignment within 0.5s"), ("INFEASIBLE", "feasible hunk")],
+    )
+    def test_solver_status_is_reported_distinctly(
+        self, monkeypatch: pytest.MonkeyPatch, status_name: str, expected: str
+    ) -> None:
+        cp_model = pytest.importorskip("ortools.sat.python.cp_model")
+        from unittest.mock import patch
+
+        from pr_split.exceptions import PRSplitError
+
+        parsed = parse_diff(SAMPLE_DIFF)
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            partition_strategy=PartitionStrategy.CP_SAT,
+            cp_sat_timeout=0.5,
+        )
+        forced = getattr(cp_model, status_name)
+        with (
+            patch.object(cp_model.CpSolver, "Solve", lambda self, model: forced),
+            pytest.raises(PRSplitError, match=expected),
+        ):
+            partition_diff(parsed, settings)
+
     def test_optimal_solution_does_not_warn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.importorskip("ortools.sat.python.cp_model")
         from unittest.mock import patch
