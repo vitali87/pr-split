@@ -332,3 +332,41 @@ class TestSplitCliEnvVars:
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
         mock_save_plan.assert_not_called()
+
+
+class TestCorruptPlanFile:
+    @pytest.mark.parametrize("command", ["status", "clean", "execute", "merge"])
+    def test_commands_report_corrupt_plan(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").write_text("{not json")
+
+        result = runner.invoke(app, [command])
+
+        assert result.exit_code == 1
+        assert "Cannot load split plan" in result.output
+        assert not isinstance(result.exception, Exception) or isinstance(
+            result.exception, SystemExit
+        )
+
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_reports_corrupt_plan(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").write_text("")
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert "Cannot load split plan" in result.output
