@@ -496,6 +496,52 @@ class TestSplitCommandValidation:
         mock_auth.assert_not_called()
         mock_resolve.assert_not_called()
 
+    @patch("pr_split.cli._resolve_fork_ref", return_value=None)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_pr_number_is_never_taken_for_an_abbreviated_sha(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        # branch_exists says True because `git rev-parse 1006` resolves a
+        # commit whose hash starts with 1006; the argument is still PR #1006.
+        result = runner.invoke(app, ["split", "1006", "--dry-run"])
+        assert result.exit_code == 1
+        mock_resolve.assert_called_once_with("1006")
+        assert "Branch '1006' does not exist" in result.output
+
+    def test_full_ref_is_not_a_fork_ref(self) -> None:
+        from pr_split.cli import _is_fork_ref
+
+        # Documented escape hatch: a local branch literally named like a
+        # number is reachable through its full ref.
+        assert _is_fork_ref("refs/heads/1006") is False
+        assert _is_fork_ref("1006") is True
+        assert _is_fork_ref("#1006") is True
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("pr_split.cli.extract_diff", side_effect=RuntimeError("stop here"))
+    @patch("pr_split.cli._resolve_fork_ref", return_value=None)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_full_ref_escape_hatch_takes_the_branch_path(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "refs/heads/1006", "--dry-run"])
+        mock_resolve.assert_not_called()
+        mock_extract.assert_called_once()
+        assert result.exit_code != 0  # stopped by the stubbed extract_diff
+
     @patch("pr_split.cli.check_gh_auth", return_value=False)
     @patch("pr_split.cli.branch_exists", return_value=False)
     def test_split_fork_shaped_ref_still_checks_gh_auth(
