@@ -36,6 +36,9 @@ uv tool install pr-split
 
 # With pip
 pip install pr-split
+
+# With the optional CP-SAT partitioning backend
+uv tool install "pr-split[cp-sat]"
 ```
 
 ## Prerequisites
@@ -219,7 +222,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: vitali87/pr-split@main
+      - uses: vitali87/pr-split@v1.0.0
         with:
           max-loc: "400"
           partition-strategy: "graph"
@@ -232,7 +235,7 @@ jobs:
 |-------|---------|-------------|
 | `max-loc` | `400` | Maximum target diff lines per sub-PR |
 | `min-loc` | (unset) | Minimum target diff lines per sub-PR |
-| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`) |
+| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). Automatic `ortools` install for `cp_sat` needs a release newer than `v1.0.0`; pin the action to that release or `@main` when using it |
 | `priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `threshold-groups` | `2` | Minimum suggested groups before posting the split plan |
 | `python-version` | `3.12` | Python version to use |
@@ -254,7 +257,7 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package to be installed in the runtime environment.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 

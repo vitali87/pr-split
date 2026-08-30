@@ -325,7 +325,8 @@ def _group_units_cp_sat(
         from ortools.sat.python import cp_model
     except ImportError as exc:
         raise PRSplitError(
-            "CP-SAT partitioning requires the optional 'ortools' package to be installed"
+            "CP-SAT partitioning requires the optional 'ortools' package; "
+            "install it with `pip install 'pr-split[cp-sat]'`"
         ) from exc
 
     if not units:
