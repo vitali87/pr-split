@@ -1046,3 +1046,11 @@ class TestOpenAIFailedResponse:
         settings = _make_settings(Provider.OPENAI)
         with pytest.raises(LLMError, match="response failed: upstream exploded"):
             _call_openai("sys", "usr", settings=settings)
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_without_error_object(self, mock_cls: MagicMock) -> None:
+        mock_cls.return_value.responses.create.return_value = SimpleNamespace(
+            status="failed", error=None, output=[]
+        )
+        with pytest.raises(LLMError, match="response failed: unknown error"):
+            _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))

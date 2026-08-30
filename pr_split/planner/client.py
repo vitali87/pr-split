@@ -166,7 +166,7 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     status = getattr(response, "status", None)
     if status == "failed":
         error = getattr(response, "error", None)
-        detail = getattr(error, "message", None) or str(error) or "unknown error"
+        detail = getattr(error, "message", None) or getattr(error, "code", None) or "unknown error"
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"response failed: {detail}"))
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
