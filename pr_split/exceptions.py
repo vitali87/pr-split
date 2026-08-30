@@ -17,6 +17,7 @@ class ErrorMsg(StrEnum):
     UNKNOWN_HUNK = "Hunk {file}[{index}] assigned to group '{group}' does not exist in the diff"
     UNKNOWN_FILE = "File '{file}' assigned to group '{group}' does not exist in the diff"
     UNKNOWN_DEPENDENCY = "Group '{group}' depends on unknown group '{dep}'"
+    DUPLICATE_GROUP_ID = "Group id '{group}' is used more than once"
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"

@@ -141,3 +141,13 @@ class TestLinearChains:
         ]
         dag = PlanDAG(groups)
         assert sorted(dag.linear_chains()) == [["a"], ["b", "c"], ["d"]]
+
+
+class TestPlanDAGRejectsDuplicateIds:
+    def test_duplicate_group_id_is_a_validation_error(self) -> None:
+        with pytest.raises(PlanValidationError, match="'pr-1' is used more than once"):
+            PlanDAG([_group("pr-1"), _group("pr-1")])
+
+    def test_distinct_ids_are_fine(self) -> None:
+        dag = PlanDAG([_group("pr-1"), _group("pr-2", ["pr-1"])])
+        assert dag.parents("pr-2") == ["pr-1"]
