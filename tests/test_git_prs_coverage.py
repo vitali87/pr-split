@@ -7,6 +7,8 @@ fetch_fork_branch (happy path and error paths).
 from __future__ import annotations
 
 import json
+import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -164,3 +166,74 @@ class TestFetchForkBranch:
 
         with pytest.raises(GitOperationError, match="Failed to fetch"):
             fetch_fork_branch("user", "branch")
+
+
+class TestForkFetchRefspecIsForced:
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_fetch_fork_pr_uses_forced_refspec(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        mock_gh.return_value = json.dumps(
+            {
+                "head": {
+                    "ref": "feature",
+                    "repo": {"fork": True, "clone_url": "https://x/f.git", "full_name": "u/f"},
+                },
+                "base": {"ref": "main"},
+            }
+        )
+        mock_git.side_effect = ["", "A <a@x>"]
+        fetch_fork_pr(42)
+        fetch_call = mock_git.call_args_list[0].args
+        assert fetch_call[0] == "fetch"
+        assert fetch_call[2] == "+feature:refs/pr-split/pr-42"
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_fetch_fork_branch_uses_forced_refspec(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        mock_gh.side_effect = [
+            "repo",
+            json.dumps({"clone_url": "https://x/f.git", "full_name": "u/repo"}),
+            "main",
+        ]
+        mock_git.side_effect = ["", "A <a@x>"]
+        fetch_fork_branch("u", "feature")
+        fetch_call = mock_git.call_args_list[0].args
+        assert fetch_call[2].startswith("+feature:")
+
+    def test_forced_refspec_survives_amended_fork_head(self, tmp_path: Path) -> None:
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+
+        fork = tmp_path / "fork"
+        fork.mkdir()
+        git(fork, "init", "-q", "-b", "feature")
+        (fork / "f.txt").write_text("one\n")
+        git(fork, "add", "f.txt")
+        git(fork, "commit", "-qm", "first")
+
+        local = tmp_path / "local"
+        local.mkdir()
+        git(local, "init", "-q", "-b", "main")
+        git(local, "fetch", "-q", str(fork), "+feature:refs/pr-split/pr-1")
+
+        # Rewrite the commit the local ref already points at: non-fast-forward.
+        (fork / "f.txt").write_text("two\n")
+        git(fork, "add", "f.txt")
+        git(fork, "commit", "-q", "--amend", "-m", "rewritten")
+        new_head = git(fork, "rev-parse", "HEAD")
+
+        # Without "+" git refuses the non-fast-forward update.
+        with pytest.raises(subprocess.CalledProcessError):
+            git(local, "fetch", "-q", str(fork), "feature:refs/pr-split/pr-1")
+        git(local, "fetch", "-q", str(fork), "+feature:refs/pr-split/pr-1")
+        assert git(local, "rev-parse", "refs/pr-split/pr-1") == new_head

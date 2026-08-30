@@ -116,7 +116,9 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     logger.info(logs.FETCHING_FORK_PR.format(number=pr_number, fork=fork_full_name))
 
     try:
-        run_git("fetch", clone_url, f"{head_ref}:{local_ref}")
+        # "+" allows a non-fast-forward update so a re-split after the fork
+        # was force-pushed or rebased picks up the new head.
+        run_git("fetch", clone_url, f"+{head_ref}:{local_ref}")
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.PR_FETCH_FAILED(number=pr_number, detail=str(exc))
@@ -154,7 +156,7 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
     logger.info(logs.FETCHING_FORK_BRANCH.format(branch=branch, fork=fork_full_name))
 
     try:
-        run_git("fetch", clone_url, f"{branch}:{local_ref}")
+        run_git("fetch", clone_url, f"+{branch}:{local_ref}")
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.FORK_FETCH_FAILED(user=user, branch=branch, detail=str(exc))
