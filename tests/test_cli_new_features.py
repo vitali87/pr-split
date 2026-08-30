@@ -179,6 +179,8 @@ class TestCleanupGitState:
         closed, deleted = _cleanup_git_state(git_state)
         assert closed == 1
         assert deleted == 1
+        # Incomplete cleanup keeps the plan so 'clean' can be re-run.
+        mock_path.return_value.unlink.assert_not_called()
 
 
 class TestGetPrState:
