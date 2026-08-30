@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass
 from functools import cached_property
@@ -49,11 +50,55 @@ def extract_diff(dev_branch: str, base_branch: str) -> str:
     return result.stdout.decode("utf-8")
 
 
+_C_ESCAPES = {
+    "a": b"\a",
+    "b": b"\b",
+    "f": b"\f",
+    "n": b"\n",
+    "r": b"\r",
+    "t": b"\t",
+    "v": b"\v",
+    "\\": b"\\",
+    '"': b'"',
+}
+_C_ESCAPE_RE = re.compile(r"\\([0-7]{1,3}|.)", re.DOTALL)
+
+
+def unquote_git_path(path: str) -> str:
+    """Decode a path git printed in its C-quoted form, e.g. `"a/we\\"ird.py"`.
+
+    Even with core.quotePath=false git quotes any path containing `"`, `\\`
+    or a control character. unidiff keeps the quotes and escapes verbatim, so
+    without this the a/ b/ prefix is never stripped and the file would be
+    written under a literally quoted name.
+    """
+    if len(path) < 2 or path[0] != '"' or path[-1] != '"':
+        return path
+    out = bytearray()
+    pos = 0
+    body = path[1:-1]
+    for match in _C_ESCAPE_RE.finditer(body):
+        out += body[pos : match.start()].encode("utf-8")
+        escape = match.group(1)
+        if escape[0] in "01234567":
+            # Octal escapes are single bytes; consecutive ones form one
+            # multi-byte UTF-8 character, which the final decode reassembles.
+            out.append(int(escape, 8))
+        else:
+            out += _C_ESCAPES.get(escape, escape.encode("utf-8"))
+        pos = match.end()
+    out += body[pos:].encode("utf-8")
+    return bytes(out).decode("utf-8", errors="surrogateescape")
+
+
 def parse_diff(raw_diff: str) -> ParsedDiff:
     try:
         patch_set = PatchSet(raw_diff)
     except Exception as exc:
         raise DiffParseError(str(exc)) from exc
+    for patch_file in patch_set:
+        patch_file.source_file = unquote_git_path(patch_file.source_file)
+        patch_file.target_file = unquote_git_path(patch_file.target_file)
     return ParsedDiff(patch_set=patch_set, raw_diff=raw_diff)
 
 
