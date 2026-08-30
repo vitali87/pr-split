@@ -13,7 +13,7 @@ from pr_split.cli import (
     _handle_loc_bound_warnings,
     app,
 )
-from pr_split.constants import AssignmentType
+from pr_split.constants import AssignmentType, ChunkStrategy, PartitionStrategy, Priority
 from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.git_ops.prs import get_pr_state, merge_pr
 from pr_split.schemas import (
@@ -279,6 +279,59 @@ class TestSplitCliEnvVars:
         assert result.exit_code == 0
         settings = mock_plan_split.call_args[0][1]
         assert settings.max_loc == 123
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_uses_strategy_envvars(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={
+                "PR_SPLIT_PARTITION_STRATEGY": "graph",
+                "PR_SPLIT_PRIORITY": "logical",
+                "PR_SPLIT_CHUNK_STRATEGY": "greedy",
+                "PR_SPLIT_CP_SAT_TIMEOUT": "2.5",
+            },
+        )
+
+        assert result.exit_code == 0, result.output
+        settings = mock_plan_split.call_args[0][1]
+        assert settings.partition_strategy == PartitionStrategy.GRAPH
+        assert settings.priority == Priority.LOGICAL
+        assert settings.chunk_strategy == ChunkStrategy.GREEDY
+        assert settings.cp_sat_timeout == 2.5
 
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")
