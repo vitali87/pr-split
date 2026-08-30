@@ -182,3 +182,18 @@ class TestSettingsEmptyKeyValidation:
         monkeypatch.setenv("OPENAI_API_KEY", "")
         with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
             Settings(provider=Provider.OPENAI)
+
+
+class TestCpSatTimeoutBound:
+    @pytest.mark.parametrize("timeout", [0.0, -1.0, -5])
+    def test_non_positive_timeout_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch, timeout: float
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        with pytest.raises(ValidationError, match="cp_sat_timeout"):
+            Settings(partition_strategy=PartitionStrategy.CP_SAT, cp_sat_timeout=timeout)
+
+    def test_positive_timeout_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        settings = Settings(partition_strategy=PartitionStrategy.CP_SAT, cp_sat_timeout=0.25)
+        assert settings.cp_sat_timeout == 0.25
