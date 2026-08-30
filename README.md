@@ -144,7 +144,7 @@ edit> done               # proceed (default — just press Enter)
 edit> abort              # cancel
 ```
 
-The plan is re-validated after editing to catch empty groups or coverage gaps.
+Groups you empty are dropped (their dependants inherit their dependencies); the plan is then re-validated for coverage gaps and LOC bounds.
 
 ### Custom PR body templates
 

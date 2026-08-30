@@ -231,6 +231,97 @@ class TestHandleLocBoundWarnings:
         mock_warning.assert_not_called()
 
 
+class TestSplitEditorEmptiedGroup:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_emptied_group_is_dropped_and_plan_saved(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        first = _group("pr-1", "keeps a", files=["a.py"])
+        second = _group("pr-2", "emptied", depends_on=["pr-1"])
+        mock_plan_split.return_value = [first, second]
+        mock_interactive_edit.return_value = [first, second]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Dropped empty group(s) after editing: pr-2" in result.output
+        saved = mock_save_plan.call_args[0][0].plan
+        assert [g.id for g in saved.groups] == ["pr-1"]
+        validated = mock_validate_plan.call_args_list[-1].args[0]
+        assert [g.id for g in validated] == ["pr-1"]
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_all_groups_emptied_is_an_error(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [_group("pr-1", "a", files=["a.py"])]
+        mock_interactive_edit.return_value = [_group("pr-1", "emptied")]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert "Every group is empty after editing; nothing to split." in result.output
+        mock_save_plan.assert_not_called()
+
+
 class TestSplitCliEnvVars:
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")
