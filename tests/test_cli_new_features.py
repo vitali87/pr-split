@@ -231,6 +231,31 @@ class TestHandleLocBoundWarnings:
         mock_warning.assert_not_called()
 
 
+class TestSplitEmptyDiff:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.extract_diff", return_value="")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_no_changes_is_refused_before_planning(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--base", "main", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+        assert result.exit_code == 1
+        assert "No changes between 'main' and 'feature-branch'; nothing to split" in result.output
+        mock_plan_split.assert_not_called()
+        mock_save_plan.assert_not_called()
+
+
 class TestSplitCliEnvVars:
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")

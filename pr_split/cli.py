@@ -763,6 +763,11 @@ def split(
 
     raw_diff = extract_diff(dev_branch, base)
     parsed_diff = parse_diff(raw_diff)
+    if not parsed_diff.patch_set:
+        # Planning an empty diff "succeeds" with zero groups and then
+        # execute rejects the plan as missing its diff; stop here instead.
+        console.print(f"[red]{ErrorMsg.NO_CHANGES(base=base, dev=dev_branch_arg)}[/red]")
+        raise typer.Exit(1)
     stats = parsed_diff.stats
     logger.info(
         logs.DIFF_STATS.format(
@@ -996,11 +1001,15 @@ def execute(
         console.print("[red]This plan already has branches/PRs. Use 'pr-split clean' first.[/red]")
         raise typer.Exit(1)
 
-    if not plan.raw_diff:
+    if plan.raw_diff is None:
         console.print(
             "[red]Plan is missing saved diff data."
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
+        raise typer.Exit(1)
+    if not plan.raw_diff.strip() or not plan.groups:
+        # A plan saved by an older version from an empty diff.
+        console.print(f"[red]{ErrorMsg.PLAN_HAS_NO_CHANGES()}[/red]")
         raise typer.Exit(1)
 
     if not plan.merge_base_sha:
