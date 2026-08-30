@@ -691,15 +691,27 @@ def split(
             help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
         ),
     ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
-    priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    # These options are passed explicitly to Settings(), which makes them win
+    # over pydantic-settings' own env lookup, so each must name its envvar
+    # here for the documented PR_SPLIT_* variables to take effect.
+    priority: Annotated[
+        Priority, typer.Option(help="Grouping priority", envvar="PR_SPLIT_PRIORITY")
+    ] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
-        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+        ChunkStrategy,
+        typer.Option(help="Chunking strategy for large diffs", envvar="PR_SPLIT_CHUNK_STRATEGY"),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
+        PartitionStrategy,
+        typer.Option(
+            help="Backend for hunk-to-PR partitioning", envvar="PR_SPLIT_PARTITION_STRATEGY"
+        ),
     ] = DEFAULT_PARTITION_STRATEGY,
     cp_sat_timeout: Annotated[
-        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+        float,
+        typer.Option(
+            help="Maximum seconds to spend in the CP-SAT solver", envvar="PR_SPLIT_CP_SAT_TIMEOUT"
+        ),
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     stack: Annotated[
         bool,
