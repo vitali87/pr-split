@@ -504,10 +504,27 @@ class TestExecuteCommand:
         mock_plan_file = MagicMock()
         mock_plan_file.git_state.branches = []
         mock_plan_file.git_state.prs = []
-        mock_plan_file.plan.raw_diff = ""
+        mock_plan_file.plan.raw_diff = None
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+        assert "missing saved diff data" in result.output
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_empty_saved_diff_is_refused(
+        self, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = ""
+        mock_plan_file.plan.groups = []
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "Saved plan has an empty diff; nothing to execute" in result.output
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)

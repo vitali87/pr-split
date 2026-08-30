@@ -17,6 +17,8 @@ class ErrorMsg(StrEnum):
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
+    NO_CHANGES = "No changes between '{base}' and '{dev}'; nothing to split"
+    PLAN_HAS_NO_CHANGES = "Saved plan has an empty diff; nothing to execute"
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
