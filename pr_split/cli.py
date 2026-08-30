@@ -787,7 +787,11 @@ def split(
     except (ValidationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    groups = plan_split(parsed_diff, settings)
+    try:
+        groups = plan_split(parsed_diff, settings)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     logger.info(logs.VALIDATING_PLAN)
     dag = PlanDAG(groups)
