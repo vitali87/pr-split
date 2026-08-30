@@ -1139,6 +1139,7 @@ def merge_all(
     skipped: list[str] = []
     skipped_ids: set[str] = set()
     blocked: list[str] = []
+    fetch_errors: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1157,6 +1158,7 @@ def merge_all(
                     f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
                 )
                 skipped_ids.add(group_id)
+                fetch_errors.append(group_id)
                 skipped.append(f"{group_id} (fetch error)")
                 continue
 
@@ -1245,6 +1247,11 @@ def merge_all(
             f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
             f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
         )
+    if fetch_errors:
+        console.print(
+            f"[red]Could not fetch PR state for ({len(fetch_errors)}): "
+            f"{', '.join(fetch_errors)}. Check 'gh auth status' and re-run.[/red]"
+        )
     if notify:
         exit_reason = (
             "merge_error"
@@ -1253,6 +1260,8 @@ def merge_all(
             if exited_early
             else "unmerged_dependency"
             if blocked
+            else "fetch_error"
+            if fetch_errors
             else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
@@ -1263,11 +1272,11 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early or blocked),
+                "success": not (failed or stopped or exited_early or blocked or fetch_errors),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early or blocked:
+    if failed or stopped or exited_early or blocked or fetch_errors:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")

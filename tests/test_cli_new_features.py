@@ -485,3 +485,37 @@ class TestMergeBlockedDependencies:
 
         assert [c.args[0] for c in mock_merge.call_args_list] == [1, 2]
         assert result.exit_code == 0
+
+
+class TestMergeFetchErrors:
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unfetchable_pr_state_fails_the_run(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "ok", files=["a.py"]),
+            _group("pr-2", "unfetchable", files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = lambda n: (
+            {"state": "OPEN", "isDraft": False, "reviewDecision": None} if n == 1 else {}
+        )
+
+        result = runner.invoke(app, ["merge", "--notify", "https://example.invalid/hook"])
+
+        mock_merge.assert_called_once_with(1, auto=False)
+        assert result.exit_code == 1
+        assert "Could not fetch PR state" in result.output
+        assert "Merge complete" not in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["success"] is False
+        assert payload["exit_reason"] == "fetch_error"
