@@ -184,6 +184,7 @@ def build_chunk_stats_from_hunks(parsed_diff: ParsedDiff, hunk_refs: list[HunkRe
                 is_deleted=pf.is_removed_file,
                 is_renamed=pf.is_rename,
                 hunk_count=len(indices),
+                hunk_indices=sorted(indices),
             )
         )
     return DiffStats(

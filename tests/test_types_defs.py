@@ -55,6 +55,7 @@ class TestFileSummary:
             "is_deleted": False,
             "is_renamed": False,
             "hunk_count": 2,
+            "hunk_indices": [0, 1],
         }
         assert fs["path"] == "test.py"
         assert fs["added"] == 10
