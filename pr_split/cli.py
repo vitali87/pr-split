@@ -43,6 +43,7 @@ from .diff_ops import (
     materialize_group_files,
     merge_chain_assignments,
     parse_diff,
+    target_file_modes,
 )
 from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
 from .git_ops import (
@@ -199,11 +200,16 @@ def _create_single_branch_and_commit(
         add_worktree(worktree_path, branch_name, start_point or merge_base_ref)
     try:
         materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
+        modes = target_file_modes(parsed_diff, group)
         for file_path, content in materialized.items():
             p = Path(worktree_path) / file_path
             if content is not None:
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
+                if file_path in modes:
+                    # Git only tracks the executable bit; apply the diff's
+                    # target mode so chmod changes reach the sub-PR.
+                    p.chmod(modes[file_path] & 0o777)
             elif p.exists():
                 p.unlink()
 

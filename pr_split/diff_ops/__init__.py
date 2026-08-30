@@ -1,5 +1,5 @@
 from .parser import ParsedDiff, extract_diff, parse_diff
-from .reconstructor import materialize_group_files, merge_chain_assignments
+from .reconstructor import materialize_group_files, merge_chain_assignments, target_file_modes
 
 __all__ = [
     "ParsedDiff",
@@ -7,4 +7,5 @@ __all__ = [
     "materialize_group_files",
     "merge_chain_assignments",
     "parse_diff",
+    "target_file_modes",
 ]

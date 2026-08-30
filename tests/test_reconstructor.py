@@ -12,6 +12,7 @@ from pr_split.diff_ops.reconstructor import (
     apply_hunks,
     materialize_group_files,
     merge_chain_assignments,
+    target_file_modes,
 )
 from pr_split.exceptions import GitOperationError
 from pr_split.schemas import Group, GroupAssignment
@@ -481,3 +482,47 @@ class TestTruncatedFileIsNotDeleted:
             ],
         )
         assert materialize_group_files(parsed, group, "main") == {"a.txt": None}
+
+
+class TestTargetFileModes:
+    def _group(self, *paths: str) -> Group:
+        return Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path=p, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+                )
+                for p in paths
+            ],
+        )
+
+    def test_mode_change_with_content_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n"
+            "index 422c2b7..55dce13\n--- a/run.sh\n+++ b/run.sh\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n"
+        )
+        assert target_file_modes(parsed, self._group("run.sh")) == {"run.sh": 0o100755}
+
+    def test_new_executable_file_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/n.sh b/n.sh\nnew file mode 100755\n--- /dev/null\n+++ b/n.sh\n"
+            "@@ -0,0 +1 @@\n+x\n"
+        )
+        assert target_file_modes(parsed, self._group("n.sh")) == {"n.sh": 0o100755}
+
+    def test_plain_change_and_unassigned_files_are_ignored(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+            "diff --git a/b.sh b/b.sh\nold mode 100644\nnew mode 100755\n"
+            "--- a/b.sh\n+++ b/b.sh\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.py")) == {}
+
+    def test_removed_file_is_ignored(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/d.sh b/d.sh\ndeleted file mode 100755\n--- a/d.sh\n+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n-x\n"
+        )
+        assert target_file_modes(parsed, self._group("d.sh")) == {}
