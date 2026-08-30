@@ -379,3 +379,57 @@ class TestAddedFileLineEndings:
         )
         result = materialize_group_files(parsed, group, "abc123")
         assert result["new_file.py"] == 'def hello():\n    return "world"\n\n'
+
+
+class TestMaterializeDuplicateAssignments:
+    @patch("pr_split.diff_ops.reconstructor._get_base_file_content")
+    def test_two_assignments_for_one_file_apply_both_hunks(self, mock_base: MagicMock) -> None:
+        mock_base.return_value = _base_content()
+        parsed = parse_diff(PATCH_TEXT)
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="example.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                ),
+                GroupAssignment(
+                    file_path="example.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                ),
+            ],
+        )
+        result = materialize_group_files(parsed, group, "main")
+        content = result["example.py"]
+        assert content is not None
+        assert "inserted_after_1" in content
+        assert "inserted_after_11" in content
+        assert mock_base.call_count == 1
+
+    def test_duplicate_assignments_on_new_file_apply_both_hunks(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
+            "@@ -0,0 +1,2 @@\n+one\n+two\n"
+        )
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="n.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                ),
+                GroupAssignment(
+                    file_path="n.py",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[],
+                ),
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main")["n.py"] == "one\ntwo\n"

@@ -83,26 +83,39 @@ def apply_hunks(base_content: str, patch_file: PatchedFile, assigned_indices: li
     return "".join(lines)
 
 
+def _assigned_hunk_indices(
+    patch_file: PatchedFile, assignments: list[GroupAssignment]
+) -> list[int]:
+    """Union of the hunks every assignment for one file claims."""
+    covered: set[int] = set()
+    for assignment in assignments:
+        if assignment.assignment_type is AssignmentType.WHOLE_FILE:
+            covered.update(range(len(patch_file)))
+        else:
+            covered.update(assignment.hunk_indices)
+    return sorted(covered)
+
+
 def materialize_group_files(
     parsed_diff: ParsedDiff, group: Group, ref: str
 ) -> dict[str, str | None]:
     logger.info(logs.MATERIALIZING_FILES.format(count=len(group.assignments), group=group.id))
     pf_map = {pf.path: pf for pf in parsed_diff.patch_set}
-    result: dict[str, str | None] = {}
+    # Several assignments may name the same file (e.g. merged across diff
+    # chunks); each file is written once from the union of their hunks.
+    assignments_by_path: dict[str, list[GroupAssignment]] = {}
     for assignment in group.assignments:
-        patch_file = pf_map.get(assignment.file_path)
+        assignments_by_path.setdefault(assignment.file_path, []).append(assignment)
+    result: dict[str, str | None] = {}
+    for file_path, assignments in assignments_by_path.items():
+        patch_file = pf_map.get(file_path)
         if patch_file is None:
             continue
         if patch_file.is_removed_file:
-            result[assignment.file_path] = None
+            result[file_path] = None
             continue
+        indices = _assigned_hunk_indices(patch_file, assignments)
         if patch_file.is_added_file:
-            all_indices = list(range(len(patch_file)))
-            match assignment.assignment_type:
-                case AssignmentType.WHOLE_FILE:
-                    indices = all_indices
-                case AssignmentType.PARTIAL_HUNKS:
-                    indices = assignment.hunk_indices
             target_lines = []
             for idx in indices:
                 hunk = patch_file[idx]
@@ -111,15 +124,10 @@ def materialize_group_files(
                         target_lines.append(str(line)[1:])
             # Lines from unidiff keep their trailing newline, so they are
             # concatenated as-is; joining on "\n" double-spaces the file.
-            result[assignment.file_path] = "".join(
+            result[file_path] = "".join(
                 ln if ln.endswith("\n") else ln + "\n" for ln in target_lines
             )
             continue
-        base_content = _get_base_file_content(assignment.file_path, ref)
-        match assignment.assignment_type:
-            case AssignmentType.WHOLE_FILE:
-                indices = list(range(len(patch_file)))
-            case AssignmentType.PARTIAL_HUNKS:
-                indices = assignment.hunk_indices
-        result[assignment.file_path] = apply_hunks(base_content, patch_file, indices)
+        base_content = _get_base_file_content(file_path, ref)
+        result[file_path] = apply_hunks(base_content, patch_file, indices)
     return result
