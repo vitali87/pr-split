@@ -82,10 +82,33 @@ app = typer.Typer(
 console = Console()
 
 
+def _reachable_from_roots(groups: list[Group]) -> set[str]:
+    """Ids that a root-first walk will actually visit.
+
+    A group that is neither a root nor a descendant of one (unknown
+    dependency chain, cycle) is never drawn, so it must not count as a
+    parent still "pending" for stub placement.
+    """
+    children: dict[str, list[str]] = {g.id: [] for g in groups}
+    for g in groups:
+        for dep in g.depends_on:
+            if dep in children:
+                children[dep].append(g.id)
+    reachable: set[str] = set()
+    stack = [g.id for g in groups if not g.depends_on]
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        stack.extend(children[current])
+    return reachable
+
+
 def _render_dag(groups: list[Group]) -> str:
     roots = [g for g in groups if not g.depends_on]
     tree = Tree("Split Plan")
-    known = {g.id for g in groups}
+    known = _reachable_from_roots(groups)
     # A group with several parents is drawn in full under whichever parent is
     # visited last, so every "(see below)" stub really does point downward and
     # the subtree appears exactly once.
@@ -116,7 +139,7 @@ def _render_dag(groups: list[Group]) -> str:
 def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     roots = [g for g in groups if not g.depends_on]
     lines: list[str] = []
-    known = {g.id for g in groups}
+    known = _reachable_from_roots(groups)
     done: set[str] = set()
 
     def _add_children(parent_id: str, prefix: str) -> None:

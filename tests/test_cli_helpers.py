@@ -628,3 +628,21 @@ class TestRenderDagMultiParent:
         ]
         text = _render_dag_markdown(groups, "pr-2")
         assert "pr-2: child (also depends on: ghost)  <-- this PR" in text
+
+    def test_unreachable_parent_does_not_hide_node(self) -> None:
+        # pr-9 depends on an unknown group, so it is never visited; pr-2 must
+        # still be drawn in full (with its subtree and marker) under pr-1.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-9", "orphan", depends_on=["ghost"]),
+            _group("pr-2", "leaf", depends_on=["pr-1", "pr-9"]),
+            _group("pr-5", "after", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-2")
+        assert md.count("<-- this PR") == 1
+        assert "pr-2: leaf (also depends on: pr-9)  <-- this PR" in md
+        assert "pr-5: after" in md
+        assert "(see below)" not in md
+        tree = _render_dag(groups)
+        assert "pr-2: leaf (depends on: pr-1, pr-9)" in tree
+        assert "pr-5: after" in tree
