@@ -14,6 +14,10 @@ class ErrorMsg(StrEnum):
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"
+    UNKNOWN_FILE = "Group '{group}' references '{file}', which is not in the diff"
+    HUNK_INDEX_OUT_OF_RANGE = (
+        "Hunk {file}[{index}] in group '{group}' does not exist (file has {count} hunks)"
+    )
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"

@@ -231,6 +231,50 @@ class TestHandleLocBoundWarnings:
         mock_warning.assert_not_called()
 
 
+class TestSplitRejectsInvalidLlmPlan:
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_out_of_range_hunk_index_is_a_clean_error(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        mock_extract_diff.return_value = (
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        bad = _group("pr-1", "t")
+        bad.assignments = [
+            GroupAssignment(
+                file_path="a.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0, 9],
+            )
+        ]
+        mock_plan_split.return_value = [bad]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Hunk a.py[9] in group 'pr-1' does not exist (file has 1 hunks)" in result.output
+        mock_present_plan.assert_not_called()
+        mock_save_plan.assert_not_called()
+
+
 class TestSplitCliEnvVars:
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")

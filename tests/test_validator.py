@@ -72,6 +72,46 @@ class TestValidateCoverage:
         ]
         validate_coverage(groups, parsed)
 
+    def test_partial_index_out_of_range_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [0, 5])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_coverage(groups, parsed)
+        assert str(exc_info.value) == (
+            "Hunk a.py[5] in group 'g1' does not exist (file has 1 hunks)"
+        )
+
+    def test_negative_index_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [-1])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"a\.py\[-1\] in group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_whole_file_with_stale_index_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [7])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"a\.py\[7\]"):
+            validate_coverage(groups, parsed)
+
+    def test_file_not_in_diff_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0]), _ga("ghost.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_coverage(groups, parsed)
+        assert str(exc_info.value) == "Group 'g1' references 'ghost.py', which is not in the diff"
+
     def test_missing_hunk_raises(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)
         groups = [

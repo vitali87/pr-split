@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .. import logs
-from ..constants import AssignmentType, LocViolationType
+from ..constants import LocViolationType
 from ..diff_ops import ParsedDiff
 from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
@@ -14,13 +14,21 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
-            # A WHOLE_FILE assignment claims every hunk of the file even when
-            # its hunk_indices list was left empty.
-            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
-                indices = range(hunk_counts.get(assignment.file_path, 0))
-            else:
-                indices = assignment.hunk_indices
-            for idx in indices:
+            count = hunk_counts.get(assignment.file_path)
+            if count is None:
+                raise PlanValidationError(
+                    ErrorMsg.UNKNOWN_FILE(group=group.id, file=assignment.file_path)
+                )
+            # Reject stale or invented indices here; the reconstructor would
+            # otherwise fail with an IndexError while materializing.
+            for idx in assignment.hunk_indices:
+                if idx < 0 or idx >= count:
+                    raise PlanValidationError(
+                        ErrorMsg.HUNK_INDEX_OUT_OF_RANGE(
+                            file=assignment.file_path, index=idx, group=group.id, count=count
+                        )
+                    )
+            for idx in assignment.covered_indices(count):
                 key = (assignment.file_path, idx)
                 assigned.setdefault(key, []).append(group.id)
 
