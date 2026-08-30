@@ -270,9 +270,7 @@ new file mode 100644
         assert len(groups) == 1
         mock_partition.assert_called_once()
 
-    def test_unsupported_partition_strategy_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_unsupported_partition_strategy_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
         parsed = parse_diff(
             """\
@@ -374,9 +372,7 @@ def _merged_group() -> list[Group]:
 
 
 class TestRefinePlanWithLlm:
-    def test_no_refinement_when_zero_iterations(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_refinement_when_zero_iterations(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         parsed = parse_diff(_TWO_FILE_DIFF)
@@ -434,9 +430,7 @@ class TestRefinePlanWithLlm:
         assert result[0].estimated_loc == 7
         mock_call_llm.assert_called_once()
 
-    def test_no_refinement_when_no_violations(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_refinement_when_no_violations(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         parsed = parse_diff(_TWO_FILE_DIFF)
@@ -470,9 +464,7 @@ class TestRefinePlanWithLlm:
         assert len(result) == 2
         mock_call_llm.assert_called_once()
 
-    def test_no_refinement_when_min_loc_is_none(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_no_refinement_when_min_loc_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         parsed = parse_diff(_TWO_FILE_DIFF)
@@ -549,9 +541,7 @@ class TestCountTokensAnthropic:
     @patch("pr_split.planner.client.anthropic.Anthropic")
     def test_returns_input_tokens(self, mock_cls: MagicMock) -> None:
         mock_client = mock_cls.return_value
-        mock_client.messages.count_tokens.return_value = SimpleNamespace(
-            input_tokens=42
-        )
+        mock_client.messages.count_tokens.return_value = SimpleNamespace(input_tokens=42)
         settings = _make_settings(Provider.ANTHROPIC)
         result = _count_tokens_anthropic("sys", "usr", settings=settings)
         assert result == 42
@@ -575,9 +565,7 @@ class TestCountTokensOpenai:
         "pr_split.planner.client.tiktoken.encoding_for_model",
         side_effect=KeyError("unknown"),
     )
-    def test_unknown_model_falls_back(
-        self, _mock_enc: MagicMock, mock_get: MagicMock
-    ) -> None:
+    def test_unknown_model_falls_back(self, _mock_enc: MagicMock, mock_get: MagicMock) -> None:
         fake_enc = MagicMock()
         fake_enc.encode.return_value = [1, 2, 3]
         mock_get.return_value = fake_enc
@@ -632,12 +620,10 @@ class TestCallAnthropic:
     def test_api_error_raises_llm_error(self, mock_cls: MagicMock) -> None:
         import anthropic as _anthropic
 
-        mock_cls.return_value.beta.messages.create.side_effect = (
-            _anthropic.APIError(
-                message="server error",
-                request=MagicMock(),
-                body=None,
-            )
+        mock_cls.return_value.beta.messages.create.side_effect = _anthropic.APIError(
+            message="server error",
+            request=MagicMock(),
+            body=None,
         )
         settings = _make_settings(Provider.ANTHROPIC)
         with pytest.raises(LLMError):
@@ -655,9 +641,7 @@ class TestCallAnthropic:
             _call_anthropic("sys", "usr", settings=settings)
 
     @patch("pr_split.planner.client.anthropic.Anthropic")
-    def test_stop_reason_not_tool_use_still_succeeds(
-        self, mock_cls: MagicMock
-    ) -> None:
+    def test_stop_reason_not_tool_use_still_succeeds(self, mock_cls: MagicMock) -> None:
         from anthropic.types.beta import BetaToolUseBlock
 
         tool_block = BetaToolUseBlock(
@@ -779,9 +763,7 @@ class TestCallChunkWithRetry:
         mock_llm.side_effect = LLMError("persistent failure")
         settings = _make_settings(Provider.ANTHROPIC)
         with pytest.raises(LLMError, match="persistent failure"):
-            _call_chunk_with_retry(
-                "sys", "usr", settings=settings, chunk_index=1, total_chunks=1
-            )
+            _call_chunk_with_retry("sys", "usr", settings=settings, chunk_index=1, total_chunks=1)
 
 
 # ---------------------------------------------------------------------------
@@ -978,9 +960,7 @@ class TestPlanSplitWithLlm:
         mock_refine: MagicMock,
     ) -> None:
         parsed = parse_diff(_TWO_FILE_DIFF)
-        settings = _make_settings(
-            Provider.ANTHROPIC, partition_strategy=PartitionStrategy.LLM
-        )
+        settings = _make_settings(Provider.ANTHROPIC, partition_strategy=PartitionStrategy.LLM)
         mock_llm.return_value = RawToolOutput(groups=_SAMPLE_RAW_GROUPS)
         mock_refine.side_effect = lambda groups, *a, **kw: groups
 
@@ -998,9 +978,7 @@ class TestPlanSplitWithLlm:
         mock_refine: MagicMock,
     ) -> None:
         parsed = parse_diff(_TWO_FILE_DIFF)
-        settings = _make_settings(
-            Provider.ANTHROPIC, partition_strategy=PartitionStrategy.LLM
-        )
+        settings = _make_settings(Provider.ANTHROPIC, partition_strategy=PartitionStrategy.LLM)
         group = Group(id="pr-1", title="t", description="d", estimated_loc=7)
         mock_chunked.return_value = [group]
         mock_refine.side_effect = lambda groups, *a, **kw: groups

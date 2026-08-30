@@ -99,9 +99,7 @@ class TestSettingsLocBoundsValidation:
         with pytest.raises(ValidationError, match="min_loc 100 must be less than max_loc 100"):
             Settings(partition_strategy=PartitionStrategy.GRAPH, min_loc=100, max_loc=100)
 
-    def test_min_loc_greater_than_max_loc_raises(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_min_loc_greater_than_max_loc_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         with pytest.raises(ValidationError, match="min_loc 101 must be less than max_loc 100"):
@@ -140,9 +138,7 @@ class TestSettingsAutoDerivMinLoc:
         )
         assert s.min_loc is None
 
-    def test_explicit_min_loc_not_overridden(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_explicit_min_loc_not_overridden(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         s = Settings(
@@ -153,9 +149,7 @@ class TestSettingsAutoDerivMinLoc:
         )
         assert s.min_loc == 50
 
-    def test_derived_min_loc_uses_integer_division(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_derived_min_loc_uses_integer_division(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         s = Settings(

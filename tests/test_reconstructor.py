@@ -129,7 +129,9 @@ class TestMaterializeGroupFilesNewFile:
     def test_whole_file_new(self) -> None:
         parsed = parse_diff(NEW_FILE_DIFF)
         group = Group(
-            id="g1", title="t", description="d",
+            id="g1",
+            title="t",
+            description="d",
             assignments=[
                 GroupAssignment(
                     file_path="new_file.py",
@@ -145,7 +147,9 @@ class TestMaterializeGroupFilesNewFile:
     def test_partial_hunks_new(self) -> None:
         parsed = parse_diff(NEW_FILE_DIFF)
         group = Group(
-            id="g1", title="t", description="d",
+            id="g1",
+            title="t",
+            description="d",
             assignments=[
                 GroupAssignment(
                     file_path="new_file.py",
@@ -160,7 +164,9 @@ class TestMaterializeGroupFilesNewFile:
     def test_file_not_in_diff_skipped(self) -> None:
         parsed = parse_diff(NEW_FILE_DIFF)
         group = Group(
-            id="g1", title="t", description="d",
+            id="g1",
+            title="t",
+            description="d",
             assignments=[
                 GroupAssignment(
                     file_path="not_in_diff.py",
@@ -187,7 +193,9 @@ class TestMaterializeGroupFilesExisting:
         mock_base.return_value = "line1\nline2\nline3\n"
         parsed = parse_diff(MODIFY_DIFF)
         group = Group(
-            id="g1", title="t", description="d",
+            id="g1",
+            title="t",
+            description="d",
             assignments=[
                 GroupAssignment(
                     file_path="existing.py",
@@ -205,7 +213,9 @@ class TestMaterializeGroupFilesExisting:
         mock_base.return_value = "line1\nline2\nline3\n"
         parsed = parse_diff(MODIFY_DIFF)
         group = Group(
-            id="g1", title="t", description="d",
+            id="g1",
+            title="t",
+            description="d",
             assignments=[
                 GroupAssignment(
                     file_path="existing.py",

@@ -92,11 +92,17 @@ def main() -> None:
 
     # Run pr-split in dry-run mode
     cmd = [
-        "pr-split", "split", head_branch,
-        "--base", base_branch,
-        "--partition-strategy", strategy,
-        "--priority", priority,
-        "--max-loc", str(max_loc),
+        "pr-split",
+        "split",
+        head_branch,
+        "--base",
+        base_branch,
+        "--partition-strategy",
+        strategy,
+        "--priority",
+        priority,
+        "--max-loc",
+        str(max_loc),
         "--dry-run",
     ]
     if min_loc_raw:
@@ -163,14 +169,9 @@ def main() -> None:
         lines.append("| Group | Title | Diff | Depends On | Files |")
         lines.append("|-------|-------|------|------------|-------|")
         for g in groups:
-            files = ", ".join(
-                f"`{_md_escape(a['file_path'])}`"
-                for a in g.get("assignments", [])
-            )
+            files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
             deps = ", ".join(g.get("depends_on", [])) or "—"
-            diff_str = (
-                f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
-            )
+            diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
             title = _md_escape(g["title"])
             gid = _md_escape(g["id"])
             lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")

@@ -243,9 +243,7 @@ def _stacked_batch_args(
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(
-                    group, [effective[parents[0]]], hunk_counts
-                )
+                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
@@ -365,9 +363,7 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
             template = _PR_TEMPLATE_PATH.read_text(encoding="utf-8")
             return template.format(**template_vars)
         except (KeyError, ValueError, IndexError) as exc:
-            available = ", ".join(
-                f"{{{k}}}" for k in sorted(template_vars)
-            )
+            available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
             raise PRSplitError(
                 f"Invalid PR template at {_PR_TEMPLATE_PATH}: {exc}. "
                 f"Available placeholders: {available}. "
@@ -548,9 +544,7 @@ def _move_assignment(
         console.print(f"[red]Hunk {file_path}:{hunk_index} not found in {from_id}.[/red]")
         return False
 
-    dst_assignment = next(
-        (a for a in dst.assignments if a.file_path == file_path), None
-    )
+    dst_assignment = next((a for a in dst.assignments if a.file_path == file_path), None)
     if dst_assignment:
         if dst_assignment.assignment_type == AssignmentType.WHOLE_FILE:
             pf = pf_map.get(file_path)
@@ -629,17 +623,11 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
                 console.print("[red]Usage: show <group_id>[/red]")
         elif action == "move":
             if len(parts) != 4:
-                console.print(
-                    "[red]Usage: move <file>:<hunk_index>"
-                    " <from_group> <to_group>[/red]"
-                )
+                console.print("[red]Usage: move <file>:<hunk_index> <from_group> <to_group>[/red]")
                 continue
             ref, from_id, to_id = parts[1], parts[2], parts[3]
             if ":" not in ref:
-                console.print(
-                    "[red]Usage: move <file>:<hunk_index>"
-                    " <from_group> <to_group>[/red]"
-                )
+                console.print("[red]Usage: move <file>:<hunk_index> <from_group> <to_group>[/red]")
                 continue
             file_path, hunk_str = ref.rsplit(":", 1)
             try:
@@ -650,13 +638,10 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             if hunk_index < 0:
                 console.print("[red]Hunk index must be non-negative.[/red]")
                 continue
-            _move_assignment(
-                groups, parsed_diff, file_path, hunk_index, from_id, to_id
-            )
+            _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id)
         else:
             console.print(
-                "[yellow]Unknown command."
-                " Type 'done' to proceed or 'abort' to cancel.[/yellow]"
+                "[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]"
             )
 
 
@@ -761,9 +746,7 @@ def split(
         existing = load_plan()
         has_git_state = existing.git_state.branches or existing.git_state.prs
         if has_git_state:
-            console.print(
-                "[yellow]An existing split plan with branches/PRs was found.[/yellow]"
-            )
+            console.print("[yellow]An existing split plan with branches/PRs was found.[/yellow]")
             console.print(
                 "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
             )
@@ -821,9 +804,7 @@ def split(
     empty_groups = [g for g in groups if not g.assignments]
     if empty_groups:
         empty_ids = [g.id for g in empty_groups]
-        console.print(
-            f"[red]Groups {empty_ids} are empty after editing.[/red]"
-        )
+        console.print(f"[red]Groups {empty_ids} are empty after editing.[/red]")
         raise typer.Exit(1)
     try:
         dag = PlanDAG(groups)
@@ -872,18 +853,22 @@ def split(
     try:
         pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     except PRCreationError as exc:
-        save_plan(PlanFile(
-            plan=split_plan,
-            git_state=GitState(branches=branch_records, prs=exc.pr_records),
-        ))
+        save_plan(
+            PlanFile(
+                plan=split_plan,
+                git_state=GitState(branches=branch_records, prs=exc.pr_records),
+            )
+        )
         raise
     if stack:
         _link_stacks(dag, pr_records)
 
-    save_plan(PlanFile(
-        plan=split_plan,
-        git_state=GitState(branches=branch_records, prs=pr_records),
-    ))
+    save_plan(
+        PlanFile(
+            plan=split_plan,
+            git_state=GitState(branches=branch_records, prs=pr_records),
+        )
+    )
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
@@ -1008,10 +993,7 @@ def execute(
         plan = plan.model_copy(update={"draft": True})
 
     if plan_file.git_state.branches or plan_file.git_state.prs:
-        console.print(
-            "[red]This plan already has branches/PRs."
-            " Use 'pr-split clean' first.[/red]"
-        )
+        console.print("[red]This plan already has branches/PRs. Use 'pr-split clean' first.[/red]")
         raise typer.Exit(1)
 
     if not plan.raw_diff:
@@ -1029,9 +1011,7 @@ def execute(
         raise typer.Exit(1)
 
     if not branch_exists(plan.base_branch):
-        console.print(
-            f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]"
-        )
+        console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
@@ -1051,9 +1031,7 @@ def execute(
     _present_plan(plan.groups)
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
-    namespace = derive_split_namespace(
-        plan.dev_branch_arg or plan.dev_branch
-    )
+    namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
     branch_records = _create_branches_and_commits(
         plan.groups,
         parsed_diff,
@@ -1066,30 +1044,30 @@ def execute(
     try:
         pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     except PRCreationError as exc:
-        save_plan(PlanFile(
-            plan=plan,
-            git_state=GitState(branches=branch_records, prs=exc.pr_records),
-        ))
+        save_plan(
+            PlanFile(
+                plan=plan,
+                git_state=GitState(branches=branch_records, prs=exc.pr_records),
+            )
+        )
         raise
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
 
-    save_plan(PlanFile(
-        plan=plan,
-        git_state=GitState(branches=branch_records, prs=pr_records),
-    ))
-    logger.success(
-        f"Execute complete: {len(plan.groups)} PRs created from saved plan"
+    save_plan(
+        PlanFile(
+            plan=plan,
+            git_state=GitState(branches=branch_records, prs=pr_records),
+        )
     )
+    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
 _AUTO_MERGE_POLL_INTERVAL = 10
 _AUTO_MERGE_POLL_TIMEOUT = 600
 
 
-def _poll_for_merged(
-    group_ids: list[str], pr_map: dict[str, PRRecord]
-) -> set[str]:
+def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[str]:
     pending = set(group_ids)
     actually_merged: set[str] = set()
     deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
@@ -1118,9 +1096,7 @@ def _poll_for_merged(
 def _send_webhook(url: str, payload: dict[str, object]) -> None:
     try:
         data = json_mod.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}
-        )
+        req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
         logger.info(f"Webhook notification sent to {url}")
@@ -1224,10 +1200,7 @@ def merge_all(
                 break
 
         if auto and not stopped:
-            queued = [
-                gid for gid in batch
-                if gid not in merged and gid not in skipped_ids
-            ]
+            queued = [gid for gid in batch if gid not in merged and gid not in skipped_ids]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
                 actually_merged = _poll_for_merged(queued, pr_map)
@@ -1256,22 +1229,20 @@ def merge_all(
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
     if notify:
         exit_reason = (
-            "merge_error" if stopped
-            else "incomplete_batch" if exited_early
-            else "success"
+            "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
         )
-        skipped_structured = [
-            {"id": s.split(" (")[0], "reason": s}
-            for s in skipped
-        ]
-        _send_webhook(notify, {
-            "event": "merge_complete",
-            "merged": merged,
-            "skipped": skipped_structured,
-            "failed": failed,
-            "success": not (failed or stopped or exited_early),
-            "exit_reason": exit_reason,
-        })
+        skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
+        _send_webhook(
+            notify,
+            {
+                "event": "merge_complete",
+                "merged": merged,
+                "skipped": skipped_structured,
+                "failed": failed,
+                "success": not (failed or stopped or exited_early),
+                "exit_reason": exit_reason,
+            },
+        )
 
     if failed or stopped or exited_early:
         raise typer.Exit(1)

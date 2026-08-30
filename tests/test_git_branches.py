@@ -275,9 +275,7 @@ class TestAddWorktree:
 
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
-    def test_restores_branch_on_failure(
-        self, mock_exists: MagicMock, mock_git: MagicMock
-    ) -> None:
+    def test_restores_branch_on_failure(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
         mock_git.side_effect = [
             "oldsha",
             "",
@@ -316,4 +314,3 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
-

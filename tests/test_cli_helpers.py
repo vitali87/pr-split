@@ -180,9 +180,7 @@ class TestPushAndCreatePrs:
 
     @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
     @patch("pr_split.cli.push_branch")
-    def test_pushes_all_branches(
-        self, mock_push: MagicMock, mock_create: MagicMock
-    ) -> None:
+    def test_pushes_all_branches(self, mock_push: MagicMock, mock_create: MagicMock) -> None:
         groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b")]
         records = [
             _branch_record("pr-1", "pr-split/ns/pr-1"),
@@ -194,9 +192,7 @@ class TestPushAndCreatePrs:
 
     @patch("pr_split.cli.create_pr", return_value=(5, "https://github.com/pr/5"))
     @patch("pr_split.cli.push_branch")
-    def test_preserves_group_order(
-        self, mock_push: MagicMock, mock_create: MagicMock
-    ) -> None:
+    def test_preserves_group_order(self, mock_push: MagicMock, mock_create: MagicMock) -> None:
         groups = [
             _group("pr-3", "c"),
             _group("pr-1", "a"),
@@ -212,9 +208,7 @@ class TestPushAndCreatePrs:
 
     @patch("pr_split.cli.create_pr")
     @patch("pr_split.cli.push_branch")
-    def test_concurrent_execution(
-        self, mock_push: MagicMock, mock_create: MagicMock
-    ) -> None:
+    def test_concurrent_execution(self, mock_push: MagicMock, mock_create: MagicMock) -> None:
         """Verify that multiple groups are processed concurrently."""
         barrier = threading.Barrier(3, timeout=5)
         lock = threading.Lock()
@@ -337,9 +331,7 @@ class TestCreateBranchesAndCommitsStacked:
         _create_branches_and_commits(
             [parent, child], MagicMock(), "main", "base_sha", "ns", stacked=True
         )
-        child_calls = [
-            call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"
-        ]
+        child_calls = [call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"]
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1]
         assert child_calls[0].args[2] == "base_sha"
 
@@ -543,9 +535,7 @@ class TestStackedTransitiveChain:
         _create_branches_and_commits(
             [grandparent, parent, child], MagicMock(), "main", "base_sha", "ns", stacked=True
         )
-        child_calls = [
-            call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"
-        ]
+        child_calls = [call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"]
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1, 2]
 
 

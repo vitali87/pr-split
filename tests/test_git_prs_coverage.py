@@ -119,10 +119,12 @@ class TestFetchForkBranch:
         # 3. get default branch
         mock_gh.side_effect = [
             "my-repo",  # repo name
-            json.dumps({
-                "clone_url": "https://github.com/user/my-repo.git",
-                "full_name": "user/my-repo",
-            }),
+            json.dumps(
+                {
+                    "clone_url": "https://github.com/user/my-repo.git",
+                    "full_name": "user/my-repo",
+                }
+            ),
             "main",  # default branch
         ]
         mock_git.side_effect = [
@@ -151,10 +153,12 @@ class TestFetchForkBranch:
     def test_git_fetch_failure(self, mock_gh: MagicMock, mock_git: MagicMock) -> None:
         mock_gh.side_effect = [
             "my-repo",
-            json.dumps({
-                "clone_url": "https://github.com/user/my-repo.git",
-                "full_name": "user/my-repo",
-            }),
+            json.dumps(
+                {
+                    "clone_url": "https://github.com/user/my-repo.git",
+                    "full_name": "user/my-repo",
+                }
+            ),
         ]
         mock_git.side_effect = GitOperationError("fetch failed")
 

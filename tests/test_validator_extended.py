@@ -34,12 +34,18 @@ def _ga(path: str, atype: AssignmentType, indices: list[int]) -> GroupAssignment
 
 
 def _make_group(
-    gid: str, assignments: list[GroupAssignment], loc: int,
+    gid: str,
+    assignments: list[GroupAssignment],
+    loc: int,
     depends_on: list[str] | None = None,
 ) -> Group:
     return Group(
-        id=gid, title=gid, description=gid,
-        depends_on=depends_on or [], assignments=assignments, estimated_loc=loc,
+        id=gid,
+        title=gid,
+        description=gid,
+        depends_on=depends_on or [],
+        assignments=assignments,
+        estimated_loc=loc,
     )
 
 

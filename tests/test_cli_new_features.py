@@ -36,9 +36,7 @@ def _group(
     removed: int = 5,
 ) -> Group:
     assignments = [
-        GroupAssignment(
-            file_path=f, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
-        )
+        GroupAssignment(file_path=f, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[])
         for f in (files or [])
     ]
     return Group(
@@ -96,9 +94,7 @@ class TestBuildPrBody:
         body = _build_pr_body(group, [group])
         assert "## Files changed" not in body
 
-    def test_custom_template(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_custom_template(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         template_dir = tmp_path / ".pr-split"
         template_dir.mkdir()
         template_file = template_dir / "template.md"
@@ -229,9 +225,7 @@ class TestHandleLocBoundWarnings:
 
     @patch("pr_split.cli.console.print")
     @patch("pr_split.cli.logger.warning")
-    def test_strict_raises_exit(
-        self, mock_warning: MagicMock, mock_print: MagicMock
-    ) -> None:
+    def test_strict_raises_exit(self, mock_warning: MagicMock, mock_print: MagicMock) -> None:
         with pytest.raises(typer.Exit):
             _handle_loc_bound_warnings(["warning 1"], strict_loc_bounds=True)
         mock_warning.assert_not_called()

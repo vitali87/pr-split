@@ -359,8 +359,7 @@ def _group_units_cp_sat(
 
     for group_idx in range(group_slots):
         load = sum(
-            units[unit_idx].loc * x[(unit_idx, group_idx)]
-            for unit_idx in range(len(units))
+            units[unit_idx].loc * x[(unit_idx, group_idx)] for unit_idx in range(len(units))
         )
         model.Add(load <= max_total_loc * y[group_idx])
         model.Add(load - settings.max_loc <= overflow[group_idx])

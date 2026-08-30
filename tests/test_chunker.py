@@ -286,19 +286,13 @@ class TestFormatGroupCatalog:
 
 class TestChunkHunksExtended:
     def test_single_hunk_per_chunk_when_tight(self) -> None:
-        refs = [
-            HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=90)
-            for i in range(3)
-        ]
+        refs = [HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=90) for i in range(3)]
         result = chunk_hunks(refs, 100)
         assert len(result) == 3
         assert all(len(c) == 1 for c in result)
 
     def test_many_small_hunks_pack_efficiently(self) -> None:
-        refs = [
-            HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=10)
-            for i in range(10)
-        ]
+        refs = [HunkRef(file_path=f"f{i}.py", hunk_index=0, token_estimate=10) for i in range(10)]
         result = chunk_hunks(refs, 100)
         assert len(result) == 1
         assert len(result[0]) == 10

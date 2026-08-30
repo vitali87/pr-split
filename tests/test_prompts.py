@@ -120,9 +120,7 @@ class TestBuildChunkFirstPrompt:
 class TestBuildChunkContinuationPrompt:
     def test_contains_chunk_index_and_catalog(self) -> None:
         stats = _make_diff_stats()
-        result = build_chunk_continuation_prompt(
-            stats, "chunk diff", 3, 5, "group catalog text"
-        )
+        result = build_chunk_continuation_prompt(stats, "chunk diff", 3, 5, "group catalog text")
         assert "chunk 3 of 5" in result
         assert "group catalog text" in result
         assert "chunk diff" in result

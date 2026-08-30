@@ -162,9 +162,7 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
                 parsed = json.loads(item.arguments)
             except json.JSONDecodeError as exc:
                 raise LLMError(
-                    ErrorMsg.LLM_PARSE_ERROR(
-                        detail=f"failed to parse tool arguments: {exc}"
-                    )
+                    ErrorMsg.LLM_PARSE_ERROR(detail=f"failed to parse tool arguments: {exc}")
                 ) from exc
             return RawToolOutput(groups=_extract_raw_output(parsed))
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no function_call in response output"))
@@ -354,18 +352,12 @@ def _refine_plan_with_llm(
         return groups
 
     for iteration in range(1, settings.max_refinement_iterations + 1):
-        violations = detect_loc_bound_violations(
-            groups, settings.max_loc, settings.min_loc
-        )
+        violations = detect_loc_bound_violations(groups, settings.max_loc, settings.min_loc)
         if not violations:
-            logger.info(
-                logs.REFINEMENT_RESOLVED.format(iterations=iteration - 1)
-            )
+            logger.info(logs.REFINEMENT_RESOLVED.format(iterations=iteration - 1))
             return groups
 
-        logger.info(
-            logs.REFINEMENT_START.format(count=len(violations), iteration=iteration)
-        )
+        logger.info(logs.REFINEMENT_START.format(count=len(violations), iteration=iteration))
 
         user = build_refinement_prompt(
             violations=violations,
@@ -380,19 +372,13 @@ def _refine_plan_with_llm(
             groups = refined
         except LLMError:
             logger.warning(
-                logs.REFINEMENT_EXHAUSTED.format(
-                    iterations=iteration, remaining=len(violations)
-                )
+                logs.REFINEMENT_EXHAUSTED.format(iterations=iteration, remaining=len(violations))
             )
             return groups
 
     remaining = detect_loc_bound_violations(groups, settings.max_loc, settings.min_loc)
     if not remaining:
-        logger.info(
-            logs.REFINEMENT_RESOLVED.format(
-                iterations=settings.max_refinement_iterations
-            )
-        )
+        logger.info(logs.REFINEMENT_RESOLVED.format(iterations=settings.max_refinement_iterations))
     else:
         logger.warning(
             logs.REFINEMENT_EXHAUSTED.format(
@@ -442,9 +428,7 @@ def plan_split(
         case PartitionStrategy.GRAPH | PartitionStrategy.CP_SAT:
             groups = partition_diff(parsed_diff, settings)
         case _:
-            raise PRSplitError(
-                f"Unsupported partition strategy '{settings.partition_strategy}'"
-            )
+            raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
 
     metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(
