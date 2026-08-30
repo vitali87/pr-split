@@ -114,7 +114,9 @@ def _expected_visits(groups: list[Group]) -> dict[str, int]:
     "<-- this PR" marker) appears exactly once and every stub precedes it.
     """
     reachable = _reachable_from_roots(groups)
-    return {g.id: sum(1 for d in g.depends_on if d in reachable) for g in groups}
+    # A set, not a count: the walk visits a child once per distinct parent,
+    # so a duplicated depends_on entry must not raise the expected total.
+    return {g.id: len({d for d in g.depends_on if d in reachable}) for g in groups}
 
 
 def _render_dag(groups: list[Group]) -> str:
@@ -130,7 +132,7 @@ def _render_dag(groups: list[Group]) -> str:
             if seen[child.id] < expected[child.id]:
                 parent_tree.add(f"{child.id}: {child.title} (see below)")
                 continue
-            deps_label = ", ".join(child.depends_on)
+            deps_label = ", ".join(dict.fromkeys(child.depends_on))
             branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
             _add_children(branch, child.id)
 
@@ -162,9 +164,9 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
                 continue
             marker = "  <-- this PR" if child.id == current_id else ""
             also = ""
-            if len(child.depends_on) > 1:
-                others = ", ".join(d for d in child.depends_on if d != parent_id)
-                also = f" (also depends on: {others})"
+            others = [d for d in dict.fromkeys(child.depends_on) if d != parent_id]
+            if others:
+                also = f" (also depends on: {', '.join(others)})"
             lines.append(f"{prefix}{connector} {child.id}: {child.title}{also}{marker}")
             extension = "    " if is_last else "\u2502   "
             _add_children(child.id, prefix + extension)

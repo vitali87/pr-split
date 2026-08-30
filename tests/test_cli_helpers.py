@@ -684,3 +684,18 @@ class TestRenderDagMultiParent:
         assert tree.count("pr-3: merge (depends on: pr-1, pr-2)") == 1
         assert tree.count("pr-3: merge (see below)") == 1
         assert tree.count("pr-4: after") == 1
+
+    def test_duplicate_dependency_entries_do_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "pr-1"]),
+            _group("pr-3", "leaf", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-3")
+        assert "pr-2: child" in md
+        assert "(see below)" not in md
+        assert "also depends on" not in md
+        assert "pr-3: leaf  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-2: child (depends on: pr-1)" in tree
+        assert "pr-3: leaf" in tree
