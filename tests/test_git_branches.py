@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pr_split.constants import PLAN_DIR
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
@@ -314,3 +316,50 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestIsWorktreeCleanIgnoresPlanDir:
+    """The check must not trip on pr-split's own `.pr-split/plan.json`."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+        (tmp_path / "src.py").write_text("x = 1\n")
+        plan = tmp_path / PLAN_DIR / "plan.json"
+        plan.parent.mkdir()
+        plan.write_text("{}\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "init"], check=True)
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def test_modified_tracked_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        assert is_worktree_clean() is True
+
+    def test_staged_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        subprocess.run(["git", "add", "-A"], check=True)
+        assert is_worktree_clean() is True
+
+    def test_plan_dir_is_ignored_from_a_subdirectory(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        sub = repo / "pkg"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        assert is_worktree_clean() is True
+
+    def test_other_modifications_still_count(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        (repo / "src.py").write_text("x = 2\n")
+        assert is_worktree_clean() is False

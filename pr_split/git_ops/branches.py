@@ -6,7 +6,7 @@ import subprocess
 from loguru import logger
 
 from .. import logs
-from ..constants import BRANCH_PREFIX
+from ..constants import BRANCH_PREFIX, PLAN_DIR
 from ..exceptions import GitOperationError
 
 
@@ -42,7 +42,14 @@ def branch_exists(branch: str) -> bool:
 
 
 def is_worktree_clean() -> bool:
-    output = run_git("status", "--porcelain")
+    """True when nothing tracked is modified, ignoring pr-split's own plan directory.
+
+    `split`/`edit` write `.pr-split/plan.json`; a user who commits the plan
+    (to share or review it) then has a modified tracked file, and `execute`
+    would refuse to run on the very plan it was asked to execute. Everything
+    under the plan directory is therefore excluded from the check.
+    """
+    output = run_git("status", "--porcelain", "--", f":(top,exclude){PLAN_DIR}")
     return all(line.startswith("??") for line in output.splitlines())
 
 
