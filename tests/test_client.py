@@ -165,6 +165,53 @@ class TestParseGroupsEdgeCases:
         raw = RawToolOutput(groups=[])
         assert _parse_groups(raw) == []
 
+    @pytest.mark.parametrize(
+        ("entry", "detail"),
+        [
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "depends_on": [],
+                    "assignments": [],
+                    "estimated_loc": 1,
+                },
+                "KeyError",
+            ),
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "description": "d",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "whole", "hunk_indices": []}
+                    ],
+                    "estimated_loc": 1,
+                },
+                "ValueError",
+            ),
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "description": "d",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "whole_file", "hunk_indices": "0"}
+                    ],
+                    "estimated_loc": 1,
+                },
+                "ValidationError",
+            ),
+        ],
+        ids=["missing-key", "bad-enum", "wrong-type"],
+    )
+    def test_malformed_entry_raises_llm_error(self, entry: dict, detail: str) -> None:
+        raw = RawToolOutput(groups=[entry])
+        with pytest.raises(LLMError, match=f"Failed to parse LLM response: {detail}"):
+            _parse_groups(raw)
+
     def test_preserves_estimated_loc(self) -> None:
         raw = RawToolOutput(
             groups=[
@@ -462,6 +509,28 @@ class TestRefinePlanWithLlm:
         groups = _undersized_groups()
         result = _refine_plan_with_llm(groups, parsed, settings, system="system")
         assert len(result) == 2
+        mock_call_llm.assert_called_once()
+
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_falls_back_on_malformed_response(
+        self, mock_call_llm, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=3,
+        )
+        # Missing 'description' used to escape as KeyError and abort the split.
+        mock_call_llm.return_value = RawToolOutput(
+            groups=[{"id": "pr-1", "title": "t", "depends_on": [], "assignments": []}]
+        )
+        groups = _undersized_groups()
+        result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+        assert result == groups
         mock_call_llm.assert_called_once()
 
     def test_no_refinement_when_min_loc_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
