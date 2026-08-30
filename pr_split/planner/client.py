@@ -142,9 +142,12 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
             if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
                 keys = list(block.input.keys())
                 break
-        logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
         if stop_reason == "max_tokens":
+            logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
             raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"stop_reason={stop_reason}"))
+        # Any other stop reason is not a truncation; if a tool block is
+        # present the plan is complete, otherwise the loop below reports it.
+        logger.debug(logs.LLM_UNEXPECTED_STOP.format(stop_reason=stop_reason, keys=keys))
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
