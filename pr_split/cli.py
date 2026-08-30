@@ -243,7 +243,14 @@ def _stacked_batch_args(
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Merge against every ancestor, not just the parent: the
+                # branch starts from the parent, but a file this group touches
+                # is rebuilt from the merge base with its own hunks, so hunks a
+                # grandparent added to that same file must be applied too or
+                # the child's commit would revert them.
+                merged = merge_chain_assignments(
+                    group, [effective[a] for a in sorted(dag.ancestors(gid))], hunk_counts
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:

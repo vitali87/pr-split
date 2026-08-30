@@ -443,6 +443,46 @@ class TestStackedBatchArgsMergeNode:
         _, base, start = self._merge_node_args()
         assert (base, start) == ("main", "base_sha")
 
+    def _chain_with_shared_file(self) -> list[Group]:
+        def partial(path: str, indices: list[int]) -> GroupAssignment:
+            return GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=indices,
+            )
+
+        top = _group("pr-1", "top")
+        top.assignments = [partial("f.py", [0])]
+        middle = _group("pr-2", "middle", ["pr-1"])
+        middle.assignments = [partial("g.py", [0])]
+        bottom = _group("pr-3", "bottom", ["pr-2"])
+        bottom.assignments = [partial("f.py", [1])]
+        return [top, middle, bottom]
+
+    def _chain_args(self) -> dict[str, tuple[Group, str, str]]:
+        groups = self._chain_with_shared_file()
+        batches = _stacked_batch_args(
+            PlanDAG(groups),
+            {g.id: g for g in groups},
+            {g.id: f"pr-split/ns/{g.id}" for g in groups},
+            "main",
+            "base_sha",
+            {"f.py": 2, "g.py": 1},
+        )
+        return {
+            merged.id: (merged, base, start) for batch in batches for merged, base, start in batch
+        }
+
+    def test_grandchild_carries_grandparent_hunks_of_shared_file(self) -> None:
+        merged, base, start = self._chain_args()["pr-3"]
+        by_file = {a.file_path: a.hunk_indices for a in merged.assignments}
+        assert by_file == {"f.py": [0, 1]}
+        assert (base, start) == ("pr-split/ns/pr-2", "pr-split/ns/pr-2")
+
+    def test_middle_of_chain_does_not_gain_files_it_never_touched(self) -> None:
+        merged, _, _ = self._chain_args()["pr-2"]
+        assert [a.file_path for a in merged.assignments] == ["g.py"]
+
 
 class TestPushFailureGating:
     @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
