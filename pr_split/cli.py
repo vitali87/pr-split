@@ -1149,6 +1149,7 @@ def merge_all(
     skipped_ids: set[str] = set()
     blocked: list[str] = []
     fetch_errors: list[str] = []
+    closed_while_waiting: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1236,8 +1237,10 @@ def merge_all(
                     skipped_ids.add(gid)
                     skipped.append(f"{gid} (fetch error)")
                 for gid in poll_closed:
-                    # Closed while we waited: report it like a closed PR found
-                    # up front instead of an anonymous incomplete batch.
+                    # Closed while we waited: name it like a closed PR found up
+                    # front, but keep it a failure -- we queued it for merging
+                    # and it never merged.
+                    closed_while_waiting.append(gid)
                     skipped_ids.add(gid)
                     skipped.append(f"{gid} (CLOSED)")
 
@@ -1272,6 +1275,11 @@ def merge_all(
             f"[red]Could not fetch PR state for ({len(fetch_errors)}): "
             f"{', '.join(fetch_errors)}. Check 'gh auth status' and re-run.[/red]"
         )
+    if closed_while_waiting:
+        console.print(
+            f"[red]Closed before auto-merge completed ({len(closed_while_waiting)}): "
+            f"{', '.join(closed_while_waiting)}. Reopen or recreate them and re-run.[/red]"
+        )
     if notify:
         exit_reason = (
             "merge_error"
@@ -1280,6 +1288,8 @@ def merge_all(
             if exited_early
             else "fetch_error"
             if fetch_errors
+            else "pr_closed"
+            if closed_while_waiting
             else "unmerged_dependency"
             if blocked
             else "success"
@@ -1292,11 +1302,18 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early or blocked or fetch_errors),
+                "success": not (
+                    failed
+                    or stopped
+                    or exited_early
+                    or blocked
+                    or fetch_errors
+                    or closed_while_waiting
+                ),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early or blocked or fetch_errors:
+    if failed or stopped or exited_early or blocked or fetch_errors or closed_while_waiting:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")

@@ -610,4 +610,38 @@ class TestMergeClosedWhilePolling:
         assert "pr-2 (dependency pr-1 not merged)" in result.output
         payload = mock_webhook.call_args[0][1]
         assert [s["id"] for s in payload["skipped"]] == ["pr-1", "pr-2"]
-        assert payload["exit_reason"] == "unmerged_dependency"
+        assert payload["exit_reason"] == "pr_closed"
+        assert payload["success"] is False
+
+    @patch("pr_split.cli.time.sleep")
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_closed_leaf_during_auto_wait_exits_nonzero(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        groups = [_group("pr-1", "closed later", files=["a.py"])]
+        mock_load.return_value = _plan_with_prs(groups)
+        open_state = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        mock_state.side_effect = [open_state, {"state": "CLOSED"}]
+
+        result = runner.invoke(
+            app, ["merge", "--auto", "--notify", "https://example.invalid/hook"]
+        )
+
+        assert result.exit_code == 1
+        assert "pr-1 (CLOSED)" in result.output
+        assert "Closed before auto-merge completed (1): pr-1" in result.output
+        assert "Merge complete" not in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["exit_reason"] == "pr_closed"
+        assert payload["success"] is False
+        assert payload["merged"] == []
