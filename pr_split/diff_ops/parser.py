@@ -11,11 +11,28 @@ from .. import logs
 from ..exceptions import DiffParseError, GitOperationError
 from ..types_defs import DiffStats, FileSummary, HunkInfo
 
+# Flags that pin the diff to the exact unified format the parser and
+# reconstructor expect, regardless of the user's git config:
+#   --no-color / --no-ext-diff  plain unified output, never an external tool
+#   --no-renames                renames become delete + add; the reconstructor
+#                               resolves base content by path, so a rename
+#                               reported under its new name would fail
+#   -U3 and fixed prefixes      override diff.context and diff.mnemonicPrefix,
+#                               which would shift hunk positions and paths
+DIFF_ARGS: tuple[str, ...] = (
+    "--no-color",
+    "--no-ext-diff",
+    "--no-renames",
+    "-U3",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+)
+
 
 def extract_diff(dev_branch: str, base_branch: str) -> str:
     logger.info(logs.EXTRACTING_DIFF.format(base=base_branch, dev=dev_branch))
     result = subprocess.run(
-        ["git", "diff", f"{base_branch}...{dev_branch}"],
+        ["git", "diff", *DIFF_ARGS, f"{base_branch}...{dev_branch}"],
         capture_output=True,
         text=True,
     )

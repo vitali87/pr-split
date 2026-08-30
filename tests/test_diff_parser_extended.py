@@ -102,7 +102,17 @@ class TestExtractDiffSubprocess:
         result = extract_diff("feature", "main")
         assert result == EXTRACT_DIFF_SAMPLE
         mock_run.assert_called_once_with(
-            ["git", "diff", "main...feature"],
+            [
+                "git",
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-renames",
+                "-U3",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "main...feature",
+            ],
             capture_output=True,
             text=True,
         )
