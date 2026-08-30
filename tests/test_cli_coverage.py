@@ -537,3 +537,23 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestPrBodyFileListCap:
+    def test_long_file_lists_are_summarised(self) -> None:
+        from pr_split.cli import _PR_BODY_FILE_LIST_LIMIT, _build_pr_body
+
+        n = 2000
+        g = _group("pr-1", "mass rename", files=[f"pkg/mod_{i}/handler.py" for i in range(n)])
+        body = _build_pr_body(g, [g])
+        assert body.count("- `pkg/") == _PR_BODY_FILE_LIST_LIMIT
+        assert f"… and {n - _PR_BODY_FILE_LIST_LIMIT} more files" in body
+        assert len(body) < 65_536
+
+    def test_short_file_lists_are_complete(self) -> None:
+        from pr_split.cli import _build_pr_body
+
+        g = _group("pr-1", "t", files=["a.py", "b.py"])
+        body = _build_pr_body(g, [g])
+        assert "- `a.py`\n- `b.py`" in body
+        assert "more files" not in body
