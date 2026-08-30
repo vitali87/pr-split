@@ -107,7 +107,18 @@ def _count_tokens_openai(texts: list[str], *, model: str) -> int:
     return sum(len(enc.encode(t)) for t in texts)
 
 
+def _utf8_safe(text: str) -> str:
+    """Replace surrogate-escaped bytes so the text can be sent as JSON.
+
+    Diff text keeps undecodable bytes as surrogates so files round-trip on
+    disk; the HTTP clients encode request bodies as strict UTF-8, so the
+    prompt copy gets U+FFFD instead.
+    """
+    return text.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _count_tokens_anthropic(system, user, settings=settings)
@@ -169,6 +180,7 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
 
 
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _call_anthropic(system, user, settings=settings)

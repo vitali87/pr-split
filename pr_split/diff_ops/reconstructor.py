@@ -68,7 +68,7 @@ def _get_base_file_content(file_path: str, ref: str) -> str:
     )
     if result.returncode != 0:
         raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
-    return result.stdout.decode("utf-8")
+    return result.stdout.decode("utf-8", errors="surrogateescape")
 
 
 NO_NEWLINE_MARKER = "\\"
