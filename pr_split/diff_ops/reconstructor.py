@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import subprocess
 
 from loguru import logger
@@ -137,15 +138,22 @@ def materialize_group_files(
     return result
 
 
-_TARGET_MODE_RE = re.compile(r"^(?:new file mode|new mode) (\d{6})$", re.MULTILINE)
+# "new file mode"/"new mode" appear when the mode changes; an unchanged mode
+# is only visible on the "index <old>..<new> <mode>" line.
+_TARGET_MODE_RE = re.compile(
+    r"^(?:new file mode|new mode) (\d{6})$|^index [0-9a-f]+\.\.[0-9a-f]+ (\d{6})$",
+    re.MULTILINE,
+)
 
 
 def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
     """Map each file the group materializes to the mode the diff gives it.
 
-    unidiff parses ``old mode``/``new mode``/``new file mode`` headers into
-    ``patch_info`` only; nothing else applies them, so without this a
-    ``chmod +x`` that comes with a content change silently loses the bit.
+    unidiff parses ``old mode``/``new mode``/``new file mode`` and ``index``
+    headers into ``patch_info`` only; nothing else applies them, so without
+    this a ``chmod +x`` that comes with a content change silently loses the
+    bit and a symlink is written as a regular file. Regular files (100644,
+    100755) and symlinks (120000) are reported.
     """
     wanted = {assignment.file_path for assignment in group.assignments}
     modes: dict[str, int] = {}
@@ -158,10 +166,7 @@ def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
         match = _TARGET_MODE_RE.search(header)
         if not match:
             continue
-        mode = int(match.group(1), 8)
-        # Only regular files (100644 / 100755): a symlink's 120000 would mask
-        # to 000 and make the written file unreadable. Symlinks are written as
-        # plain files by the reconstructor, unchanged from before.
-        if mode & 0o170000 == 0o100000:
+        mode = int(match.group(1) or match.group(2), 8)
+        if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
             modes[patch_file.path] = mode
     return modes

@@ -527,12 +527,27 @@ class TestTargetFileModes:
         )
         assert target_file_modes(parsed, self._group("d.sh")) == {}
 
-    def test_symlink_mode_is_not_reported(self) -> None:
+    def test_new_symlink_mode_is_reported(self) -> None:
         parsed = parse_diff(
             "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n"
             "@@ -0,0 +1 @@\n+other.py\n\\ No newline at end of file\n"
         )
-        assert target_file_modes(parsed, self._group("link")) == {}
+        assert target_file_modes(parsed, self._group("link")) == {"link": 0o120000}
+
+    def test_retargeted_symlink_mode_comes_from_index_line(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/link b/link\nindex d90d485..5f35558 120000\n--- a/link\n+++ b/link\n"
+            "@@ -1 +1 @@\n-other.py\n\\ No newline at end of file\n"
+            "+missing.py\n\\ No newline at end of file\n"
+        )
+        assert target_file_modes(parsed, self._group("link")) == {"link": 0o120000}
+
+    def test_unchanged_regular_mode_from_index_line(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.py b/a.py\nindex 1111111..2222222 100644\n--- a/a.py\n+++ b/a.py\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.py")) == {"a.py": 0o100644}
 
     def test_mode_change_back_to_non_executable_is_reported(self) -> None:
         parsed = parse_diff(
