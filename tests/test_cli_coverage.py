@@ -27,6 +27,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
+from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PRSplitError
 from pr_split.schemas import Group, GroupAssignment
 from pr_split.types_defs import ForkPRInfo
@@ -285,6 +286,53 @@ class TestInteractiveEditRecomputesLoc:
     ) -> None:
         _interactive_edit([_group("pr-1", "a", files=["a.py"])], MagicMock())
         mock_recompute.assert_not_called()
+
+    @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
+    def test_destination_keeps_whole_file_loc_after_move(self, mock_prompt: MagicMock) -> None:
+        diff = (
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n"
+            "@@ -1,1 +1,3 @@\n x\n+a1\n+a2\n"
+            "@@ -20,1 +22,2 @@\n y\n+a3\n"
+            "diff --git a/b.py b/b.py\n--- a/b.py\n+++ b/b.py\n"
+            "@@ -1,2 +1,4 @@\n-b0\n+b1\n+b2\n+b3\n z\n"
+        )
+        parsed = parse_diff(diff)
+        groups = [
+            Group(
+                id="pr-1",
+                title="a",
+                description="a",
+                assignments=[
+                    GroupAssignment(
+                        file_path="a.py",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[0, 1],
+                    )
+                ],
+                estimated_loc=3,
+            ),
+            Group(
+                id="pr-2",
+                title="b",
+                description="b",
+                assignments=[
+                    GroupAssignment(
+                        file_path="b.py",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[],
+                    )
+                ],
+                estimated_loc=4,
+            ),
+        ]
+
+        result = _interactive_edit(groups, parsed)
+
+        by_id = {g.id: g for g in result}
+        assert by_id["pr-1"].estimated_loc == 1
+        assert by_id["pr-2"].estimated_loc == 6
+        assert by_id["pr-2"].estimated_added == 5
+        assert by_id["pr-2"].estimated_removed == 1
 
 
 # ---------------------------------------------------------------------------
