@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from pr_split.cli import (
     _create_branches_and_commits,
+    _create_single_branch_and_commit,
     _link_stacks,
     _push_and_create_prs,
     _render_dag,
@@ -236,6 +238,71 @@ class TestPushAndCreatePrs:
         assert mock_push.call_count == 6
         assert mock_create.call_count == 6
         assert max_concurrent_val >= 3
+
+
+class TestFailedBranchIsDeleted:
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", side_effect=PRSplitError("bad hunk"))
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_branch_deleted_when_materialization_fails(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        order: list[str] = []
+        mock_remove.side_effect = lambda path: order.append("remove_worktree")
+        mock_delete.side_effect = lambda branch: order.append(f"delete:{branch}")
+
+        with pytest.raises(PRSplitError, match="bad hunk"):
+            _create_single_branch_and_commit(
+                _group("pr-1", "t"), MagicMock(), "main", "base_sha", "ns", Path("/wt")
+            )
+
+        assert order == ["remove_worktree", "delete:pr-split/ns/pr-1"]
+        mock_commit.assert_not_called()
+
+    @patch("pr_split.cli.delete_branch", side_effect=PRSplitError("branch busy"))
+    @patch("pr_split.cli.commit_files_in_dir", side_effect=GitOperationError("commit failed"))
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_original_error_wins_when_cleanup_also_fails(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        with pytest.raises(GitOperationError, match="commit failed"):
+            _create_single_branch_and_commit(
+                _group("pr-1", "t"), MagicMock(), "main", "base_sha", "ns", Path("/wt")
+            )
+        mock_delete.assert_called_once_with("pr-split/ns/pr-1")
+
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_successful_branch_is_kept(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        record = _create_single_branch_and_commit(
+            _group("pr-1", "t"), MagicMock(), "main", "base_sha", "ns", Path("/wt")
+        )
+        assert record.branch_name == "pr-split/ns/pr-1"
+        mock_delete.assert_not_called()
 
 
 class TestCreateBranchesAndCommitsStacked:

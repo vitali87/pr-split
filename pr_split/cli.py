@@ -197,6 +197,7 @@ def _create_single_branch_and_commit(
 
     with _worktree_ref_lock:
         add_worktree(worktree_path, branch_name, start_point or merge_base_ref)
+    failed = False
     try:
         materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
         for file_path, content in materialized.items():
@@ -214,11 +215,22 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
+    except BaseException:
+        failed = True
+        raise
     finally:
         try:
             remove_worktree(worktree_path)
         except PRSplitError as exc:
             logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+        if failed:
+            # add_worktree created the branch; the caller only knows about
+            # branches that produced a BranchRecord, so drop this one here or
+            # it lingers (and blocks the next run's namespace).
+            try:
+                delete_branch(branch_name)
+            except PRSplitError as exc:
+                logger.warning(f"Could not clean up branch {branch_name}: {exc}")
 
     return BranchRecord(
         group_id=group.id,
