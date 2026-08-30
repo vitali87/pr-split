@@ -4,6 +4,7 @@ import json as json_mod
 import shutil
 import tempfile
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Generator
@@ -1118,11 +1119,29 @@ def _validate_webhook_url(value: str | None) -> str | None:
     return value
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects.
+
+    urllib re-issues a redirected POST as a body-less GET, so a moved
+    webhook URL would receive an empty request while the tool reports the
+    notification as sent. Surface the redirect instead so the user can
+    update the URL.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirected to {newurl}; update the webhook URL", headers, fp
+        )
+
+
+_webhook_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def _send_webhook(url: str, payload: dict[str, object]) -> None:
     try:
         data = json_mod.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _webhook_opener.open(req, timeout=10) as resp:
             resp.read()
         logger.info(f"Webhook notification sent to {url}")
     except Exception as exc:
