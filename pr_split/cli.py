@@ -216,7 +216,10 @@ def _create_single_branch_and_commit(
                 # target file); replace the link itself.
                 p.unlink()
             if mode is not None and stat.S_ISLNK(mode):
-                # Git stores a symlink's target as the blob content.
+                # Git stores a symlink's target as the blob content. A regular
+                # file being converted to a link is still on disk here.
+                if p.is_symlink() or p.exists():
+                    p.unlink()
                 p.symlink_to(content.rstrip("\n"))
                 continue
             p.write_text(content, encoding="utf-8")
