@@ -1067,7 +1067,11 @@ _AUTO_MERGE_POLL_INTERVAL = 10
 _AUTO_MERGE_POLL_TIMEOUT = 600
 
 
-def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[str]:
+def _poll_for_merged(
+    group_ids: list[str],
+    pr_map: dict[str, PRRecord],
+    fetch_errors: list[str] | None = None,
+) -> set[str]:
     pending = set(group_ids)
     actually_merged: set[str] = set()
     deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
@@ -1086,6 +1090,8 @@ def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[s
                 logger.warning(
                     f"PR #{pr_record.pr_number} ({gid}) {reason} while polling, aborting wait"
                 )
+                if state == "" and fetch_errors is not None:
+                    fetch_errors.append(gid)
                 pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
@@ -1218,8 +1224,13 @@ def merge_all(
             queued = [gid for gid in batch if gid not in merged and gid not in skipped_ids]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
-                actually_merged = _poll_for_merged(queued, pr_map)
+                poll_fetch_errors: list[str] = []
+                actually_merged = _poll_for_merged(queued, pr_map, poll_fetch_errors)
                 merged.extend(actually_merged)
+                for gid in poll_fetch_errors:
+                    fetch_errors.append(gid)
+                    skipped_ids.add(gid)
+                    skipped.append(f"{gid} (fetch error)")
 
         if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
             if not stopped:
@@ -1258,10 +1269,10 @@ def merge_all(
             if stopped
             else "incomplete_batch"
             if exited_early
-            else "unmerged_dependency"
-            if blocked
             else "fetch_error"
             if fetch_errors
+            else "unmerged_dependency"
+            if blocked
             else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]

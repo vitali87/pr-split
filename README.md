@@ -110,7 +110,7 @@ Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/
 pr-split merge
 ```
 
-Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed or any PR was left blocked, so re-run once the blocking PRs are ready.
+Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed, any PR was left blocked, or a PR's state could not be fetched from GitHub (check `gh auth status`), so re-run once the cause is resolved.
 
 Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 
