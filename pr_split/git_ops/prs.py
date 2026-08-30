@@ -74,6 +74,26 @@ def merge_pr(pr_number: int, *, auto: bool = False) -> None:
     logger.info(f"{'Queued' if auto else 'Merged'} PR #{pr_number}")
 
 
+_STACKED_PR_EDIT_REFUSED = "part of a stack"
+
+
+def retarget_pr(pr_number: int, base: str) -> bool:
+    """Point a stacked child PR at ``base`` once its parent has merged.
+
+    Returns False when GitHub refuses because the PR is in a native stack;
+    GitHub retargets those itself when the parent PR merges.
+    """
+    try:
+        _run_gh("pr", "edit", str(pr_number), "--base", base)
+    except GitOperationError as exc:
+        if _STACKED_PR_EDIT_REFUSED in str(exc).lower():
+            logger.info(logs.PR_RETARGET_NATIVE_STACK.format(number=pr_number))
+            return False
+        raise
+    logger.info(logs.PR_RETARGETED.format(number=pr_number, base=base))
+    return True
+
+
 def close_pr(pr_number: int) -> None:
     _run_gh("pr", "close", str(pr_number))
     logger.info(logs.PR_CLOSED.format(number=pr_number))
