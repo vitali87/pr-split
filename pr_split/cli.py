@@ -63,7 +63,7 @@ from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
-from .planner import plan_split, validate_coverage, validate_plan
+from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .schemas import (
     BranchRecord,
     GitState,
@@ -785,6 +785,11 @@ def split(
             partition_strategy=partition_strategy,
         )
     except (ValidationError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        validate_no_binary_files(parsed_diff)
+    except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
