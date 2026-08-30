@@ -540,3 +540,10 @@ class TestTargetFileModes:
             "--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-x\n+y\n"
         )
         assert target_file_modes(parsed, self._group("run.sh")) == {"run.sh": 0o100644}
+
+    def test_file_truncated_to_empty_keeps_its_new_mode(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.sh b/a.sh\nold mode 100644\nnew mode 100755\n"
+            "--- a/a.sh\n+++ b/a.sh\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.sh")) == {"a.sh": 0o100755}

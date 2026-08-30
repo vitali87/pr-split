@@ -150,7 +150,9 @@ def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
     wanted = {assignment.file_path for assignment in group.assignments}
     modes: dict[str, int] = {}
     for patch_file in parsed_diff.patch_set:
-        if patch_file.path not in wanted or patch_file.is_removed_file:
+        # target_file, not is_removed_file: the latter is also true for a file
+        # truncated to empty, which still needs its mode applied.
+        if patch_file.path not in wanted or patch_file.target_file == "/dev/null":
             continue
         header = "".join(str(line) for line in patch_file.patch_info or [])
         match = _TARGET_MODE_RE.search(header)
