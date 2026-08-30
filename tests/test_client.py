@@ -4,6 +4,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import anthropic
 import pytest
 
 from pr_split.config import Settings
@@ -546,6 +547,16 @@ class TestCountTokensAnthropic:
         result = _count_tokens_anthropic("sys", "usr", settings=settings)
         assert result == 42
         mock_client.messages.count_tokens.assert_called_once()
+
+    @patch("pr_split.planner.client.anthropic.Anthropic")
+    def test_api_failure_is_an_llm_error(self, mock_cls: MagicMock) -> None:
+        mock_client = mock_cls.return_value
+        mock_client.messages.count_tokens.side_effect = anthropic.APIConnectionError(
+            request=MagicMock()
+        )
+        settings = _make_settings(Provider.ANTHROPIC)
+        with pytest.raises(LLMError, match="Could not count prompt tokens"):
+            _count_tokens_anthropic("sys", "usr", settings=settings)
 
 
 # ---------------------------------------------------------------------------
