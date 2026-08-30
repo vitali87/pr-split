@@ -131,6 +131,11 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
     except anthropic.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
     if response.stop_reason != "tool_use":
+        # A max_tokens stop means the tool input was cut off mid-plan.
+        # Accepting it would silently drop groups and let
+        # assign_uncovered_hunks paper over the gap, so fail and let the
+        # chunk retry loop / caller handle it. Other stop reasons without a
+        # tool block are reported below as "no tool_use block".
         stop_reason = getattr(response, "stop_reason", "unknown")
         keys: list[str] = []
         for block in getattr(response, "content", []):
@@ -138,6 +143,8 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
                 keys = list(block.input.keys())
                 break
         logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
+        if stop_reason == "max_tokens":
+            raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"stop_reason={stop_reason}"))
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
@@ -156,6 +163,12 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
         )
     except openai.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", None) or "unknown"
+        logger.warning(logs.LLM_OUTPUT_INCOMPLETE.format(status=status, reason=reason))
+        raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"status={status}, reason={reason}"))
     for item in response.output:
         if item.type == "function_call" and item.name == SPLIT_TOOL_NAME:
             try:

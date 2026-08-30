@@ -641,7 +641,7 @@ class TestCallAnthropic:
             _call_anthropic("sys", "usr", settings=settings)
 
     @patch("pr_split.planner.client.anthropic.Anthropic")
-    def test_stop_reason_not_tool_use_still_succeeds(self, mock_cls: MagicMock) -> None:
+    def test_stop_reason_not_tool_use_raises(self, mock_cls: MagicMock) -> None:
         from anthropic.types.beta import BetaToolUseBlock
 
         tool_block = BetaToolUseBlock(
@@ -656,8 +656,8 @@ class TestCallAnthropic:
         )
         mock_cls.return_value.beta.messages.create.return_value = mock_response
         settings = _make_settings(Provider.ANTHROPIC)
-        result = _call_anthropic("sys", "usr", settings=settings)
-        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        with pytest.raises(LLMError, match="cut off.*stop_reason=max_tokens"):
+            _call_anthropic("sys", "usr", settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -986,3 +986,34 @@ class TestPlanSplitWithLlm:
         result = _plan_split_with_llm(parsed, settings)
         assert len(result) == 1
         mock_chunked.assert_called_once()
+
+
+class TestOpenAIIncompleteResponse:
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_incomplete_status_raises(self, mock_cls: MagicMock) -> None:
+        item = SimpleNamespace(
+            type="function_call",
+            name=SPLIT_TOOL_NAME,
+            arguments=json.dumps({"groups": _SAMPLE_RAW_GROUPS}),
+        )
+        mock_response = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            output=[item],
+        )
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        with pytest.raises(LLMError, match="cut off.*max_output_tokens"):
+            _call_openai("sys", "usr", settings=settings)
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_completed_status_is_accepted(self, mock_cls: MagicMock) -> None:
+        item = SimpleNamespace(
+            type="function_call",
+            name=SPLIT_TOOL_NAME,
+            arguments=json.dumps({"groups": _SAMPLE_RAW_GROUPS}),
+        )
+        mock_response = SimpleNamespace(status="completed", output=[item])
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        assert _call_openai("sys", "usr", settings=settings)["groups"] == _SAMPLE_RAW_GROUPS
