@@ -23,7 +23,7 @@ def load_plan() -> PlanFile:
         raise PRSplitError(ErrorMsg.NO_PLAN())
     try:
         plan_file = PlanFile.model_validate_json(plan_path.read_text())
-    except (OSError, ValidationError) as exc:
+    except (OSError, UnicodeDecodeError, ValidationError) as exc:
         raise PRSplitError(ErrorMsg.PLAN_LOAD_FAILED(path=plan_path, detail=exc)) from exc
     logger.info(logs.PLAN_LOADED.format(count=len(plan_file.plan.groups), path=plan_path))
     return plan_file

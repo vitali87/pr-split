@@ -129,6 +129,15 @@ class TestPlanStoreCorruptFiles:
             load_plan()
         assert "pr-split split" in str(excinfo.value)
 
+    def test_invalid_utf8_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").write_bytes(b'{"plan": "\xff\xfe"}')
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
     def test_read_error_raises_pr_split_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
