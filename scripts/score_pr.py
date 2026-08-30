@@ -86,17 +86,19 @@ def main() -> None:
         _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
         return
 
-    # Create local branch refs for pr-split
-    _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
-    _run(["git", "branch", "-f", head_branch, local_head])
+    # Pass the fetched refs straight to pr-split. Materialising them as local
+    # branches named after the PR's branches is unsafe: a fork PR opened from
+    # the fork's "main" has head_branch == base_branch, so the second
+    # "git branch -f" clobbered the base ref and the diff came out empty.
+    base_ref = f"origin/{base_branch}"
 
     # Run pr-split in dry-run mode
     cmd = [
         "pr-split",
         "split",
-        head_branch,
+        local_head,
         "--base",
-        base_branch,
+        base_ref,
         "--partition-strategy",
         strategy,
         "--priority",
