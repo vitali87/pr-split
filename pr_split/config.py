@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     max_loc: int = Field(default=DEFAULT_MAX_LOC, gt=0)
     strict_loc_bounds: bool = DEFAULT_STRICT_LOC_BOUNDS
     max_refinement_iterations: int = Field(default=DEFAULT_MAX_REFINEMENT_ITERATIONS, ge=0)
-    cp_sat_timeout: float = DEFAULT_CP_SAT_TIMEOUT_SECONDS
+    cp_sat_timeout: float = Field(default=DEFAULT_CP_SAT_TIMEOUT_SECONDS, gt=0)
     priority: Priority = Priority.ORTHOGONAL
     chunk_strategy: ChunkStrategy = DEFAULT_CHUNK_STRATEGY
     partition_strategy: PartitionStrategy = DEFAULT_PARTITION_STRATEGY
