@@ -85,28 +85,28 @@ console = Console()
 def _render_dag(groups: list[Group]) -> str:
     roots = [g for g in groups if not g.depends_on]
     tree = Tree("Split Plan")
-    # A group with several parents is rendered once, under the last parent
-    # to be visited, so a diamond does not show its merge node (and every
-    # subtree below it) once per parent.
-    rendered: set[str] = set()
-    last_parent = {g.id: g.depends_on[-1] for g in groups if g.depends_on}
+    known = {g.id for g in groups}
+    # A group with several parents is drawn in full under whichever parent is
+    # visited last, so every "(see below)" stub really does point downward and
+    # the subtree appears exactly once.
+    done: set[str] = set()
 
     def _add_children(parent_tree: Tree, parent_id: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for child in children:
-            if len(child.depends_on) > 1 and last_parent[child.id] != parent_id:
+            pending = [d for d in child.depends_on if d != parent_id and d in known - done]
+            if pending:
                 parent_tree.add(f"{child.id}: {child.title} (see below)")
                 continue
-            if child.id in rendered:
-                continue
-            rendered.add(child.id)
             deps_label = ", ".join(child.depends_on)
             branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
             _add_children(branch, child.id)
+            done.add(child.id)
 
     for root in roots:
         root_branch = tree.add(f"{root.id}: {root.title}")
         _add_children(root_branch, root.id)
+        done.add(root.id)
 
     with console.capture() as capture:
         console.print(tree)
@@ -116,22 +116,20 @@ def _render_dag(groups: list[Group]) -> str:
 def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     roots = [g for g in groups if not g.depends_on]
     lines: list[str] = []
-    rendered: set[str] = set()
-    last_parent = {g.id: g.depends_on[-1] for g in groups if g.depends_on}
+    known = {g.id for g in groups}
+    done: set[str] = set()
 
     def _add_children(parent_id: str, prefix: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for i, child in enumerate(children):
             is_last = i == len(children) - 1
             connector = "\u2514\u2500\u2500" if is_last else "\u251c\u2500\u2500"
-            if len(child.depends_on) > 1 and last_parent[child.id] != parent_id:
-                # Merge node: drawn in full under its last parent only, so the
-                # subtree and the "<-- this PR" marker appear exactly once.
+            pending = [d for d in child.depends_on if d != parent_id and d in known - done]
+            if pending:
+                # Another parent is still to be drawn; the full node (with its
+                # subtree and the "<-- this PR" marker) follows under it.
                 lines.append(f"{prefix}{connector} {child.id}: {child.title} (see below)")
                 continue
-            if child.id in rendered:
-                continue
-            rendered.add(child.id)
             marker = "  <-- this PR" if child.id == current_id else ""
             also = ""
             if len(child.depends_on) > 1:
@@ -140,11 +138,13 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
             lines.append(f"{prefix}{connector} {child.id}: {child.title}{also}{marker}")
             extension = "    " if is_last else "\u2502   "
             _add_children(child.id, prefix + extension)
+            done.add(child.id)
 
     for root in roots:
         marker = "  <-- this PR" if root.id == current_id else ""
         lines.append(f"{root.id}: {root.title}{marker}")
         _add_children(root.id, "")
+        done.add(root.id)
 
     tree_block = "\n".join(lines)
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"

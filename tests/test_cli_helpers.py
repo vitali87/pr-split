@@ -602,3 +602,29 @@ class TestRenderDagMultiParent:
         assert result.count("pr-4: merge (depends on: pr-2, pr-3)") == 1
         assert result.count("pr-4: merge (see below)") == 1
         assert result.count("pr-5: after merge") == 1
+
+    def test_stub_always_precedes_full_node(self) -> None:
+        # Traversal visits pr-4's branch before pr-2's even though pr-2 is the
+        # last-listed dependency of pr-5; the stub must still point downward.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-4", "short", depends_on=["pr-1"]),
+            _group("pr-6", "mid", depends_on=["pr-1"]),
+            _group("pr-2", "long", depends_on=["pr-6"]),
+            _group("pr-5", "merge", depends_on=["pr-2", "pr-4"]),
+        ]
+        for text, full_label in (
+            (_render_dag_markdown(groups, "pr-5"), "pr-5: merge (also depends on: pr-4)"),
+            (_render_dag(groups), "pr-5: merge (depends on: pr-2, pr-4)"),
+        ):
+            assert text.index("pr-5: merge (see below)") < text.index(full_label)
+            assert text.count("pr-5: merge (see below)") == 1
+            assert text.count(full_label) == 1
+
+    def test_unknown_dependency_does_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "ghost"]),
+        ]
+        text = _render_dag_markdown(groups, "pr-2")
+        assert "pr-2: child (also depends on: ghost)  <-- this PR" in text
