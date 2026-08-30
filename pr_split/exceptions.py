@@ -31,6 +31,10 @@ class ErrorMsg(StrEnum):
         "Diff contains binary files, which cannot be split into hunks: {files}."
         " Commit them separately and re-run"
     )
+    HUNKLESS_FILES_UNSUPPORTED = (
+        "Diff contains files with no text hunks (mode-only or empty changes), which"
+        " cannot be assigned to a sub-PR: {files}. Commit them separately and re-run"
+    )
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value
