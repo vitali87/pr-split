@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from pr_split.git_ops.branches import (
     delete_branch,
     derive_split_namespace,
     is_worktree_clean,
+    local_branch_exists,
     merge_base,
     push_branch,
     remove_worktree,
@@ -254,28 +256,37 @@ class TestRunGitInDir:
 
 
 class TestAddWorktree:
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=False)
-    def test_adds_worktree(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=False)
+    def test_adds_worktree(
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.return_value = ""
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
         mock_git.assert_called_once_with(
             "worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123"
         )
+        mock_forget.assert_called_once_with("/tmp/wt", "pr-split/ns/pr-1")
 
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=True)
     def test_deletes_existing_branch_first(
-        self, mock_exists: MagicMock, mock_git: MagicMock
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
     ) -> None:
         mock_git.side_effect = ["oldsha", "", ""]
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
         assert mock_git.call_count == 3
+        mock_git.assert_any_call("rev-parse", "refs/heads/pr-split/ns/pr-1")
         mock_git.assert_any_call("branch", "-D", "pr-split/ns/pr-1")
 
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
-    def test_restores_branch_on_failure(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=True)
+    def test_restores_branch_on_failure(
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = [
             "oldsha",
             "",
@@ -314,3 +325,135 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestAddWorktreeStaleEntries:
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        return repo
+
+    def test_killed_run_with_directory_still_on_disk_can_be_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = tmp_path / "run1" / "g2"
+        first.parent.mkdir()
+        add_worktree(str(first), "pr-split/ns/g2", "main")
+        # A SIGKILL leaves the old temporary worktree directory in place and
+        # the next run uses a fresh temporary directory.
+        assert first.exists()
+
+        second = tmp_path / "run2" / "g2"
+        second.parent.mkdir()
+        add_worktree(str(second), "pr-split/ns/g2", "main")
+
+        assert (second / ".git").exists()
+        assert not first.exists()
+
+    def test_registration_locked_by_an_interrupted_add_is_cleared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = tmp_path / "run1" / "g4"
+        first.parent.mkdir()
+        add_worktree(str(first), "pr-split/ns/g4", "main")
+        # git leaves this lock in place when a `worktree add` is killed.
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", "initializing", str(first)],
+            cwd=repo,
+            check=True,
+        )
+
+        second = tmp_path / "run2" / "g4"
+        second.parent.mkdir()
+        add_worktree(str(second), "pr-split/ns/g4", "main")
+
+        assert (second / ".git").exists()
+
+    def test_killed_run_whose_directory_vanished_can_be_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = str(tmp_path / "wt1")
+        add_worktree(first, "pr-split/ns/g2", "main")
+        shutil.rmtree(first)
+
+        add_worktree(str(tmp_path / "wt2"), "pr-split/ns/g2", "main")
+
+        assert (tmp_path / "wt2" / ".git").exists()
+
+    def test_symlinked_path_is_matched_by_realpath(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        add_worktree(str(link / "wt"), "pr-split/ns/g3", "main")
+
+        add_worktree(str(link / "wt"), "pr-split/ns/g3", "main")
+
+        assert (real / "wt" / ".git").exists()
+
+    def test_other_live_worktrees_are_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        other = tmp_path / "other"
+        add_worktree(str(other), "pr-split/ns/other", "main")
+
+        add_worktree(str(tmp_path / "mine"), "pr-split/ns/mine", "main")
+
+        assert (other / ".git").exists()
+        assert (repo / ".git").exists()
+
+    def test_registered_path_that_still_exists_is_replaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        path = str(tmp_path / "wt")
+        add_worktree(path, "pr-split/ns/g1", "main")
+
+        add_worktree(path, "pr-split/ns/g1", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+    def test_tag_with_the_branch_name_does_not_confuse_the_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "tag", "pr-split/ns/g5"], cwd=repo, check=True)
+        assert branch_exists("pr-split/ns/g5")
+        assert not local_branch_exists("pr-split/ns/g5")
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g5", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()

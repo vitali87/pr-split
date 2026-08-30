@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 
@@ -97,10 +98,62 @@ def create_group_branch(group_id: str, base: str, namespace: str) -> str:
     return branch_name
 
 
+def local_branch_exists(branch: str) -> bool:
+    """True only for a local branch head (``branch_exists`` also matches tags/SHAs)."""
+    return branch_exists(f"refs/heads/{branch}")
+
+
+def _registered_worktrees() -> list[tuple[str, str | None]]:
+    """(realpath, branch ref or None) for every registered worktree, main first."""
+    try:
+        listing = run_git("worktree", "list", "--porcelain")
+    except GitOperationError:
+        return []
+    entries: list[tuple[str, str | None]] = []
+    path: str | None = None
+    branch: str | None = None
+    for line in [*listing.splitlines(), ""]:
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+        elif line.startswith("branch "):
+            branch = line[len("branch ") :]
+        elif not line and path is not None:
+            entries.append((os.path.realpath(path), branch))
+            path, branch = None, None
+    return entries
+
+
+def _forget_stale_worktrees(path: str, branch_name: str) -> None:
+    """Drop worktree registrations a killed run left behind.
+
+    ``git branch -D`` refuses a branch that a registered worktree still has
+    checked out. A run killed mid-way leaves its temporary worktree (and its
+    registration) in place, so the next run could never reuse the branch
+    without a manual ``git worktree prune``/``remove``. Registrations that
+    hold this branch, or sit at the requested path, are removed; the main
+    worktree is never touched.
+    """
+    run_git("worktree", "prune")
+    entries = _registered_worktrees()
+    if not entries:
+        return
+    main_path = entries[0][0]
+    wanted_path = os.path.realpath(path)
+    wanted_ref = f"refs/heads/{branch_name}"
+    for registered_path, ref in entries[1:]:
+        if registered_path == main_path:
+            continue
+        if ref == wanted_ref or registered_path == wanted_path:
+            # Double --force also overrides the "initializing" lock a run
+            # killed in the middle of `git worktree add` leaves behind.
+            run_git("worktree", "remove", "--force", "--force", registered_path)
+
+
 def add_worktree(path: str, branch_name: str, start_point: str) -> None:
+    _forget_stale_worktrees(path, branch_name)
     prev_sha: str | None = None
-    if branch_exists(branch_name):
-        prev_sha = run_git("rev-parse", branch_name)
+    if local_branch_exists(branch_name):
+        prev_sha = run_git("rev-parse", f"refs/heads/{branch_name}")
         run_git("branch", "-D", branch_name)
     try:
         run_git("worktree", "add", "-b", branch_name, path, start_point)
