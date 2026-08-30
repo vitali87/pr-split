@@ -96,9 +96,14 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number)) from exc
 
-    pr_data: dict[str, object] = json.loads(raw)
-    head = pr_data["head"]
-    base = pr_data["base"]
+    try:
+        pr_data = json.loads(raw)
+        head = pr_data["head"]
+        base = pr_data["base"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GitOperationError(
+            ErrorMsg.PR_RESPONSE_INVALID(number=pr_number, detail=str(exc))
+        ) from exc
 
     if not isinstance(head, dict) or not isinstance(base, dict):
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))

@@ -22,6 +22,7 @@ class ErrorMsg(StrEnum):
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
     PR_NOT_FOUND = "PR #{number} not found"
+    PR_RESPONSE_INVALID = "Unexpected response from GitHub for PR #{number}: {detail}"
     PR_NOT_FROM_FORK = (
         "PR #{number} is not from a fork; pass its head branch name instead of the PR number"
     )
