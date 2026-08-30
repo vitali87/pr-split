@@ -32,7 +32,8 @@ def _skip(reason: str) -> None:
 
 
 def _md_escape(s: str) -> str:
-    return s.replace("|", "\\|")
+    # A table cell must stay on one line and must not contain a bare pipe.
+    return " ".join(s.splitlines()).replace("|", "\\|")
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -47,6 +48,10 @@ def _parse_int_env(name: str, default: int) -> int:
 def main() -> None:
     max_loc = _parse_int_env("MAX_LOC", 400)
     min_loc_raw = os.environ.get("MIN_LOC", "")
+    if min_loc_raw:
+        # Validate like MAX_LOC so a typo is reported as such instead of as
+        # a generic "pr-split failed to generate a plan".
+        min_loc_raw = str(_parse_int_env("MIN_LOC", 0))
     strategy = os.environ.get("PARTITION_STRATEGY", "graph")
     priority = os.environ.get("PRIORITY", "orthogonal")
     threshold = _parse_int_env("THRESHOLD_GROUPS", 2)
@@ -170,7 +175,7 @@ def main() -> None:
         lines.append("|-------|-------|------|------------|-------|")
         for g in groups:
             files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
-            deps = ", ".join(g.get("depends_on", [])) or "—"
+            deps = ", ".join(_md_escape(d) for d in g.get("depends_on", [])) or "—"
             diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
             title = _md_escape(g["title"])
             gid = _md_escape(g["id"])
