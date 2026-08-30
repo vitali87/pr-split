@@ -250,14 +250,14 @@ def _merge_chunk_groups(accumulated: list[Group], chunk_groups: list[Group]) -> 
             # A later chunk may assign more hunks of a file this group already
             # holds. Keep one assignment per path: materialization writes a
             # file once per assignment, so duplicates would drop hunks.
-            by_path = {a.file_path: a for a in existing.assignments}
-            for incoming in cg.assignments:
-                if incoming.file_path in by_path:
-                    by_path[incoming.file_path] = _merge_assignment(
-                        by_path[incoming.file_path], incoming
+            by_path: dict[str, GroupAssignment] = {}
+            for assignment in [*existing.assignments, *cg.assignments]:
+                if assignment.file_path in by_path:
+                    by_path[assignment.file_path] = _merge_assignment(
+                        by_path[assignment.file_path], assignment
                     )
                 else:
-                    by_path[incoming.file_path] = incoming
+                    by_path[assignment.file_path] = assignment
             existing.assignments = list(by_path.values())
             for dep in cg.depends_on:
                 if dep not in existing.depends_on:

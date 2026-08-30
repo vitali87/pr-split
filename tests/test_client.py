@@ -1063,3 +1063,28 @@ class TestMergeChunkGroupsSameFile:
             ("a.py", [0]),
             ("b.py", [2]),
         ]
+
+    def test_pre_existing_duplicates_in_accumulated_group_are_kept(self) -> None:
+        def _pa(path: str, hunks: list[int]) -> GroupAssignment:
+            return GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=hunks,
+            )
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("g.py", [0])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("f.py", [0, 1]),
+            ("g.py", [0]),
+        ]
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]
