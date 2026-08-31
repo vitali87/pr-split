@@ -110,5 +110,9 @@ def commit_files_in_dir(
         raise GitOperationError("commit_files_in_dir called with no file paths")
     run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
     author_args = ("--author", author) if author else ()
-    run_git_in_dir(cwd, "commit", "-m", message, *author_args)
+    # The content is a subset of commits already accepted on the dev
+    # branch; a pre-commit/commit-msg hook (husky, pre-commit, lint-staged)
+    # run inside the throwaway worktree has no node_modules/venv and can
+    # only fail, so skip it.
+    run_git_in_dir(cwd, "commit", "--no-verify", "-m", message, *author_args)
     return run_git_in_dir(cwd, "rev-parse", "HEAD")
