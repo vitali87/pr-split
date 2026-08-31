@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,3 +257,51 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+def _git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI runners have no git identity configured; commits need one."""
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(var, "t")
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "t@x")
+
+
+class TestCommitsSkipHooks:
+    @patch("pr_split.git_ops.branches.run_git_in_dir", return_value="sha")
+    def test_commit_files_in_dir_passes_no_verify(self, mock_git: MagicMock) -> None:
+        commit_files_in_dir("/wt", ["a.py"], "msg", author="A <a@x>")
+        commit_call = next(c for c in mock_git.call_args_list if c.args[1] == "commit")
+        assert commit_call.args == (
+            "/wt",
+            "commit",
+            "--no-verify",
+            "-m",
+            "msg",
+            "--author",
+            "A <a@x>",
+        )
+
+    def test_failing_pre_commit_hook_does_not_block_the_sub_pr_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho 'husky: node_modules missing' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        (repo / "a.py").write_text("x\n")
+
+        sha = commit_files_in_dir(str(repo), ["a.py"], "feat: a", author="Test <t@x>")
+
+        assert len(sha) == 40
+        log = subprocess.run(
+            ["git", "log", "--format=%s", "-1"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert log.strip() == "feat: a"
