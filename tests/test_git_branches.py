@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -256,3 +258,29 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestDeriveSplitNamespaceRefSafety:
+    def test_fork_namespace_includes_user(self) -> None:
+        assert derive_split_namespace("user:feat/x") == "user-feat-x"
+        assert derive_split_namespace("user:feat/x") != derive_split_namespace("feat/x")
+
+    def test_all_invalid_characters_fall_back_to_hash(self) -> None:
+        result = derive_split_namespace("---")
+        assert re.fullmatch(r"[0-9a-f]{8}", result)
+        assert derive_split_namespace("---") == result
+        assert derive_split_namespace("user:---") == "user"
+
+    def test_double_dots_and_edge_dots_are_removed(self) -> None:
+        result = derive_split_namespace(".feat..x.")
+        assert ".." not in result
+        assert not result.startswith(".")
+        assert not result.endswith(".")
+
+    def test_namespace_is_a_valid_ref_component(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        for arg in ("---", "user:---", ".feat..x.", "#42", "a b/c", "weird@chars!"):
+            ref = f"refs/heads/pr-split/{derive_split_namespace(arg)}/pr-1"
+            subprocess.run(
+                ["git", "check-ref-format", ref], cwd=tmp_path, check=True, capture_output=True
+            )
