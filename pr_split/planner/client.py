@@ -421,7 +421,7 @@ def _plan_split_with_llm(
 ) -> list[Group]:
     diff_stats = parsed_diff.stats
 
-    system = build_system_prompt(settings.priority, settings.max_loc)
+    system = build_system_prompt(settings.priority, settings.max_loc, settings.min_loc)
     user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
