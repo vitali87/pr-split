@@ -44,6 +44,7 @@ CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups}
 LLM_OUTPUT_TRUNCATED = (
     "LLM output truncated (stop_reason: {stop_reason}), keys in partial output: {keys}"
 )
+LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
     "Group '{group}': invalid hunk index {index} for {file} (max: {max}), skipping"

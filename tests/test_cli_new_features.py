@@ -235,6 +235,61 @@ class TestHandleLocBoundWarnings:
         mock_warning.assert_not_called()
 
 
+class TestSplitBranchCreationFailure:
+    @patch("pr_split.cli.save_plan")
+    @patch(
+        "pr_split.cli._create_branches_and_commits",
+        side_effect=PRSplitError("2 branch(es) failed"),
+    )
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_reports_branch_creation_failure_cleanly(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_plan_exists: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "2 branch(es) failed" in result.output
+        mock_save_plan.assert_not_called()
+
+
 class TestSplitCliEnvVars:
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")
@@ -389,6 +444,159 @@ class TestSplitCliEnvVars:
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
         mock_save_plan.assert_not_called()
+
+
+def _plan_with_prs(groups: list[Group]) -> MagicMock:
+    plan_file = MagicMock()
+    plan_file.plan.groups = groups
+    plan_file.git_state.prs = [
+        PRRecord(group_id=g.id, pr_number=index + 1, pr_url=f"url{index + 1}")
+        for index, g in enumerate(groups)
+    ]
+    return plan_file
+
+
+class TestMergeBlockedDependencies:
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_child_of_skipped_parent_is_not_merged(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "parent", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = lambda n: (
+            {"state": "OPEN", "isDraft": True, "reviewDecision": "APPROVED"}
+            if n == 1
+            else {"state": "OPEN", "isDraft": False, "reviewDecision": "APPROVED"}
+        )
+
+        result = runner.invoke(app, ["merge", "--notify", "https://example.invalid/hook"])
+
+        mock_merge.assert_not_called()
+        assert result.exit_code == 1
+        assert "pr-2 (dependency pr-1 not merged)" in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["success"] is False
+        assert payload["exit_reason"] == "unmerged_dependency"
+
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_child_of_group_without_pr_is_not_merged(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "parent", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        plan_file = _plan_with_prs(groups)
+        plan_file.git_state.prs = plan_file.git_state.prs[1:]
+        mock_load.return_value = plan_file
+        mock_state.return_value = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+
+        result = runner.invoke(app, ["merge"])
+
+        mock_merge.assert_not_called()
+        assert result.exit_code == 1
+        assert "pr-2 (dependency pr-1 not merged)" in result.output
+
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_independent_subtree_still_merges(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "draft parent", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+            _group("pr-3", "independent", files=["c.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = lambda n: {
+            "state": "OPEN",
+            "isDraft": n == 1,
+            "reviewDecision": None,
+        }
+
+        result = runner.invoke(app, ["merge"])
+
+        mock_merge.assert_called_once_with(3, auto=False)
+        assert result.exit_code == 1
+        assert "Merged (1): pr-3" in result.output
+
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_already_merged_child_under_unmerged_parent_is_not_blocked(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "draft parent", files=["a.py"]),
+            _group("pr-2", "child already merged", depends_on=["pr-1"], files=["b.py"]),
+            _group("pr-3", "grandchild", depends_on=["pr-2"], files=["c.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        states = {
+            1: {"state": "OPEN", "isDraft": True, "reviewDecision": None},
+            2: {"state": "MERGED", "isDraft": False, "reviewDecision": None},
+            3: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+        }
+        mock_state.side_effect = lambda n: states[n]
+
+        result = runner.invoke(app, ["merge"])
+
+        mock_merge.assert_called_once_with(3, auto=False)
+        assert "pr-2 (dependency" not in result.output
+        assert "Merged (2): pr-2, pr-3" in result.output
+
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_child_of_merged_parent_merges(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "parent", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.return_value = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+
+        result = runner.invoke(app, ["merge"])
+
+        assert [c.args[0] for c in mock_merge.call_args_list] == [1, 2]
+        assert result.exit_code == 0
 
 
 class TestMergeRejectsMalformedSavedPlan:
