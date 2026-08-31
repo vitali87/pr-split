@@ -431,6 +431,49 @@ class TestStackedBatchArgsMergeNode:
             if merged.id == "pr-3"
         )
 
+    def test_grandchild_carries_grandparent_hunks_in_shared_file(self) -> None:
+        # A edits f.py hunk 0; B (child of A) edits only g.py; C (child of B)
+        # edits f.py hunk 1. C is rebuilt from the merge base, so it must
+        # carry A's hunk 0 or its commit reverts A's change.
+        a = _group("pr-a", "a")
+        a.assignments = [
+            GroupAssignment(
+                file_path="f.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        b = _group("pr-b", "b", ["pr-a"])
+        b.assignments = [
+            GroupAssignment(
+                file_path="g.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        c = _group("pr-c", "c", ["pr-b"])
+        c.assignments = [
+            GroupAssignment(
+                file_path="f.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[1],
+            )
+        ]
+        groups = [a, b, c]
+        batches = _stacked_batch_args(
+            PlanDAG(groups),
+            {g.id: g for g in groups},
+            {g.id: f"pr-split/ns/{g.id}" for g in groups},
+            "main",
+            "base_sha",
+            {"f.py": 2, "g.py": 1},
+        )
+        merged_c, base, start = next(
+            (m, bs, st) for batch in batches for m, bs, st in batch if m.id == "pr-c"
+        )
+        assert {a.file_path: a.hunk_indices for a in merged_c.assignments} == {"f.py": [0, 1]}
+        assert (base, start) == ("pr-split/ns/pr-b", "pr-split/ns/pr-b")
+
     def test_merge_node_carries_both_parents_changes(self) -> None:
         merged, _, _ = self._merge_node_args()
         assert {a.file_path for a in merged.assignments} == {

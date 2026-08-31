@@ -289,14 +289,20 @@ def _stacked_batch_args(
     merge_base_ref: str,
     hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
-    effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
         batch_args: list[tuple[Group, str, str]] = []
         for gid in batch:
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Files are rebuilt from the merge base, so a child must carry
+                # every ancestor's hunks for the files it touches - not only
+                # its direct parent's - or it silently reverts them.
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
@@ -315,7 +321,6 @@ def _stacked_batch_args(
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
-            effective[gid] = merged
             batch_args.append((merged, group_base, start_point))
         yield batch_args
 
