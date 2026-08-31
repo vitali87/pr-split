@@ -51,10 +51,20 @@ def push_branch(branch: str) -> None:
 
 
 def delete_branch(branch: str, *, remote: bool = False) -> None:
-    run_git("branch", "-D", branch)
-    logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    local_error: GitOperationError | None = None
+    try:
+        run_git("branch", "-D", branch)
+        logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    except GitOperationError as exc:
+        if not remote:
+            raise
+        # The local branch may be checked out or already gone; still remove
+        # the remote branch so the cleanup is not left half done.
+        local_error = exc
     if remote:
         run_git("push", "origin", "--delete", branch)
+    if local_error is not None:
+        raise local_error
 
 
 def merge_base(ref_a: str, ref_b: str) -> str:
