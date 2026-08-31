@@ -26,7 +26,7 @@ from pr_split.cli import (
     app,
 )
 from pr_split.constants import AssignmentType
-from pr_split.exceptions import PRSplitError
+from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.schemas import Group, GroupAssignment
 from pr_split.types_defs import ForkPRInfo
 
@@ -68,6 +68,66 @@ class TestValidateInputs:
         self, mock_be: MagicMock, mock_auth: MagicMock, mock_clean: MagicMock
     ) -> None:
         _validate_inputs("feature", "main")
+
+    @patch("pr_split.cli.check_gh_stack", return_value=False)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_stacked_requires_gh_stack(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_stack: MagicMock,
+    ) -> None:
+        with pytest.raises(typer.Exit):
+            _validate_inputs("feature", "main", stacked=True)
+
+    @patch("pr_split.cli.check_gh_stack", side_effect=GitOperationError("auth rejected"))
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_stacked_gh_failure_reports_real_error(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_stack: MagicMock,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        with pytest.raises(typer.Exit):
+            _validate_inputs("feature", "main", stacked=True)
+        out = capsys.readouterr().out
+        assert "auth rejected" in out
+        assert "gh extension install" not in out
+
+    @patch("pr_split.cli.check_gh_stack", return_value=False)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_stacked_dry_run_skips_gh_stack_check(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_stack: MagicMock,
+    ) -> None:
+        _validate_inputs("feature", "main", dry_run=True, stacked=True)
+        mock_stack.assert_not_called()
+
+    @patch("pr_split.cli.check_gh_stack", return_value=False)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_unstacked_skips_gh_stack_check(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_stack: MagicMock,
+    ) -> None:
+        _validate_inputs("feature", "main")
+        mock_stack.assert_not_called()
 
     @patch("pr_split.cli.branch_exists", side_effect=[False])
     def test_dev_branch_missing(self, mock_be: MagicMock) -> None:
@@ -522,6 +582,36 @@ class TestExecuteCommand:
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_unknown_dependency_before_branch_creation(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        plan = mock_plan_file.plan
+        plan.raw_diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+        plan.merge_base_sha = "abc123"
+        plan.base_branch = "main"
+        plan.stacked = False
+        plan.groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", ["ghost"])]
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "depends on unknown group 'ghost'" in result.output
+        mock_create.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
