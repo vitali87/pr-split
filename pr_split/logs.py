@@ -19,6 +19,7 @@ PLAN_LOADED = "Loaded plan with {count} groups from {path}"
 CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
+PR_ALREADY_DONE = "PR #{number} is already {state}, nothing to close"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
 CLEAN_INCOMPLETE = (
     "Some PRs or branches could not be cleaned up; the plan file was kept"
