@@ -97,8 +97,24 @@ def _hunk_target_lines(hunk: Hunk) -> list[str]:
     return target
 
 
+def split_git_lines(content: str) -> list[str]:
+    """Split file content into lines the way git counts them: on ``\\n`` only.
+
+    ``str.splitlines`` also breaks on form feed, vertical tab, ``\\x1c``-``\\x1e``,
+    ``\\x85``, ``\\u2028`` and ``\\u2029``, none of which git treats as a line
+    break, so every hunk after such a character would land at the wrong offset.
+    """
+    if not content:
+        return []
+    parts = content.split("\n")
+    lines = [part + "\n" for part in parts[:-1]]
+    if parts[-1]:
+        lines.append(parts[-1])
+    return lines
+
+
 def apply_hunks(base_content: str, patch_file: PatchedFile, assigned_indices: list[int]) -> str:
-    lines = base_content.splitlines(keepends=True)
+    lines = split_git_lines(base_content)
     sorted_indices = sorted(assigned_indices, reverse=True)
     for idx in sorted_indices:
         hunk = patch_file[idx]

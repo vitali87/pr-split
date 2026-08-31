@@ -12,6 +12,7 @@ from pr_split.diff_ops.reconstructor import (
     apply_hunks,
     materialize_group_files,
     merge_chain_assignments,
+    split_git_lines,
 )
 from pr_split.exceptions import GitOperationError
 from pr_split.schemas import Group, GroupAssignment
@@ -510,3 +511,31 @@ new file mode 100644
             estimated_loc=2,
         )
         assert materialize_group_files(parsed, group, "base")["n.txt"] == "x\ny"
+
+
+class TestSplitGitLines:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            pytest.param("", [], id="empty"),
+            pytest.param("a\n", ["a\n"], id="one-line"),
+            pytest.param("a\nb", ["a\n", "b"], id="no-trailing-newline"),
+            pytest.param("a\x0cb\nc\n", ["a\x0cb\n", "c\n"], id="form-feed"),
+            pytest.param("a\x0bb\nc\n", ["a\x0bb\n", "c\n"], id="vertical-tab"),
+            pytest.param("a\u2028b\nc\n", ["a\u2028b\n", "c\n"], id="line-separator"),
+            pytest.param("a\x85b\n", ["a\x85b\n"], id="nel"),
+            pytest.param("a\r\nb\r\n", ["a\r\n", "b\r\n"], id="crlf"),
+            pytest.param("\n\n", ["\n", "\n"], id="blank-lines"),
+        ],
+    )
+    def test_splits_on_newline_only(self, content: str, expected: list[str]) -> None:
+        assert split_git_lines(content) == expected
+
+
+class TestApplyHunksWithSplitlinesSeparators:
+    def test_form_feed_in_earlier_line_does_not_shift_hunk(self) -> None:
+        base = "a\x0cb\n" + "".join(f"{c}\n" for c in "cdefghijkl")
+        dev = base.replace("k\n", "K\n")
+        diff = "--- a/f.txt\n+++ b/f.txt\n@@ -7,5 +7,5 @@\n h\n i\n j\n-k\n+K\n l\n"
+        pf = PatchSet(diff)[0]
+        assert apply_hunks(base, pf, [0]) == dev
