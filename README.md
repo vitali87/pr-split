@@ -107,7 +107,7 @@ Linear chains in the plan are registered as [native GitHub stacks](https://githu
 pr-split status
 ```
 
-Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub.
+Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub. A PR whose state could not be fetched is shown as UNKNOWN with a warning, never as a stale OPEN.
 
 ### Merge split PRs in dependency order
 

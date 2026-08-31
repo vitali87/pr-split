@@ -949,6 +949,7 @@ def status() -> None:
     table.add_column("State")
     table.add_column("Review")
 
+    unverified: list[int] = []
     for group in plan.groups:
         branch_name = branch_map.get(group.id, "")
         pr_record = pr_map.get(group.id)
@@ -956,12 +957,23 @@ def status() -> None:
         pr_state = ""
         review = ""
         if pr_record:
-            live = live_states.get(pr_record.pr_number, {})
-            pr_state = live.get("state", pr_record.state.value).upper()
-            review = (live.get("reviewDecision") or "").replace("_", " ").title()
+            live = live_states.get(pr_record.pr_number) or {}
+            if live:
+                pr_state = str(live.get("state") or "").upper()
+                review = str(live.get("reviewDecision") or "").replace("_", " ").title()
+            else:
+                # The recorded state is never written back after merge/close,
+                # so showing it would claim OPEN for a PR that may be gone.
+                pr_state = "UNKNOWN"
+                unverified.append(pr_record.pr_number)
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
+    if unverified:
+        console.print(
+            f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
+            f"{', '.join(f'#{n}' for n in unverified)}. Check 'gh auth status'.[/yellow]"
+        )
 
 
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
