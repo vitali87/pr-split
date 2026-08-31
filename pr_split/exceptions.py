@@ -9,6 +9,10 @@ if TYPE_CHECKING:
 
 class ErrorMsg(StrEnum):
     BRANCH_NOT_FOUND = "Branch '{branch}' does not exist"
+    BASE_NOT_A_LOCAL_BRANCH = (
+        "Base '{base}' is not a local branch; sub-PRs are opened against it on GitHub, "
+        "so pass the branch name{suggestion}"
+    )
     DIRTY_WORKTREE = "Working tree has uncommitted changes; commit or stash first"
     GH_AUTH_FAILED = "GitHub CLI authentication failed; run 'gh auth login'"
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
