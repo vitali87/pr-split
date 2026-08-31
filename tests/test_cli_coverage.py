@@ -671,6 +671,36 @@ class TestExecuteCommand:
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_unknown_dependency_before_branch_creation(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        plan = mock_plan_file.plan
+        plan.raw_diff = "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+        plan.merge_base_sha = "abc123"
+        plan.base_branch = "main"
+        plan.stacked = False
+        plan.groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", ["ghost"])]
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "depends on unknown group 'ghost'" in result.output
+        mock_create.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # status command

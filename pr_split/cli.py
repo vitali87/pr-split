@@ -744,15 +744,33 @@ def split(
             help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
         ),
     ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
-    priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    priority: Annotated[
+        Priority,
+        typer.Option("--priority", envvar="PR_SPLIT_PRIORITY", help="Grouping priority"),
+    ] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
-        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+        ChunkStrategy,
+        typer.Option(
+            "--chunk-strategy",
+            envvar="PR_SPLIT_CHUNK_STRATEGY",
+            help="Chunking strategy for large diffs",
+        ),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
+        PartitionStrategy,
+        typer.Option(
+            "--partition-strategy",
+            envvar="PR_SPLIT_PARTITION_STRATEGY",
+            help="Backend for hunk-to-PR partitioning",
+        ),
     ] = DEFAULT_PARTITION_STRATEGY,
     cp_sat_timeout: Annotated[
-        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+        float,
+        typer.Option(
+            "--cp-sat-timeout",
+            envvar="PR_SPLIT_CP_SAT_TIMEOUT",
+            help="Maximum seconds to spend in the CP-SAT solver",
+        ),
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     stack: Annotated[
         bool,
@@ -1079,6 +1097,10 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1190,7 +1212,14 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    # A hand-edited plan.json can carry unknown or cyclic dependencies;
+    # report that instead of a traceback from the DAG walk.
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
