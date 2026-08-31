@@ -9,6 +9,7 @@ from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
     branch_exists,
+    commit_exists,
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
@@ -256,3 +257,16 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestCommitExists:
+    @patch("pr_split.git_ops.branches.run_git", return_value="")
+    def test_true_when_object_resolves(self, mock_git: MagicMock) -> None:
+        assert commit_exists("abc123") is True
+        mock_git.assert_called_once_with("cat-file", "-e", "abc123^{commit}")
+
+    @patch(
+        "pr_split.git_ops.branches.run_git", side_effect=GitOperationError("Not a valid object")
+    )
+    def test_false_when_missing(self, mock_git: MagicMock) -> None:
+        assert commit_exists("0123456789abcdef") is False

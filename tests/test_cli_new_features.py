@@ -239,6 +239,61 @@ class TestHandleLocBoundWarnings:
         mock_warning.assert_not_called()
 
 
+class TestSplitBranchCreationFailure:
+    @patch("pr_split.cli.save_plan")
+    @patch(
+        "pr_split.cli._create_branches_and_commits",
+        side_effect=PRSplitError("2 branch(es) failed"),
+    )
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_reports_branch_creation_failure_cleanly(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_plan_exists: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app, ["split", "feature-branch"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "2 branch(es) failed" in result.output
+        mock_save_plan.assert_not_called()
+
+
 class TestSplitCliEnvVars:
     @patch("pr_split.cli.save_plan")
     @patch("pr_split.cli.merge_base", return_value="abc123")
