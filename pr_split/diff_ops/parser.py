@@ -91,9 +91,43 @@ def unquote_git_path(path: str) -> str:
     return bytes(out).decode("utf-8", errors="surrogateescape")
 
 
+_QUOTED_PATH_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_HEADER_PREFIXES = ("diff --git ", "--- ", "+++ ")
+
+
+def _escape_spaces_in_quoted_paths(line: str) -> str:
+    return _QUOTED_PATH_RE.sub(lambda m: m.group(0).replace(" ", "\\040"), line)
+
+
+def _normalize_quoted_headers(raw_diff: str) -> str:
+    """Make C-quoted paths containing spaces parseable by unidiff.
+
+    unidiff splits `diff --git <src> <dst>` on the last space, so a quoted
+    path with a space (`"a/my \\"notes\\".md"`) is cut in the wrong place and
+    no longer matches the `---`/`+++` lines: unidiff then keeps a phantom
+    0-hunk file for a modification and raises "Target without source" for an
+    addition or deletion. Spaces inside quoted paths are rewritten as the
+    octal escape `\\040` -- still valid C-quoting, which unquote_git_path
+    decodes -- on the header lines only (between `diff --git` and the first
+    `@@`), so hunk content is never touched.
+    """
+    if '"' not in raw_diff:
+        return raw_diff
+    lines = raw_diff.split("\n")
+    in_header = False
+    for i, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            in_header = True
+        elif line.startswith("@@"):
+            in_header = False
+        if in_header and '"' in line and line.startswith(_HEADER_PREFIXES):
+            lines[i] = _escape_spaces_in_quoted_paths(line)
+    return "\n".join(lines)
+
+
 def parse_diff(raw_diff: str) -> ParsedDiff:
     try:
-        patch_set = PatchSet(raw_diff)
+        patch_set = PatchSet(_normalize_quoted_headers(raw_diff))
     except Exception as exc:
         raise DiffParseError(str(exc)) from exc
     for patch_file in patch_set:
