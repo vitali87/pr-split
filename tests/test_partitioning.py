@@ -149,6 +149,36 @@ class TestPartitionDiffCpSat:
         assert "0.5s limit" in warning
         assert "raise --cp-sat-timeout" in warning
 
+    def test_sub_decisecond_timeout_is_reported_exactly(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cp_model = pytest.importorskip("ortools.sat.python.cp_model")
+        from unittest.mock import patch
+
+        parsed = parse_diff(SAMPLE_DIFF)
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            partition_strategy=PartitionStrategy.CP_SAT,
+            cp_sat_timeout=0.04,
+        )
+        real_solve = cp_model.CpSolver.Solve
+
+        def solve_feasible(self: object, model: object) -> int:
+            real_solve(self, model)
+            return cp_model.FEASIBLE
+
+        with (
+            patch.object(cp_model.CpSolver, "Solve", solve_feasible),
+            patch("pr_split.planner.partitioning.logger") as mock_logger,
+        ):
+            partition_diff(parsed, settings)
+
+        warning = mock_logger.warning.call_args[0][0]
+        # A timeout below 0.1s must not be rounded away to "0.0s"; the warning
+        # tells the user which limit to raise, so it has to name the real value.
+        assert "0.04s limit" in warning
+
     def test_optimal_solution_does_not_warn(self, monkeypatch: pytest.MonkeyPatch) -> None:
         pytest.importorskip("ortools.sat.python.cp_model")
         from unittest.mock import patch
