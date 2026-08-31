@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from pr_split.diff_ops.parser import extract_diff, parse_diff
+from pr_split.diff_ops.parser import extract_diff, parse_diff, unquote_git_path
 from pr_split.exceptions import GitOperationError
 
 SAMPLE_DIFF = (
@@ -181,3 +181,73 @@ class TestNonAsciiPaths:
             os.chdir(cwd)
 
         assert sorted(pf.path for pf in parsed.patch_set) == ["new file ü.txt", "ünï.txt"]
+
+
+class TestUnquoteGitPath:
+    @pytest.mark.parametrize(
+        ("quoted", "expected"),
+        [
+            ("plain/path.py", "plain/path.py"),
+            ('"a/we\\"ird.py"', 'a/we"ird.py'),
+            ('"b/tab\\tname.py"', "b/tab\tname.py"),
+            ('"b/back\\\\slash.py"', "b/back\\slash.py"),
+            ('"b/caf\\303\\251.txt"', "b/café.txt"),
+            ('"b/bell\\a\\1.txt"', "b/bell\a\x01.txt"),
+            ('""', ""),
+            ('"', '"'),
+        ],
+    )
+    def test_decodes_c_style_quoting(self, quoted: str, expected: str) -> None:
+        assert unquote_git_path(quoted) == expected
+
+    def test_quoted_headers_are_unquoted_after_parse(self) -> None:
+        raw = (
+            'diff --git "a/we\\"ird.py" "b/we\\"ird.py"\n'
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            '+++ "b/we\\"ird.py"\n'
+            "@@ -0,0 +1 @@\n"
+            "+x\n"
+            'diff --git "a/tab\\tname.py" "b/tab\\tname.py"\n'
+            "deleted file mode 100644\n"
+            '--- "a/tab\\tname.py"\n'
+            "+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n"
+            "-y\n"
+        )
+        parsed = parse_diff(raw)
+        assert [pf.path for pf in parsed.patch_set] == ['we"ird.py', "tab\tname.py"]
+        assert parsed.patch_set[0].source_file == "/dev/null"
+        assert parsed.patch_set[1].target_file == "/dev/null"
+        assert parsed.patch_set[1].is_removed_file
+
+    def test_special_paths_survive_real_git_diff(self, tmp_path: Path) -> None:
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        git("init", "-q", "-b", "main")
+        (tmp_path / "keep.txt").write_text("one\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "dev")
+        names = ['we"ird.py', "tab\tname.py", "back\\slash.py"]
+        for name in names:
+            (tmp_path / name).write_text("x\n", encoding="utf-8")
+        git("add", "-A")
+        git("commit", "-qm", "dev")
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            parsed = parse_diff(extract_diff("dev", "main"))
+        finally:
+            os.chdir(cwd)
+
+        assert sorted(pf.path for pf in parsed.patch_set) == sorted(names)
+        assert all(pf.is_added_file for pf in parsed.patch_set)
