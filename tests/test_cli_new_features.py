@@ -13,7 +13,7 @@ from pr_split.cli import (
     _handle_loc_bound_warnings,
     app,
 )
-from pr_split.constants import AssignmentType
+from pr_split.constants import AssignmentType, ChunkStrategy, PartitionStrategy, Priority
 from pr_split.exceptions import GitOperationError, PRSplitError
 from pr_split.git_ops.prs import get_pr_state, merge_pr
 from pr_split.schemas import (
@@ -21,7 +21,9 @@ from pr_split.schemas import (
     GitState,
     Group,
     GroupAssignment,
+    PlanFile,
     PRRecord,
+    SplitPlan,
 )
 
 runner = CliRunner()
@@ -179,6 +181,8 @@ class TestCleanupGitState:
         closed, deleted = _cleanup_git_state(git_state)
         assert closed == 1
         assert deleted == 1
+        # Incomplete cleanup keeps the plan so 'clean' can be re-run.
+        mock_path.return_value.unlink.assert_not_called()
 
 
 class TestGetPrState:
@@ -284,6 +288,59 @@ class TestSplitCliEnvVars:
     @patch("pr_split.cli.merge_base", return_value="abc123")
     @patch("pr_split.cli._interactive_edit")
     @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_uses_strategy_envvars(
+        self,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 1,
+            "total_removed": 0,
+            "total_loc": 1,
+        }
+        group = _group("pr-1", "t", files=["a.py"])
+        mock_parse_diff.return_value = parsed_diff
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={
+                "PR_SPLIT_PARTITION_STRATEGY": "graph",
+                "PR_SPLIT_PRIORITY": "logical",
+                "PR_SPLIT_CHUNK_STRATEGY": "greedy",
+                "PR_SPLIT_CP_SAT_TIMEOUT": "2.5",
+            },
+        )
+
+        assert result.exit_code == 0, result.output
+        settings = mock_plan_split.call_args[0][1]
+        assert settings.partition_strategy == PartitionStrategy.GRAPH
+        assert settings.priority == Priority.LOGICAL
+        assert settings.chunk_strategy == ChunkStrategy.GREEDY
+        assert settings.cp_sat_timeout == 2.5
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
     @patch("pr_split.cli.validate_plan", side_effect=[[], ["warning 1"]])
     @patch("pr_split.cli.plan_split")
     @patch("pr_split.cli.parse_diff")
@@ -370,3 +427,51 @@ class TestCorruptPlanFile:
 
         assert result.exit_code == 1
         assert "Cannot load split plan" in result.output
+
+
+class TestMergeRejectsMalformedSavedPlan:
+    def _plan_file(self, groups: list[Group]) -> PlanFile:
+        from pr_split.constants import Priority
+
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=groups,
+        )
+        prs = [PRRecord(group_id=g.id, pr_number=i + 1, pr_url="u") for i, g in enumerate(groups)]
+        return PlanFile(plan=plan, git_state=GitState(prs=prs))
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unknown_dependency_is_a_clean_error(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_file(
+            [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", depends_on=["pr-9"])]
+        )
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "depends on unknown group 'pr-9'" in result.output
+        mock_state.assert_not_called()
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_cycle_is_a_clean_error(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_file(
+            [
+                _group("pr-1", "a", depends_on=["pr-2"], files=["a.py"]),
+                _group("pr-2", "b", depends_on=["pr-1"], files=["b.py"]),
+            ]
+        )
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Dependency cycle detected" in result.output
+        mock_state.assert_not_called()
