@@ -44,11 +44,18 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    ErrorMsg,
+    GitOperationError,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
     check_gh_auth,
+    check_gh_stack,
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
@@ -125,7 +132,20 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
-def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
+def _require_gh_stack() -> None:
+    try:
+        installed = check_gh_stack()
+    except GitOperationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not installed:
+        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
+        raise typer.Exit(1)
+
+
+def _validate_inputs(
+    dev_branch: str, base: str, *, dry_run: bool = False, stacked: bool = False
+) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
         raise typer.Exit(1)
@@ -138,6 +158,8 @@ def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> No
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if not dry_run and stacked:
+        _require_gh_stack()
 
 
 def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
@@ -691,15 +713,33 @@ def split(
             help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
         ),
     ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
-    priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    priority: Annotated[
+        Priority,
+        typer.Option("--priority", envvar="PR_SPLIT_PRIORITY", help="Grouping priority"),
+    ] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
-        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+        ChunkStrategy,
+        typer.Option(
+            "--chunk-strategy",
+            envvar="PR_SPLIT_CHUNK_STRATEGY",
+            help="Chunking strategy for large diffs",
+        ),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
+        PartitionStrategy,
+        typer.Option(
+            "--partition-strategy",
+            envvar="PR_SPLIT_PARTITION_STRATEGY",
+            help="Backend for hunk-to-PR partitioning",
+        ),
     ] = DEFAULT_PARTITION_STRATEGY,
     cp_sat_timeout: Annotated[
-        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+        float,
+        typer.Option(
+            "--cp-sat-timeout",
+            envvar="PR_SPLIT_CP_SAT_TIMEOUT",
+            help="Maximum seconds to spend in the CP-SAT solver",
+        ),
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     stack: Annotated[
         bool,
@@ -740,7 +780,7 @@ def split(
         base = fork_info["base_branch"]
         author = fork_info["author"]
 
-    _validate_inputs(dev_branch, base, dry_run=dry_run)
+    _validate_inputs(dev_branch, base, dry_run=dry_run, stacked=stack)
 
     if plan_exists():
         existing = load_plan()
@@ -860,15 +900,14 @@ def split(
             )
         )
         raise
-    if stack:
-        _link_stacks(dag, pr_records)
-
     save_plan(
         PlanFile(
             plan=split_plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if stack:
+        _link_stacks(dag, pr_records)
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
@@ -1019,10 +1058,16 @@ def execute(
     if not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if plan.stacked:
+        _require_gh_stack()
 
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1051,15 +1096,15 @@ def execute(
             )
         )
         raise
-    if plan.stacked:
-        _link_stacks(PlanDAG(plan.groups), pr_records)
-
     save_plan(
         PlanFile(
             plan=plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if plan.stacked:
+        _link_stacks(PlanDAG(plan.groups), pr_records)
+    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
@@ -1134,7 +1179,14 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    # A hand-edited plan.json can carry unknown or cyclic dependencies;
+    # report that instead of a traceback from the DAG walk.
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()

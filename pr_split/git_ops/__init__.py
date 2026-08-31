@@ -38,6 +38,9 @@ from .prs import (
     check_gh_auth as check_gh_auth,
 )
 from .prs import (
+    check_gh_stack as check_gh_stack,
+)
+from .prs import (
     close_pr as close_pr,
 )
 from .prs import (
