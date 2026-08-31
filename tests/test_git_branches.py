@@ -202,9 +202,9 @@ class TestAddWorktree:
     def test_adds_worktree(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
         mock_git.return_value = ""
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
-        mock_git.assert_called_once_with(
-            "worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123"
-        )
+        args = mock_git.call_args.args
+        assert args[0] == "-c" and args[1].startswith("core.hooksPath=")
+        assert args[2:] == ("worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123")
 
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
@@ -342,3 +342,45 @@ class TestIgnoredPathsAreStillCommitted:
             ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
         ).stdout.split()
         assert tracked == []
+
+
+class TestWorktreeAddSkipsHooks:
+    def test_failing_post_checkout_hook_does_not_block_worktree_creation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "base"], cwd=repo, check=True
+        )
+        hook = repo / ".git" / "hooks" / "post-checkout"
+        hook.write_text("#!/bin/sh\necho 'post-checkout failing' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        monkeypatch.chdir(repo)
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g1", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+    def test_hooks_path_from_config_is_also_bypassed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "base"], cwd=repo, check=True
+        )
+        hooks = tmp_path / "myhooks"
+        hooks.mkdir()
+        (hooks / "post-checkout").write_text("#!/bin/sh\nexit 1\n")
+        (hooks / "post-checkout").chmod(0o755)
+        subprocess.run(["git", "config", "core.hooksPath", str(hooks)], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g2", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
