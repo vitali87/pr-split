@@ -26,6 +26,10 @@ class ErrorMsg(StrEnum):
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    LLM_OUTPUT_TRUNCATED = (
+        "LLM response was cut off before the plan was complete ({detail});"
+        " the partial plan cannot be trusted"
+    )
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
