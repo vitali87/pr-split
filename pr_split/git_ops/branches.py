@@ -99,7 +99,11 @@ def commit_files_in_dir(
 ) -> str:
     if not file_paths:
         raise GitOperationError("commit_files_in_dir called with no file paths")
-    run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
+    # -f: the dev branch may track a file that matches .gitignore (added
+    # with `git add -f`); the diff materialises it, and without -f `git add`
+    # refuses the path and the whole group fails. The path list is explicit,
+    # so -f cannot pull in anything unintended; -A still stages deletions.
+    run_git_in_dir(cwd, "add", "-A", "-f", "--", *file_paths)
     author_args = ("--author", author) if author else ()
     # The content is a subset of commits already accepted on the dev
     # branch; a pre-commit/commit-msg hook (husky, pre-commit, lint-staged)
