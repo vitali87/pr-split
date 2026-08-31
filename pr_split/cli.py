@@ -45,7 +45,13 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    ErrorMsg,
+    GitOperationError,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
@@ -967,6 +973,44 @@ def clean() -> None:
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
+def _delete_stale_recorded_branches(
+    records: list[BranchRecord], groups: list[Group], namespace: str
+) -> None:
+    """Remove branches from a previous failed run that the plan no longer contains.
+
+    A retried execute recreates only the current groups and then overwrites
+    git_state; without this, a branch created before the plan was edited would
+    survive locally (and on origin, if its push succeeded) with no record left
+    for `pr-split clean` to delete.
+    """
+    expected = {f"{BRANCH_PREFIX}{namespace}/{group.id}" for group in groups}
+    for record in records:
+        if record.branch_name in expected:
+            continue
+        if branch_exists(record.branch_name):
+            try:
+                delete_branch(record.branch_name)
+            except GitOperationError as exc:
+                console.print(
+                    f"[yellow]Could not delete stale branch"
+                    f" {escape(record.branch_name)}: {escape(str(exc))}[/yellow]"
+                )
+        # The remote copy is handled independently: the local branch may be
+        # gone (manual prune, an earlier retry) while the pushed one survives,
+        # and delete_branch would raise before reaching the remote delete.
+        try:
+            run_git("ls-remote", "--exit-code", "origin", f"refs/heads/{record.branch_name}")
+        except GitOperationError:
+            continue  # never pushed (or remote unreachable): nothing to delete
+        try:
+            run_git("push", "origin", "--delete", record.branch_name)
+        except GitOperationError as exc:
+            console.print(
+                f"[yellow]Could not delete stale remote branch"
+                f" {escape(record.branch_name)}: {escape(str(exc))}[/yellow]"
+            )
+
+
 @app.command(
     help="Execute a previously saved dry-run plan, creating branches and PRs.",
 )
@@ -999,9 +1043,18 @@ def execute(
     if draft and not plan.draft:
         plan = plan.model_copy(update={"draft": True})
 
-    if plan_file.git_state.branches or plan_file.git_state.prs:
-        console.print("[red]This plan already has branches/PRs. Use 'pr-split clean' first.[/red]")
+    if plan_file.git_state.prs:
+        console.print("[red]This plan already has PRs. Use 'pr-split clean' first.[/red]")
         raise typer.Exit(1)
+    if plan_file.git_state.branches:
+        # A previous execute created branches but no PRs - a failed push or PR
+        # creation. Branch creation is idempotent (add_worktree recreates an
+        # existing branch), so retry instead of forcing 'clean' + a full
+        # re-plan, which for the LLM backend means paying for planning again.
+        console.print(
+            "[yellow]A previous run created branches but no PRs"
+            " (the push or PR creation failed). Recreating them and retrying.[/yellow]"
+        )
 
     if not plan.raw_diff:
         console.print(
@@ -1046,6 +1099,7 @@ def execute(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
+    _delete_stale_recorded_branches(plan_file.git_state.branches, plan.groups, namespace)
     try:
         branch_records = _create_branches_and_commits(
             plan.groups,
