@@ -9,6 +9,18 @@ from ..schemas import Group
 from ..types_defs import LocBoundViolation
 
 
+def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
+    """Refuse diffs with binary files.
+
+    Binary patches carry no hunks, so coverage validation would pass
+    without any group claiming them and the change would silently be
+    dropped from every sub-PR.
+    """
+    binary = [pf.path for pf in parsed_diff.patch_set if pf.is_binary_file]
+    if binary:
+        raise PlanValidationError(ErrorMsg.BINARY_FILES_UNSUPPORTED(files=", ".join(binary)))
+
+
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
     assigned: dict[tuple[str, int], list[str]] = {}
@@ -148,6 +160,7 @@ def validate_plan(
     min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
+    validate_no_binary_files(parsed_diff)
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
     validate_no_conflicts(groups, dag)

@@ -589,6 +589,42 @@ class TestExecuteCommand:
     @patch("pr_split.cli.branch_exists", return_value=True)
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_saved_plan_with_binary_files(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        plan = mock_plan_file.plan
+        plan.raw_diff = (
+            "diff --git a/img.png b/img.png\n"
+            "index 1111111..2222222 100644\n"
+            "Binary files a/img.png and b/img.png differ\n"
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        plan.merge_base_sha = "abc123"
+        plan.base_branch = "main"
+        plan.stacked = False
+        plan.groups = [_group("pr-1", "a", files=["a.py"])]
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "binary files" in result.output
+        assert "img.png" in result.output
+        mock_create.assert_not_called()
+
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
     def test_execute_rejects_unknown_dependency_before_branch_creation(
         self,
         mock_pe: MagicMock,
