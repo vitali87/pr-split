@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from loguru import logger
+from pydantic import ValidationError
 
 from . import logs
 from .constants import PLAN_DIR, PLAN_FILE
@@ -20,7 +21,10 @@ def load_plan() -> PlanFile:
     plan_path = Path(PLAN_FILE)
     if not plan_path.exists():
         raise PRSplitError(ErrorMsg.NO_PLAN())
-    plan_file = PlanFile.model_validate_json(plan_path.read_text())
+    try:
+        plan_file = PlanFile.model_validate_json(plan_path.read_text())
+    except (OSError, UnicodeDecodeError, ValidationError) as exc:
+        raise PRSplitError(ErrorMsg.PLAN_LOAD_FAILED(path=plan_path, detail=exc)) from exc
     logger.info(logs.PLAN_LOADED.format(count=len(plan_file.plan.groups), path=plan_path))
     return plan_file
 
