@@ -56,12 +56,16 @@ def validate_loc(groups: list[Group], parsed_diff: ParsedDiff) -> None:
         )
 
 
-def validate_no_conflicts(groups: list[Group], dag: PlanDAG) -> None:
+def validate_no_conflicts(
+    groups: list[Group], dag: PlanDAG, hunk_counts: dict[str, int] | None = None
+) -> None:
+    counts = hunk_counts or {}
     group_files: dict[str, dict[str, set[int]]] = {}
     for group in groups:
         file_hunks: dict[str, set[int]] = {}
         for assignment in group.assignments:
-            file_hunks.setdefault(assignment.file_path, set()).update(assignment.hunk_indices)
+            covered = assignment.covered_indices(counts.get(assignment.file_path, 0))
+            file_hunks.setdefault(assignment.file_path, set()).update(covered)
         group_files[group.id] = file_hunks
 
     group_ids = [g.id for g in groups]
@@ -150,5 +154,5 @@ def validate_plan(
     dag.validate_acyclic()
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
-    validate_no_conflicts(groups, dag)
+    validate_no_conflicts(groups, dag, {pf.path: len(pf) for pf in parsed_diff.patch_set})
     return validate_loc_bounds(groups, max_loc, min_loc)

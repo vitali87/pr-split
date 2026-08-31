@@ -23,13 +23,9 @@ def merge_chain_assignments(
     ancestor_hunks: dict[str, set[int]] = {}
     for ancestor in ancestors:
         for assignment in ancestor.assignments:
-            # A WHOLE_FILE assignment covers every hunk even when its
-            # hunk_indices list was left empty, so expand from the diff.
-            if assignment.assignment_type is AssignmentType.WHOLE_FILE:
-                covered = set(range(counts.get(assignment.file_path, 0)))
-                covered.update(assignment.hunk_indices)
-            else:
-                covered = set(assignment.hunk_indices)
+            # Expand exactly like the validator does: a WHOLE_FILE assignment
+            # is every parsed hunk (stale stored indices are ignored).
+            covered = set(assignment.covered_indices(counts.get(assignment.file_path, 0)))
             ancestor_hunks.setdefault(assignment.file_path, set()).update(covered)
 
     merged = []
