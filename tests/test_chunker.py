@@ -162,6 +162,29 @@ class TestChunkHunksDynamicProgramming:
         assert [ref.file_path for ref in chunks[0]] == ["a.py"]
         assert [ref.file_path for ref in chunks[1]] == ["b.py", "b.py"]
 
+    def test_large_budget_still_keeps_files_whole_when_possible(self) -> None:
+        # At a realistic budget the slack term is hundreds of thousands of
+        # tokens; a fixed same-file penalty used to lose to it and b.py was
+        # cut in half although a two-chunk plan without any cut exists.
+        budget = 538_000
+        refs = [HunkRef("a.py", 0, 10_000)]
+        refs += [HunkRef("b.py", i, 50_000) for i in range(10)]
+        refs += [HunkRef("c.py", i, 50_000) for i in range(2)]
+        chunks = chunk_hunks_dynamic_programming(refs, budget)
+        assert len(chunks) == 2
+        for chunk in chunks:
+            assert sum(r.token_estimate for r in chunk) <= budget
+        # no file appears in more than one chunk
+        seen: dict[str, int] = {}
+        for idx, chunk in enumerate(chunks):
+            for ref in chunk:
+                assert seen.setdefault(ref.file_path, idx) == idx
+
+    def test_file_is_still_cut_when_it_cannot_fit_one_chunk(self) -> None:
+        refs = [HunkRef("big.py", i, 60) for i in range(3)]
+        chunks = chunk_hunks_dynamic_programming(refs, 100)
+        assert [len(c) for c in chunks] == [1, 1, 1]
+
     def test_greedy_helper_retains_previous_behavior(self) -> None:
         refs = [
             HunkRef("a.py", 0, 30),
