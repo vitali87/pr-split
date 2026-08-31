@@ -9,11 +9,7 @@ from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
     branch_exists,
-    checkout_branch,
-    checkout_new_branch,
-    commit_files,
     commit_files_in_dir,
-    create_group_branch,
     delete_branch,
     derive_split_namespace,
     is_worktree_clean,
@@ -79,34 +75,6 @@ class TestMergeBase:
         assert merge_base("main", "feature") == "abc123def"
 
 
-class TestCommitFiles:
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_basic_commit(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = ["", "", "abc123"]
-        sha = commit_files(["file.py"], "test commit")
-        assert sha == "abc123"
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_commit_with_author(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = ["", "", "abc123"]
-        sha = commit_files(["file.py"], "test commit", author="Jane <jane@x.com>")
-        assert sha == "abc123"
-        commit_call = mock_git.call_args_list[1]
-        assert "--author" in commit_call.args[0] or "--author" in commit_call[0]
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_commit_fallback_on_failure(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = [
-            "",
-            GitOperationError("nothing to commit"),
-            "",
-            "",
-            "def456",
-        ]
-        sha = commit_files(["file.py"], "test commit")
-        assert sha == "def456"
-
-
 class TestPushBranch:
     @patch("pr_split.git_ops.branches.run_git")
     def test_calls_push(self, mock_git: MagicMock) -> None:
@@ -165,32 +133,6 @@ class TestDeriveSplitNamespace:
         assert "!" not in result
 
 
-class TestCreateGroupBranch:
-    @patch("pr_split.git_ops.branches.checkout_new_branch")
-    @patch("pr_split.git_ops.branches.branch_exists")
-    def test_creates_new_branch(self, mock_exists: MagicMock, mock_checkout: MagicMock) -> None:
-        mock_exists.return_value = False
-        result = create_group_branch("pr-1", "abc123", "my-feat")
-        assert result == "pr-split/my-feat/pr-1"
-        mock_checkout.assert_called_once()
-
-    @patch("pr_split.git_ops.branches.checkout_new_branch")
-    @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.checkout_branch")
-    @patch("pr_split.git_ops.branches.branch_exists")
-    def test_deletes_existing_branch(
-        self,
-        mock_exists: MagicMock,
-        mock_checkout: MagicMock,
-        mock_run_git: MagicMock,
-        mock_checkout_new: MagicMock,
-    ) -> None:
-        mock_exists.return_value = True
-        mock_run_git.return_value = ""
-        create_group_branch("pr-1", "abc123", "my-feat")
-        mock_run_git.assert_called_once_with("branch", "-D", "pr-split/my-feat/pr-1")
-
-
 class TestRunGitExtended:
     @patch("pr_split.git_ops.branches.subprocess.run")
     def test_strips_trailing_whitespace(self, mock_run: MagicMock) -> None:
@@ -232,20 +174,6 @@ class TestIsWorktreeCleanExtended:
     def test_renamed_file_is_dirty(self, mock_git: MagicMock) -> None:
         mock_git.return_value = "R  old.py -> new.py"
         assert is_worktree_clean() is False
-
-
-class TestCheckoutWrappers:
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_checkout_new_branch_args(self, mock_git: MagicMock) -> None:
-        mock_git.return_value = ""
-        checkout_new_branch("feature/x", "abc123")
-        mock_git.assert_called_once_with("checkout", "-b", "feature/x", "abc123")
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_checkout_branch_args(self, mock_git: MagicMock) -> None:
-        mock_git.return_value = ""
-        checkout_branch("main")
-        mock_git.assert_called_once_with("checkout", "main")
 
 
 class TestRunGitInDir:

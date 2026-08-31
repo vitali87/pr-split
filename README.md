@@ -86,6 +86,7 @@ pr-split split feature-branch --base main --dry-run
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
@@ -106,7 +107,7 @@ Linear chains in the plan are registered as [native GitHub stacks](https://githu
 pr-split status
 ```
 
-Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub.
+Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub. A PR whose state could not be fetched is shown as UNKNOWN with a warning, never as a stale OPEN.
 
 ### Merge split PRs in dependency order
 
@@ -121,6 +122,8 @@ Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 ```bash
 pr-split merge --auto
 ```
+
+`--auto` is not fire-and-forget: after queueing a batch, `merge` waits for every PR in it to reach `MERGED` before moving on to the dependent batch, polling GitHub every 10 seconds for up to 10 minutes per batch. If a PR is still unmerged when the timeout expires, or gets closed while waiting, the command stops before the dependent batch and exits 1 (webhook `exit_reason: incomplete_batch`); re-run `pr-split merge --auto` once CI has caught up to continue from where it left off.
 
 Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
 
@@ -196,6 +199,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
