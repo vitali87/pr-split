@@ -240,12 +240,38 @@ def _parse_groups(raw: RawToolOutput) -> list[Group]:
     return groups
 
 
+def _merge_assignment(existing: GroupAssignment, incoming: GroupAssignment) -> GroupAssignment:
+    if (
+        existing.assignment_type is AssignmentType.WHOLE_FILE
+        or incoming.assignment_type is AssignmentType.WHOLE_FILE
+    ):
+        assignment_type = AssignmentType.WHOLE_FILE
+    else:
+        assignment_type = AssignmentType.PARTIAL_HUNKS
+    return GroupAssignment(
+        file_path=existing.file_path,
+        assignment_type=assignment_type,
+        hunk_indices=sorted(set(existing.hunk_indices) | set(incoming.hunk_indices)),
+    )
+
+
 def _merge_chunk_groups(accumulated: list[Group], chunk_groups: list[Group]) -> list[Group]:
     acc_map = {g.id: g for g in accumulated}
     for cg in chunk_groups:
         if cg.id in acc_map:
             existing = acc_map[cg.id]
-            existing.assignments.extend(cg.assignments)
+            # A later chunk may assign more hunks of a file this group already
+            # holds. Keep one assignment per path: materialization writes a
+            # file once per assignment, so duplicates would drop hunks.
+            by_path: dict[str, GroupAssignment] = {}
+            for assignment in [*existing.assignments, *cg.assignments]:
+                if assignment.file_path in by_path:
+                    by_path[assignment.file_path] = _merge_assignment(
+                        by_path[assignment.file_path], assignment
+                    )
+                else:
+                    by_path[assignment.file_path] = assignment
+            existing.assignments = list(by_path.values())
             for dep in cg.depends_on:
                 if dep not in existing.depends_on:
                     existing.depends_on.append(dep)
