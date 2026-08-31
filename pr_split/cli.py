@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json as json_mod
 import shutil
+import sys
 import tempfile
 import time
 import urllib.request
@@ -664,6 +665,12 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
 
 
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
+    if not sys.stdin.isatty():
+        # Scripts and CI (`split --dry-run < /dev/null`) have no one to answer
+        # the editor prompt; typer.prompt would turn the EOF into an Abort
+        # before the plan is ever saved. Accept the plan as-is instead.
+        console.print("[yellow]Non-interactive stdin; accepting the plan as-is.[/yellow]")
+        return groups
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
         "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
