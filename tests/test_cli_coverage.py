@@ -620,6 +620,92 @@ class TestSplitCommandValidation:
         result = runner.invoke(app, ["split", "unknown-ref", "--dry-run"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli._resolve_fork_ref")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_missing_plain_branch_reports_branch_not_found(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "nosuchbranch", "--dry-run"])
+        assert result.exit_code == 1
+        assert "Branch 'nosuchbranch' does not exist" in result.output
+        assert "GitHub CLI authentication failed" not in result.output
+        mock_auth.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_fork_shaped_ref_still_checks_gh_auth(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "someone:feature", "--dry-run"])
+        assert result.exit_code == 1
+        assert "GitHub CLI authentication failed" in result.output
+        mock_auth.assert_called_once()
+
+
+class TestSplitDryRunWithExecutedPlan:
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_dry_run_refuses_instead_of_offering_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = []
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        result = runner.invoke(app, ["split", "feature", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert "Run 'pr-split clean' first" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("pr_split.cli.extract_diff", side_effect=PRSplitError("stop here"))
+    @patch("pr_split.cli._cleanup_git_state", return_value=(1, 1))
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_real_split_still_offers_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = []
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        runner.invoke(app, ["split", "feature"], env={"ANTHROPIC_API_KEY": "sk-test"})
+
+        mock_confirm.assert_called_once()
+        mock_cleanup.assert_called_once_with(existing.git_state)
+
 
 # ---------------------------------------------------------------------------
 # execute command

@@ -719,6 +719,11 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             )
 
 
+def _is_fork_ref(dev_branch: str) -> bool:
+    """True for the PR-number (`#42`) and `user:branch` argument forms."""
+    return dev_branch.lstrip("#").isdigit() or ":" in dev_branch
+
+
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
     cleaned = dev_branch.lstrip("#")
     if cleaned.isdigit():
@@ -818,6 +823,12 @@ def split(
     fork_info: ForkPRInfo | None = None
 
     if not branch_exists(dev_branch):
+        # Only a PR number or user:branch can be fetched from GitHub; a plain
+        # branch name that does not exist is just a typo, so say so before
+        # touching gh (which --dry-run must not require).
+        if not _is_fork_ref(dev_branch):
+            console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
+            raise typer.Exit(1)
         if not check_gh_auth():
             console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
             raise typer.Exit(1)
@@ -841,6 +852,16 @@ def split(
     if plan_exists():
         existing = load_plan()
         has_git_state = existing.git_state.branches or existing.git_state.prs
+        if has_git_state and dry_run:
+            # A preview must never close PRs or delete branches, and saving
+            # the new plan would drop the record of the existing ones.
+            console.print("[yellow]An existing split plan with branches/PRs was found.[/yellow]")
+            console.print(
+                "[red]--dry-run would overwrite the record of those branches/PRs without "
+                "cleaning them up. Run 'pr-split clean' first, or run 'pr-split split' "
+                "without --dry-run to clean up and re-split.[/red]"
+            )
+            raise typer.Exit(1)
         if has_git_state:
             console.print("[yellow]An existing split plan with branches/PRs was found.[/yellow]")
             console.print(
