@@ -193,6 +193,14 @@ def _validate_inputs(
         _require_gh_stack()
 
 
+def _load_plan_or_exit() -> PlanFile:
+    try:
+        return load_plan()
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+
 def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
     if strict_loc_bounds and warnings:
         console.print(f"[red]{ErrorMsg.LOC_BOUNDS_STRICT_FAILED()}[/red]")
@@ -839,7 +847,7 @@ def split(
     _validate_inputs(dev_branch, base, dry_run=dry_run, stacked=stack)
 
     if plan_exists():
-        existing = load_plan()
+        existing = _load_plan_or_exit()
         has_git_state = existing.git_state.branches or existing.git_state.prs
         if has_git_state:
             console.print("[yellow]An existing split plan with branches/PRs was found.[/yellow]")
@@ -982,7 +990,7 @@ def status() -> None:
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     git_state = plan_file.git_state
 
@@ -1078,7 +1086,7 @@ def clean() -> None:
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     git_state = plan_file.git_state
 
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
@@ -1115,7 +1123,7 @@ def execute(
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(1)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     if stack and not plan.stacked:
         plan = plan.model_copy(update={"stacked": True})
@@ -1282,7 +1290,7 @@ def merge_all(
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     git_state = plan_file.git_state
     pr_map = {r.group_id: r for r in git_state.prs}

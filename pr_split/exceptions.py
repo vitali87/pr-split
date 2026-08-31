@@ -25,6 +25,9 @@ class ErrorMsg(StrEnum):
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
+    PLAN_LOAD_FAILED = (
+        "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
+    )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
     LLM_OUTPUT_TRUNCATED = (
         "LLM response was cut off before the plan was complete ({detail});"
