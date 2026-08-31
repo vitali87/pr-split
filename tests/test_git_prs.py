@@ -175,3 +175,69 @@ class TestCreatePrDraft:
         mock_gh.return_value = "https://github.com/org/repo/pull/7"
         create_pr("head", "main", "Title", "Body")
         assert "--draft" not in mock_gh.call_args.args
+
+
+class TestCheckGhAuthHost:
+    @patch("pr_split.git_ops.prs.run_git", return_value="git@github.com:org/repo.git")
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_checks_only_the_target_host(
+        self, mock_gh: MagicMock, mock_git: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        assert check_gh_auth() is True
+        mock_gh.assert_called_once_with("auth", "status", "--hostname", "github.com")
+
+    @pytest.mark.parametrize(
+        ("remote", "host"),
+        [
+            ("https://ghe.example.com/org/repo.git", "ghe.example.com"),
+            ("ssh://git@ghe.example.com:2222/org/repo.git", "ghe.example.com"),
+            ("git@ghe.example.com:org/repo.git", "ghe.example.com"),
+            ("https://user:tok@ghe.example.com/org/repo", "ghe.example.com"),
+            ("git@github.com:org/repo.git", "github.com"),
+            # gh lowercases remote hosts; `--hostname` is case-sensitive.
+            ("https://GHE.Example.COM/org/repo.git", "ghe.example.com"),
+            # Local remotes have no host to authenticate against.
+            ("../other", "github.com"),
+            ("/srv/repo.git", "github.com"),
+            ("file:///srv/repo.git", "github.com"),
+            # Single-label GHE hosts are valid in scheme and scp forms.
+            ("git@ghe:org/repo.git", "ghe"),
+            ("ssh://git@ghe/org/repo.git", "ghe"),
+            # Bare scp form still needs a dot to rule out local paths.
+            ("ghe.example.com:org/repo.git", "ghe.example.com"),
+        ],
+    )
+    def test_host_is_derived_from_the_origin_remote(
+        self, monkeypatch: pytest.MonkeyPatch, remote: str, host: str
+    ) -> None:
+        from pr_split.git_ops.prs import gh_host
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        with patch("pr_split.git_ops.prs.run_git", return_value=remote):
+            assert gh_host() == host
+
+    def test_no_remote_falls_back_to_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pr_split.git_ops.prs import gh_host
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        with patch("pr_split.git_ops.prs.run_git", side_effect=GitOperationError("no origin")):
+            assert gh_host() == "github.com"
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_honours_gh_host(self, mock_gh: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        monkeypatch.setenv("GH_HOST", "GHE.example.com")
+        with patch("pr_split.git_ops.prs.run_git") as mock_git:
+            check_gh_auth()
+        mock_gh.assert_called_once_with("auth", "status", "--hostname", "ghe.example.com")
+        mock_git.assert_not_called()
+
+    @patch("pr_split.git_ops.prs._run_gh", side_effect=GitOperationError("not logged in"))
+    def test_unauthenticated_target_host_is_false(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        assert check_gh_auth() is False
