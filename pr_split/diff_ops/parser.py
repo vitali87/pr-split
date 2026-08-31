@@ -47,7 +47,10 @@ def extract_diff(dev_branch: str, base_branch: str) -> str:
     )
     if result.returncode != 0:
         raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
-    return result.stdout.decode("utf-8")
+    # Git diffs any NUL-free file as text, so legacy latin-1 sources reach us
+    # too; surrogateescape keeps their bytes intact so they round-trip when
+    # the worker writes them back with the same error handler.
+    return result.stdout.decode("utf-8", errors="surrogateescape")
 
 
 _C_ESCAPES = {

@@ -355,3 +355,58 @@ class TestQuotedPathsWithSpaces:
             [(modified, 1), (deleted, 1), ("plain name.md", 1), ('new "file".txt', 1)]
         )
         assert parsed.stats["total_files"] == 4
+
+
+class TestNonUtf8FileContent:
+    def test_latin1_file_round_trips_byte_for_byte(self, tmp_path: Path) -> None:
+        from pr_split.constants import AssignmentType
+        from pr_split.diff_ops.reconstructor import materialize_group_files
+        from pr_split.git_ops.branches import merge_base
+        from pr_split.schemas import Group, GroupAssignment
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        git("init", "-q", "-b", "main")
+        base_bytes = "caf\xe9 one\nkeep\n".encode("latin-1")
+        dev_bytes = "caf\xe9 two\nkeep\n".encode("latin-1")
+        (tmp_path / "legacy.txt").write_bytes(base_bytes)
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "dev")
+        (tmp_path / "legacy.txt").write_bytes(dev_bytes)
+        git("add", "-A")
+        git("commit", "-qm", "dev")
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            parsed = parse_diff(extract_diff("dev", "main"))
+            group = Group(
+                id="pr-1",
+                title="t",
+                description="d",
+                assignments=[
+                    GroupAssignment(
+                        file_path="legacy.txt",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[0],
+                    )
+                ],
+            )
+            materialized = materialize_group_files(parsed, group, merge_base("main", "dev"))
+            out = tmp_path / "out.txt"
+            content = materialized["legacy.txt"]
+            assert content is not None
+            out.write_text(content, encoding="utf-8", errors="surrogateescape", newline="")
+        finally:
+            os.chdir(cwd)
+
+        assert [pf.path for pf in parsed.patch_set] == ["legacy.txt"]
+        assert out.read_bytes() == dev_bytes
