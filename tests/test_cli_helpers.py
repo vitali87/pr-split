@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -574,3 +575,32 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestWorktreeWritesPreserveCrlf:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={"c.txt": "a\r\nb\r\n"})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_crlf_content_written_verbatim(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        written: dict[str, bytes] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                written[file_path] = (Path(cwd) / file_path).read_bytes()
+            return "sha1"
+
+        mock_commit.side_effect = capture
+        # On POSIX write_text only translates "\n" (a no-op), so also assert the
+        # newline="" argument that keeps CRLF intact on Windows.
+        with patch.object(Path, "write_text", autospec=True, side_effect=Path.write_text) as wt:
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert written["c.txt"] == b"a\r\nb\r\n"
+        content_writes = [c for c in wt.call_args_list if c.args[1] == "a\r\nb\r\n"]
+        assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)

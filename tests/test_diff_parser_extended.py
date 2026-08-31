@@ -97,7 +97,7 @@ class TestExtractDiffSubprocess:
     @patch("pr_split.diff_ops.parser.subprocess.run")
     def test_extract_diff_success(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
-            args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE, stderr=""
+            args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE.encode(), stderr=b""
         )
         result = extract_diff("feature", "main")
         assert result == EXTRACT_DIFF_SAMPLE
@@ -115,7 +115,6 @@ class TestExtractDiffSubprocess:
                 "main...feature",
             ],
             capture_output=True,
-            text=True,
         )
 
     @patch("pr_split.diff_ops.parser.subprocess.run")
@@ -123,8 +122,8 @@ class TestExtractDiffSubprocess:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["git", "diff"],
             returncode=1,
-            stdout="",
-            stderr="fatal: bad revision",
+            stdout=b"",
+            stderr=b"fatal: bad revision",
         )
         with pytest.raises(GitOperationError, match="bad revision"):
             extract_diff("bad-branch", "main")
@@ -134,3 +133,16 @@ class TestRawDiffPreserved:
     def test_raw_diff_preserved(self) -> None:
         parsed = parse_diff(EXTRACT_DIFF_SAMPLE)
         assert parsed.raw_diff == EXTRACT_DIFF_SAMPLE
+
+
+class TestExtractDiffPreservesCarriageReturns:
+    @patch("pr_split.diff_ops.parser.subprocess.run")
+    def test_crlf_diff_is_returned_verbatim(self, mock_run: MagicMock) -> None:
+        raw = b"--- a/c.txt\n+++ b/c.txt\n@@ -1 +1 @@\n-old\r\n+new\r\n"
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "diff"], returncode=0, stdout=raw, stderr=b""
+        )
+        result = extract_diff("feature", "main")
+        assert "\r\n" in result
+        assert result == raw.decode()
+        assert mock_run.call_args.kwargs.get("text") is not True

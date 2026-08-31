@@ -225,7 +225,8 @@ def _create_single_branch_and_commit(
             p = Path(worktree_path) / file_path
             if content is not None:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content, encoding="utf-8")
+                # newline="" keeps CRLF from the reconstructed content intact.
+                p.write_text(content, encoding="utf-8", newline="")
             elif p.exists():
                 p.unlink()
 

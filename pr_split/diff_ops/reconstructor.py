@@ -60,14 +60,15 @@ def merge_chain_assignments(
 
 
 def _get_base_file_content(file_path: str, ref: str) -> str:
+    # Bytes, not text mode: universal newlines would strip the CR from CRLF
+    # files and the reconstructed file would come out with LF endings.
     result = subprocess.run(
         ["git", "show", f"{ref}:{file_path}"],
         capture_output=True,
-        text=True,
     )
     if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout
+        raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
+    return result.stdout.decode("utf-8")
 
 
 NO_NEWLINE_MARKER = "\\"
