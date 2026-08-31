@@ -589,6 +589,23 @@ class TestSplitCommandValidation:
         result = runner.invoke(app, ["split", "#42", "--dry-run"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli._resolve_fork_ref", side_effect=GitOperationError("PR #999 not found"))
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_fork_ref_error_is_reported_not_raised(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "#999", "--dry-run"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "PR #999 not found" in result.output
+        assert "Traceback" not in result.output
+
     @patch("pr_split.cli._resolve_fork_ref", return_value=None)
     @patch("pr_split.cli.is_worktree_clean", return_value=True)
     @patch("pr_split.cli.check_gh_auth", return_value=True)
