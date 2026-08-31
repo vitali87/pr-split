@@ -32,6 +32,15 @@ def run_git_in_dir(cwd: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def commit_exists(ref: str) -> bool:
+    """True if ``ref`` resolves to a commit object in this repository."""
+    try:
+        run_git("cat-file", "-e", f"{ref}^{{commit}}")
+    except GitOperationError:
+        return False
+    return True
+
+
 def branch_exists(branch: str) -> bool:
     try:
         run_git("rev-parse", "--verify", branch)

@@ -66,7 +66,7 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import run_git
+from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
@@ -948,9 +948,13 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
-    branch_records = _create_branches_and_commits(
-        groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     except PRCreationError as exc:
@@ -1125,6 +1129,13 @@ def execute(
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
         raise typer.Exit(1)
+    if not commit_exists(plan.merge_base_sha):
+        console.print(
+            f"[red]Plan's merge base {plan.merge_base_sha} is not in this repository "
+            "(plan copied from another checkout, or history rewritten). "
+            "Fetch it or re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
+        raise typer.Exit(1)
 
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
@@ -1157,15 +1168,19 @@ def execute(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
-    branch_records = _create_branches_and_commits(
-        plan.groups,
-        parsed_diff,
-        plan.base_branch,
-        plan.merge_base_sha,
-        namespace,
-        author=plan.author,
-        stacked=plan.stacked,
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            plan.groups,
+            parsed_diff,
+            plan.base_branch,
+            plan.merge_base_sha,
+            namespace,
+            author=plan.author,
+            stacked=plan.stacked,
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     except PRCreationError as exc:
@@ -1277,6 +1292,7 @@ def merge_all(
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
+    blocked: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1303,6 +1319,18 @@ def merge_all(
             if state == "MERGED":
                 logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
                 merged.append(group_id)
+                continue
+
+            # Checked after the live state so a PR that already merged on GitHub
+            # (e.g. into a still-open parent branch) counts as merged rather
+            # than being reported as blocked.
+            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
+            if unmerged_parents:
+                deps = ", ".join(unmerged_parents)
+                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
+                skipped_ids.add(group_id)
+                blocked.append(group_id)
+                skipped.append(f"{group_id} (dependency {deps} not merged)")
                 continue
 
             if state != "OPEN":
@@ -1366,9 +1394,20 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if blocked:
+        console.print(
+            f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
+            f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
+        )
     if notify:
         exit_reason = (
-            "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
+            "merge_error"
+            if stopped
+            else "incomplete_batch"
+            if exited_early
+            else "unmerged_dependency"
+            if blocked
+            else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
         _send_webhook(
@@ -1378,11 +1417,11 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early),
+                "success": not (failed or stopped or exited_early or blocked),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early:
+    if failed or stopped or exited_early or blocked:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
