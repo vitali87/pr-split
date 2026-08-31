@@ -31,6 +31,11 @@ class ErrorMsg(StrEnum):
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
     MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
     LOC_BOUNDS_STRICT_FAILED = "Plan violates configured LOC bounds"
+    GH_STACK_MISSING = (
+        "The gh-stack extension is required for stacked PRs;"
+        " run 'gh extension install github/gh-stack'"
+    )
+    STACK_LINK_FAILED = "Failed to link stack for PRs {prs}: {detail}"
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

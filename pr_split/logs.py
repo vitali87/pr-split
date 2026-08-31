@@ -60,7 +60,6 @@ REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
-STACK_LINK_FAILED = "Could not link stack for PRs {prs}: {detail}"
 MERGE_NODE_NOT_STACKED = (
     "Group '{group}' depends on multiple groups; native stacks are linear, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
