@@ -90,12 +90,18 @@ def _extract_raw_output(block_input: dict[str, object]) -> list[_RawGroup]:
 
 def _count_tokens_anthropic(system: str, user: str, *, settings: Settings) -> int:
     client = anthropic.Anthropic(api_key=settings.api_key)
-    response = client.messages.count_tokens(
-        model=settings.model,
-        system=system,
-        messages=[{"role": "user", "content": user}],
-        tools=[_ANTHROPIC_TOOL_DEF],
-    )
+    # This is the first API call of a run, so a bad key, a network blip or a
+    # rate limit surfaces here; it must be an LLMError like every other
+    # provider failure rather than an SDK traceback.
+    try:
+        response = client.messages.count_tokens(
+            model=settings.model,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            tools=[_ANTHROPIC_TOOL_DEF],
+        )
+    except anthropic.APIError as exc:
+        raise LLMError(ErrorMsg.LLM_TOKEN_COUNT_FAILED(detail=str(exc))) from exc
     return response.input_tokens
 
 

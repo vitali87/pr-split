@@ -22,6 +22,7 @@ class ErrorMsg(StrEnum):
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    LLM_TOKEN_COUNT_FAILED = "Could not count prompt tokens with the LLM API: {detail}"
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
