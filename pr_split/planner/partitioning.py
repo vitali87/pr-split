@@ -7,6 +7,9 @@ from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
+from loguru import logger
+
+from .. import logs
 from ..constants import AssignmentType, PartitionStrategy, Priority
 from ..exceptions import PRSplitError
 from ..graph import PlanDAG
@@ -474,11 +477,21 @@ def _group_units_cp_sat(
                 assignments[group_idx].append(unit)
                 break
 
-    return [
+    grouped = [
         sorted(group_units, key=lambda unit: unit.position)
         for _, group_units in sorted(assignments.items())
         if group_units
     ]
+    if status == cp_model.FEASIBLE:
+        # The solver ran out of time before proving optimality; on larger
+        # diffs the plan it returns can be far from the best one (many
+        # singleton groups), so say so instead of presenting it as final.
+        logger.warning(
+            logs.CP_SAT_NOT_OPTIMAL.format(
+                timeout=settings.cp_sat_timeout, units=len(units), groups=len(grouped)
+            )
+        )
+    return grouped
 
 
 def _build_group_title(group_index: int, units: list[PartitionUnit]) -> str:
