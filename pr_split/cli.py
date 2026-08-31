@@ -1155,7 +1155,14 @@ def _send_webhook(url: str, payload: dict[str, object]) -> None:
 )
 def merge_all(
     auto: Annotated[
-        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+        bool,
+        typer.Option(
+            "--auto",
+            help=(
+                "Queue merges to run after CI checks pass, waiting up to 10 minutes per "
+                "batch for them to land before merging dependent PRs"
+            ),
+        ),
     ] = False,
     notify: Annotated[
         str | None,
