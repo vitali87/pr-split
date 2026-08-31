@@ -59,7 +59,9 @@ class Settings(BaseSettings):
     @model_validator(mode="after")
     def auto_derive_min_loc(self):
         if self.min_loc is None and self.max_refinement_iterations > 0:
-            self.min_loc = self.max_loc // DEFAULT_MIN_LOC_RATIO
+            # Floor at 1 so a tiny max_loc cannot derive a min_loc that the
+            # explicit field constraint (ge=1) would have rejected.
+            self.min_loc = max(1, self.max_loc // DEFAULT_MIN_LOC_RATIO)
         return self
 
     @model_validator(mode="after")
