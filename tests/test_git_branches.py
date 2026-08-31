@@ -130,6 +130,20 @@ class TestDeleteBranch:
         delete_branch("pr-split/pr-1", remote=True)
         assert mock_git.call_count == 2
 
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_local_failure_still_deletes_remote(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [GitOperationError("checked out"), ""]
+        with pytest.raises(GitOperationError, match="checked out"):
+            delete_branch("pr-split/pr-1", remote=True)
+        mock_git.assert_any_call("push", "origin", "--delete", "pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_local_failure_without_remote_raises_immediately(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("nope")
+        with pytest.raises(GitOperationError):
+            delete_branch("pr-split/pr-1")
+        mock_git.assert_called_once()
+
 
 class TestDeriveSplitNamespace:
     def test_simple_branch(self) -> None:

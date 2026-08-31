@@ -233,6 +233,13 @@ _WORKTREE_MAX_WORKERS = 4
 _worktree_ref_lock = Lock()
 
 
+def _discard_worktree(worktree_path: str) -> None:
+    try:
+        remove_worktree(worktree_path)
+    except PRSplitError as exc:
+        logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+
+
 def _create_single_branch_and_commit(
     group: Group,
     parsed_diff: ParsedDiff,
@@ -267,11 +274,18 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
-    finally:
+    except Exception:
+        # add_worktree succeeded, so this run created branch_name (a
+        # pre-existing branch of that name was already replaced). Delete it
+        # here, where that is known for certain: if add_worktree itself had
+        # failed it restores the previous branch and never reaches this path.
+        _discard_worktree(worktree_path)
         try:
-            remove_worktree(worktree_path)
+            delete_branch(branch_name)
         except PRSplitError as exc:
-            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+            logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+        raise
+    _discard_worktree(worktree_path)
 
     return BranchRecord(
         group_id=group.id,
@@ -378,6 +392,8 @@ def _create_branches_and_commits(
                 break
 
         if errors:
+            # Failed groups already removed their own branch inside the
+            # worker; only the successful ones remain to roll back.
             for record in results.values():
                 try:
                     delete_branch(record.branch_name)
@@ -1030,8 +1046,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
+    complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
     plan_path = Path(PLAN_FILE)
-    if plan_path.exists():
+    if complete and plan_path.exists():
         plan_path.unlink()
 
     return closed_prs, deleted_branches
@@ -1049,6 +1066,9 @@ def clean() -> None:
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
+    if closed_prs < len(git_state.prs) or deleted_branches < len(git_state.branches):
+        console.print(f"[yellow]{logs.CLEAN_INCOMPLETE}[/yellow]")
+        raise typer.Exit(1)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
