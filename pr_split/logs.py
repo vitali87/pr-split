@@ -20,6 +20,10 @@ CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
+CLEAN_INCOMPLETE = (
+    "Some PRs or branches could not be cleaned up; the plan file was kept"
+    " so 'pr-split clean' can be re-run"
+)
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
@@ -60,7 +64,6 @@ REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
-STACK_LINK_FAILED = "Could not link stack for PRs {prs}: {detail}"
 MERGE_NODE_NOT_STACKED = (
     "Group '{group}' depends on multiple groups; native stacks are linear, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
