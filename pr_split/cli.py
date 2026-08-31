@@ -417,6 +417,18 @@ _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
 _PR_TEMPLATE_PATH = Path(PLAN_DIR) / "template.md"
+# GitHub rejects PR bodies over 65 536 characters; a group holding thousands
+# of files (mass rename, formatter run) blows past that with its file list
+# alone, and the failure only surfaced after every branch had been pushed.
+_PR_BODY_FILE_LIST_LIMIT = 200
+
+
+def _format_file_list(files: list[str]) -> str:
+    shown = files[:_PR_BODY_FILE_LIST_LIMIT]
+    lines = [f"- `{f}`" for f in shown]
+    if len(files) > len(shown):
+        lines.append(f"- … and {len(files) - len(shown)} more files")
+    return "\n".join(lines)
 
 
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
@@ -424,7 +436,7 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
         files = [a.file_path for a in group.assignments]
         template_vars = {
             "description": group.description,
-            "files": "\n".join(f"- `{f}`" for f in files),
+            "files": _format_file_list(files),
             "added": group.estimated_added,
             "removed": group.estimated_removed,
             "loc": group.estimated_loc,
@@ -451,8 +463,7 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
     files = [a.file_path for a in group.assignments]
     sections = [group.description]
     if files:
-        file_list = "\n".join(f"- `{f}`" for f in files)
-        sections.append(f"## Files changed\n\n{file_list}")
+        sections.append(f"## Files changed\n\n{_format_file_list(files)}")
     sections.append(
         f"## Diff stats\n\n"
         f"**+{group.estimated_added}** additions, "
