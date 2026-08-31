@@ -369,6 +369,26 @@ class TestShowGroupDetail:
         g = _group("pr-1", "root", files=["a.py"], depends_on=["pr-0"])
         _show_group_detail([g], "pr-1")
 
+    def test_assignment_type_is_printed_not_eaten_as_markup(self) -> None:
+        from pr_split.cli import console
+
+        g = _group("pr-1", "Support list[str] [WIP]", files=["a.py"])
+        g.description = "uses the [red] tag literally"
+        g.assignments.append(
+            GroupAssignment(
+                file_path="src/[id].py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0, 2],
+            )
+        )
+        with console.capture() as capture:
+            _show_group_detail([g], "pr-1")
+        out = capture.get()
+        assert "pr-1: Support list[str] [WIP]" in out
+        assert "Description: uses the [red] tag literally" in out
+        assert "a.py [whole_file] hunks: [all]" in out
+        assert "src/[id].py [partial_hunks] hunks: [0, 2]" in out
+
     def test_partial_hunks_rendering(self) -> None:
         g = Group(
             id="pr-1",
