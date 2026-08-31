@@ -39,7 +39,8 @@ def score_plan(groups: list[Group], max_loc: int, min_loc: int | None = None) ->
         else 0
     )
     loc_overflow = sum(max(0, group.estimated_loc - max_loc) for group in groups)
-    dependency_edges = sum(len(group.depends_on) for group in groups)
+    # Count edges as the DAG sees them (a dependency listed twice is one edge).
+    dependency_edges = sum(len(dag.parents(group.id)) for group in groups)
     dag_width = max((len(batch) for batch in dag.iter_ready()), default=0)
     dag_depth = _dag_depth(dag)
 

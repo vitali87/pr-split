@@ -6,7 +6,6 @@ import subprocess
 from loguru import logger
 
 from .. import logs
-from ..constants import BRANCH_PREFIX
 from ..exceptions import GitOperationError
 
 
@@ -46,35 +45,26 @@ def is_worktree_clean() -> bool:
     return all(line.startswith("??") for line in output.splitlines())
 
 
-def checkout_new_branch(name: str, start_point: str) -> None:
-    run_git("checkout", "-b", name, start_point)
-
-
-def checkout_branch(name: str) -> None:
-    run_git("checkout", name)
-
-
-def commit_files(file_paths: list[str], message: str, *, author: str | None = None) -> str:
-    run_git("add", "--", *file_paths)
-    author_args = ("--author", author) if author else ()
-    try:
-        run_git("commit", "--no-verify", "-m", message, *author_args)
-    except GitOperationError:
-        run_git("add", "-u")
-        run_git("commit", "--no-verify", "-m", message, *author_args)
-    return run_git("rev-parse", "HEAD")
-
-
 def push_branch(branch: str) -> None:
     logger.info(logs.PUSHING_BRANCH.format(branch=branch))
     run_git("push", "--force-with-lease", "-u", "origin", branch)
 
 
 def delete_branch(branch: str, *, remote: bool = False) -> None:
-    run_git("branch", "-D", branch)
-    logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    local_error: GitOperationError | None = None
+    try:
+        run_git("branch", "-D", branch)
+        logger.info(logs.BRANCH_DELETED.format(branch=branch))
+    except GitOperationError as exc:
+        if not remote:
+            raise
+        # The local branch may be checked out or already gone; still remove
+        # the remote branch so the cleanup is not left half done.
+        local_error = exc
     if remote:
         run_git("push", "origin", "--delete", branch)
+    if local_error is not None:
+        raise local_error
 
 
 def merge_base(ref_a: str, ref_b: str) -> str:
@@ -85,16 +75,6 @@ def derive_split_namespace(dev_branch_arg: str) -> str:
     raw = dev_branch_arg.split(":", 1)[1] if ":" in dev_branch_arg else dev_branch_arg.lstrip("#")
     sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", raw)
     return sanitized.strip("-")
-
-
-def create_group_branch(group_id: str, base: str, namespace: str) -> str:
-    branch_name = f"{BRANCH_PREFIX}{namespace}/{group_id}"
-    logger.info(logs.CREATING_BRANCH.format(branch=branch_name, base=base))
-    if branch_exists(branch_name):
-        checkout_branch(base)
-        run_git("branch", "-D", branch_name)
-    checkout_new_branch(branch_name, base)
-    return branch_name
 
 
 def add_worktree(path: str, branch_name: str, start_point: str) -> None:
