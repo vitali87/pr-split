@@ -1064,6 +1064,10 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1175,7 +1179,14 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    # A hand-edited plan.json can carry unknown or cyclic dependencies;
+    # report that instead of a traceback from the DAG walk.
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()

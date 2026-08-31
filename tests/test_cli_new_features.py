@@ -21,7 +21,9 @@ from pr_split.schemas import (
     GitState,
     Group,
     GroupAssignment,
+    PlanFile,
     PRRecord,
+    SplitPlan,
 )
 
 runner = CliRunner()
@@ -385,3 +387,51 @@ class TestSplitCliEnvVars:
         assert mock_validate_plan.call_args_list[0].kwargs["min_loc"] == 50
         assert mock_validate_plan.call_args_list[1].kwargs["min_loc"] == 50
         mock_save_plan.assert_not_called()
+
+
+class TestMergeRejectsMalformedSavedPlan:
+    def _plan_file(self, groups: list[Group]) -> PlanFile:
+        from pr_split.constants import Priority
+
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=groups,
+        )
+        prs = [PRRecord(group_id=g.id, pr_number=i + 1, pr_url="u") for i, g in enumerate(groups)]
+        return PlanFile(plan=plan, git_state=GitState(prs=prs))
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unknown_dependency_is_a_clean_error(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_file(
+            [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", depends_on=["pr-9"])]
+        )
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "depends on unknown group 'pr-9'" in result.output
+        mock_state.assert_not_called()
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_cycle_is_a_clean_error(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_file(
+            [
+                _group("pr-1", "a", depends_on=["pr-2"], files=["a.py"]),
+                _group("pr-2", "b", depends_on=["pr-1"], files=["b.py"]),
+            ]
+        )
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Dependency cycle detected" in result.output
+        mock_state.assert_not_called()
