@@ -1047,11 +1047,21 @@ def status() -> None:
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
+        # gh refuses to close a merged PR and silently succeeds on a closed
+        # one; neither needs a warning nor should count as newly closed, but
+        # both are "done" for the purpose of removing the plan.
+        state = str(get_pr_state(pr_record.pr_number).get("state") or "").upper()
+        if state in ("MERGED", "CLOSED"):
+            logger.info(
+                logs.PR_ALREADY_DONE.format(number=pr_record.pr_number, state=state.lower())
+            )
+            closed_prs += 1
+            continue
         try:
             close_pr(pr_record.pr_number)
             closed_prs += 1
-        except PRSplitError:
-            logger.warning(f"Could not close PR #{pr_record.pr_number}")
+        except PRSplitError as exc:
+            logger.warning(f"Could not close PR #{pr_record.pr_number}: {exc}")
 
     logger.info(logs.CLEANING_BRANCHES)
     deleted_branches = 0
