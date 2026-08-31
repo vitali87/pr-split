@@ -986,3 +986,105 @@ class TestPlanSplitWithLlm:
         result = _plan_split_with_llm(parsed, settings)
         assert len(result) == 1
         mock_chunked.assert_called_once()
+
+
+class TestMergeChunkGroupsSameFile:
+    def test_same_file_in_later_chunk_is_merged_into_one_assignment(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].hunk_indices == [0, 1]
+        assert merged.assignments[0].assignment_type == AssignmentType.PARTIAL_HUNKS
+
+    def test_whole_file_wins_when_merging(self) -> None:
+        partial = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.PARTIAL_HUNKS, hunk_indices=[0]
+        )
+        whole = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        first = Group(id="pr-1", title="t", description="d", assignments=[partial])
+        later = Group(id="pr-1", title="t", description="d", assignments=[whole])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].assignment_type == AssignmentType.WHOLE_FILE
+        assert merged.assignments[0].hunk_indices == [0]
+
+    def test_other_files_untouched(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="b.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[2],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("a.py", [0]),
+            ("b.py", [2]),
+        ]
+
+    def test_pre_existing_duplicates_in_accumulated_group_are_kept(self) -> None:
+        def _pa(path: str, hunks: list[int]) -> GroupAssignment:
+            return GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=hunks,
+            )
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("g.py", [0])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("f.py", [0, 1]),
+            ("g.py", [0]),
+        ]
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]

@@ -70,7 +70,7 @@ from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
-from .planner import plan_split, validate_coverage, validate_plan
+from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .schemas import (
     BranchRecord,
     GitState,
@@ -132,6 +132,36 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
+def _require_local_branch(base: str) -> None:
+    """Exit unless ``base`` names a local branch head.
+
+    A remote-tracking ref such as origin/main (or a tag or SHA) resolves
+    locally, so the split would run to completion -- branches created and
+    pushed -- and only fail when GitHub is asked to open PRs against a
+    branch it does not have.
+    """
+    if branch_exists(f"refs/heads/{base}"):
+        return
+    remote_prefix = "refs/remotes/" if base.startswith("refs/remotes/") else ""
+    stripped = base.removeprefix(remote_prefix)
+    suggestion = ""
+    if remote_prefix or "/" in stripped:
+        remote, _, name = stripped.partition("/")
+        if name and remote in _remote_names():
+            suggestion = f" (for example '{name}')"
+    console.print(
+        f"[red]{ErrorMsg.BASE_NOT_A_LOCAL_BRANCH(base=base, suggestion=suggestion)}[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _remote_names() -> set[str]:
+    try:
+        return set(run_git("remote").split())
+    except PRSplitError:
+        return set()
+
+
 def _require_gh_stack() -> None:
     try:
         installed = check_gh_stack()
@@ -152,6 +182,7 @@ def _validate_inputs(
     if not branch_exists(base):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=base)}[/red]")
         raise typer.Exit(1)
+    _require_local_branch(base)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
@@ -202,6 +233,13 @@ _WORKTREE_MAX_WORKERS = 4
 _worktree_ref_lock = Lock()
 
 
+def _discard_worktree(worktree_path: str) -> None:
+    try:
+        remove_worktree(worktree_path)
+    except PRSplitError as exc:
+        logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+
+
 def _create_single_branch_and_commit(
     group: Group,
     parsed_diff: ParsedDiff,
@@ -236,11 +274,18 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
-    finally:
+    except Exception:
+        # add_worktree succeeded, so this run created branch_name (a
+        # pre-existing branch of that name was already replaced). Delete it
+        # here, where that is known for certain: if add_worktree itself had
+        # failed it restores the previous branch and never reaches this path.
+        _discard_worktree(worktree_path)
         try:
-            remove_worktree(worktree_path)
+            delete_branch(branch_name)
         except PRSplitError as exc:
-            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+            logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+        raise
+    _discard_worktree(worktree_path)
 
     return BranchRecord(
         group_id=group.id,
@@ -258,14 +303,20 @@ def _stacked_batch_args(
     merge_base_ref: str,
     hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
-    effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
         batch_args: list[tuple[Group, str, str]] = []
         for gid in batch:
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Files are rebuilt from the merge base, so a child must carry
+                # every ancestor's hunks for the files it touches - not only
+                # its direct parent's - or it silently reverts them.
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
@@ -284,7 +335,6 @@ def _stacked_batch_args(
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
-            effective[gid] = merged
             batch_args.append((merged, group_base, start_point))
         yield batch_args
 
@@ -342,6 +392,8 @@ def _create_branches_and_commits(
                 break
 
         if errors:
+            # Failed groups already removed their own branch inside the
+            # worker; only the successful ones remain to roll back.
             for record in results.values():
                 try:
                     delete_branch(record.branch_name)
@@ -772,7 +824,11 @@ def split(
         if not is_worktree_clean():
             console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
             raise typer.Exit(1)
-        fork_info = _resolve_fork_ref(dev_branch)
+        try:
+            fork_info = _resolve_fork_ref(dev_branch)
+        except PRSplitError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
         if not fork_info:
             console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
             raise typer.Exit(1)
@@ -825,6 +881,11 @@ def split(
             partition_strategy=partition_strategy,
         )
     except (ValidationError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        validate_no_binary_files(parsed_diff)
+    except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
@@ -944,6 +1005,7 @@ def status() -> None:
     table.add_column("State")
     table.add_column("Review")
 
+    unverified: list[int] = []
     for group in plan.groups:
         branch_name = branch_map.get(group.id, "")
         pr_record = pr_map.get(group.id)
@@ -951,12 +1013,23 @@ def status() -> None:
         pr_state = ""
         review = ""
         if pr_record:
-            live = live_states.get(pr_record.pr_number, {})
-            pr_state = live.get("state", pr_record.state.value).upper()
-            review = (live.get("reviewDecision") or "").replace("_", " ").title()
+            live = live_states.get(pr_record.pr_number) or {}
+            if live:
+                pr_state = str(live.get("state") or "").upper()
+                review = str(live.get("reviewDecision") or "").replace("_", " ").title()
+            else:
+                # The recorded state is never written back after merge/close,
+                # so showing it would claim OPEN for a PR that may be gone.
+                pr_state = "UNKNOWN"
+                unverified.append(pr_record.pr_number)
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
+    if unverified:
+        console.print(
+            f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
+            f"{', '.join(f'#{n}' for n in unverified)}. Check 'gh auth status'.[/yellow]"
+        )
 
 
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
@@ -977,8 +1050,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
+    complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
     plan_path = Path(PLAN_FILE)
-    if plan_path.exists():
+    if complete and plan_path.exists():
         plan_path.unlink()
 
     return closed_prs, deleted_branches
@@ -996,6 +1070,9 @@ def clean() -> None:
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
+    if closed_prs < len(git_state.prs) or deleted_branches < len(git_state.branches):
+        console.print(f"[yellow]{logs.CLEAN_INCOMPLETE}[/yellow]")
+        raise typer.Exit(1)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
@@ -1052,6 +1129,8 @@ def execute(
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
+    # A plan saved by an older version may record a remote-tracking base.
+    _require_local_branch(plan.base_branch)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
@@ -1064,6 +1143,7 @@ def execute(
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        validate_no_binary_files(parsed_diff)
         # Building the DAG rejects unknown dependency ids; do it here so a
         # malformed saved plan fails before any branch is created.
         dag = PlanDAG(plan.groups)
@@ -1155,7 +1235,14 @@ def _send_webhook(url: str, payload: dict[str, object]) -> None:
 )
 def merge_all(
     auto: Annotated[
-        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+        bool,
+        typer.Option(
+            "--auto",
+            help=(
+                "Queue merges to run after CI checks pass, waiting up to 10 minutes per "
+                "batch for them to land before merging dependent PRs"
+            ),
+        ),
     ] = False,
     notify: Annotated[
         str | None,

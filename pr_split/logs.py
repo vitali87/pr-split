@@ -20,6 +20,10 @@ CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
+CLEAN_INCOMPLETE = (
+    "Some PRs or branches could not be cleaned up; the plan file was kept"
+    " so 'pr-split clean' can be re-run"
+)
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
