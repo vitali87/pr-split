@@ -238,6 +238,59 @@ class TestPushAndCreatePrs:
         assert max_concurrent_val >= 3
 
 
+class TestCreateBranchesAndCommitsFailureCleanup:
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.commit_files_in_dir")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_failed_group_branch_is_deleted_too(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        def commit(worktree_path: str, *args: object, **kwargs: object) -> str:
+            if worktree_path.endswith("pr-2"):
+                raise PRSplitError("commit failed")
+            return "sha1"
+
+        mock_commit.side_effect = commit
+        groups = [_group("pr-1", "a"), _group("pr-2", "b")]
+        with pytest.raises(PRSplitError, match="1 branch\\(es\\) failed"):
+            _create_branches_and_commits(groups, MagicMock(), "main", "base_sha", "ns")
+        deleted = {call.args[0] for call in mock_delete.call_args_list}
+        assert deleted == {"pr-split/ns/pr-1", "pr-split/ns/pr-2"}
+
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_branch_restored_by_add_worktree_is_not_deleted(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+        mock_delete: MagicMock,
+    ) -> None:
+        # add_worktree restores a pre-existing branch when it fails; the
+        # cleanup must not then delete that restored branch.
+        def add(path: str, branch_name: str, start_point: str) -> None:
+            if branch_name.endswith("pr-2"):
+                raise GitOperationError("worktree add failed")
+
+        mock_add.side_effect = add
+        groups = [_group("pr-1", "a"), _group("pr-2", "b")]
+        with pytest.raises(PRSplitError):
+            _create_branches_and_commits(groups, MagicMock(), "main", "base_sha", "ns")
+        deleted = {call.args[0] for call in mock_delete.call_args_list}
+        assert deleted == {"pr-split/ns/pr-1"}
+
+
 class TestCreateBranchesAndCommitsStacked:
     def _stacked_groups(self) -> list[Group]:
         return [_group("pr-2", "feat: base"), _group("pr-3", "feat: top", ["pr-2"])]
@@ -430,6 +483,49 @@ class TestStackedBatchArgsMergeNode:
             for merged, base, start in batch
             if merged.id == "pr-3"
         )
+
+    def test_grandchild_carries_grandparent_hunks_in_shared_file(self) -> None:
+        # A edits f.py hunk 0; B (child of A) edits only g.py; C (child of B)
+        # edits f.py hunk 1. C is rebuilt from the merge base, so it must
+        # carry A's hunk 0 or its commit reverts A's change.
+        a = _group("pr-a", "a")
+        a.assignments = [
+            GroupAssignment(
+                file_path="f.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        b = _group("pr-b", "b", ["pr-a"])
+        b.assignments = [
+            GroupAssignment(
+                file_path="g.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0],
+            )
+        ]
+        c = _group("pr-c", "c", ["pr-b"])
+        c.assignments = [
+            GroupAssignment(
+                file_path="f.py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[1],
+            )
+        ]
+        groups = [a, b, c]
+        batches = _stacked_batch_args(
+            PlanDAG(groups),
+            {g.id: g for g in groups},
+            {g.id: f"pr-split/ns/{g.id}" for g in groups},
+            "main",
+            "base_sha",
+            {"f.py": 2, "g.py": 1},
+        )
+        merged_c, base, start = next(
+            (m, bs, st) for batch in batches for m, bs, st in batch if m.id == "pr-c"
+        )
+        assert {a.file_path: a.hunk_indices for a in merged_c.assignments} == {"f.py": [0, 1]}
+        assert (base, start) == ("pr-split/ns/pr-b", "pr-split/ns/pr-b")
 
     def test_merge_node_carries_both_parents_changes(self) -> None:
         merged, _, _ = self._merge_node_args()
