@@ -72,3 +72,6 @@ MERGE_NODE_NOT_STACKED = (
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
 )
+PR_SKIPPED_BASE_PR_FAILED = (
+    "Skipping PR for {group}: no PR could be opened for its base branch {base}"
+)

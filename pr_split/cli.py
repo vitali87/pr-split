@@ -534,22 +534,53 @@ def _push_and_create_prs(
                 return False
             gid = owner
 
+    # Open PRs in base-chain order: a child's PR targets its parent's
+    # branch, so if the parent's PR could not be opened the child must be
+    # skipped too, or the saved plan ends up holding orphans whose stack
+    # root does not exist.
+    pending = [g for g in groups if g.id in pushed and _base_pushed(g)]
+    results: dict[str, PRRecord] = {}
+    failed_prs: set[str] = set()
     with ThreadPoolExecutor(max_workers=_PUSH_MAX_WORKERS) as executor:
-        future_to_group_id = {
-            executor.submit(
-                _create_single_pr, group, record_map[group.id], groups, draft=draft
-            ): group.id
-            for group in groups
-            if group.id in pushed and _base_pushed(group)
-        }
-        results: dict[str, PRRecord] = {}
-        for future in as_completed(future_to_group_id):
-            group_id = future_to_group_id[future]
-            try:
-                results[group_id] = future.result()
-            except Exception as exc:
-                logger.error(f"Failed to create PR for {group_id}: {exc}")
-                errors.append((group_id, exc))
+        while pending:
+            ready: list[Group] = []
+            for group in pending:
+                owner = branch_owner.get(record_map[group.id].base_branch)
+                if owner is None or owner in results:
+                    ready.append(group)
+                elif owner in failed_prs:
+                    logger.warning(
+                        logs.PR_SKIPPED_BASE_PR_FAILED.format(
+                            group=group.id, base=record_map[group.id].base_branch
+                        )
+                    )
+                    failed_prs.add(group.id)
+            pending = [g for g in pending if g not in ready and g.id not in failed_prs]
+            if not ready:
+                # Whatever is left descends (possibly several levels, and in
+                # any listing order) from a failed PR; say so for each one.
+                for group in pending:
+                    logger.warning(
+                        logs.PR_SKIPPED_BASE_PR_FAILED.format(
+                            group=group.id, base=record_map[group.id].base_branch
+                        )
+                    )
+                    failed_prs.add(group.id)
+                break
+            future_to_group_id = {
+                executor.submit(
+                    _create_single_pr, group, record_map[group.id], groups, draft=draft
+                ): group.id
+                for group in ready
+            }
+            for future in as_completed(future_to_group_id):
+                group_id = future_to_group_id[future]
+                try:
+                    results[group_id] = future.result()
+                except Exception as exc:
+                    logger.error(f"Failed to create PR for {group_id}: {exc}")
+                    errors.append((group_id, exc))
+                    failed_prs.add(group_id)
 
     if errors:
         error_details = "\n".join([f"- {gid}: {exc}" for gid, exc in errors])

@@ -635,6 +635,131 @@ class TestStackedTransitiveChain:
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1, 2]
 
 
+class TestParentPrFailureGating:
+    def _chain(self) -> tuple[list[Group], list[BranchRecord]]:
+        groups = [
+            _group("pr-1", "feat: a"),
+            _group("pr-2", "feat: b", ["pr-1"]),
+            _group("pr-3", "feat: c", ["pr-2"]),
+        ]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            BranchRecord(
+                group_id="pr-2",
+                branch_name="pr-split/ns/pr-2",
+                base_branch="pr-split/ns/pr-1",
+                commit_sha="abc123",
+            ),
+            BranchRecord(
+                group_id="pr-3",
+                branch_name="pr-split/ns/pr-3",
+                base_branch="pr-split/ns/pr-2",
+                commit_sha="abc123",
+            ),
+        ]
+        return groups, records
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_children_are_skipped_when_the_root_pr_fails(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-1":
+                raise GitOperationError("boom")
+            return (11, "https://github.com/pr/11")
+
+        mock_create.side_effect = create
+        with pytest.raises(PRCreationError) as excinfo:
+            _push_and_create_prs(groups, records)
+
+        assert excinfo.value.pr_records == []
+        assert [c.kwargs["head"] for c in mock_create.call_args_list] == ["pr-split/ns/pr-1"]
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_every_descendant_is_warned_even_when_listed_before_its_parent(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+        groups.reverse()
+        records.reverse()
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-1":
+                raise GitOperationError("boom")
+            return (11, "https://github.com/pr/11")
+
+        mock_create.side_effect = create
+        with patch("pr_split.cli.logger") as mock_logger, pytest.raises(PRCreationError):
+            _push_and_create_prs(groups, records)
+
+        warned = " ".join(str(c.args[0]) for c in mock_logger.warning.call_args_list)
+        assert "Skipping PR for pr-2" in warned
+        assert "Skipping PR for pr-3" in warned
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_only_the_failed_subtree_is_skipped(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+        groups.append(_group("pr-4", "feat: d"))
+        records.append(_branch_record("pr-4", "pr-split/ns/pr-4"))
+        numbers = iter(range(20, 30))
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-2":
+                raise GitOperationError("boom")
+            n = next(numbers)
+            return (n, f"https://github.com/pr/{n}")
+
+        mock_create.side_effect = create
+        with pytest.raises(PRCreationError) as excinfo:
+            _push_and_create_prs(groups, records)
+
+        created = sorted(r.group_id for r in excinfo.value.pr_records)
+        assert created == ["pr-1", "pr-4"]
+        heads = {c.kwargs["head"] for c in mock_create.call_args_list}
+        assert "pr-split/ns/pr-3" not in heads
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_parent_pr_is_opened_before_its_child(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups, records = self._chain()
+        order: list[str] = []
+        numbers = iter(range(1, 10))
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            order.append(head)
+            n = next(numbers)
+            return (n, f"https://github.com/pr/{n}")
+
+        mock_create.side_effect = create
+        result = _push_and_create_prs(groups, records)
+
+        assert [r.group_id for r in result] == ["pr-1", "pr-2", "pr-3"]
+        assert order == ["pr-split/ns/pr-1", "pr-split/ns/pr-2", "pr-split/ns/pr-3"]
+
+
 class TestTransitivePushFailureGating:
     @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
     @patch("pr_split.cli.push_branch")
