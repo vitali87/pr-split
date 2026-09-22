@@ -227,7 +227,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: vitali87/pr-split@v1.0.0
+      - uses: vitali87/pr-split@v1.0.1
         with:
           max-loc: "400"
           partition-strategy: "graph"
@@ -240,7 +240,7 @@ jobs:
 |-------|---------|-------------|
 | `max-loc` | `400` | Maximum target diff lines per sub-PR |
 | `min-loc` | (unset) | Minimum target diff lines per sub-PR |
-| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). Automatic `ortools` install for `cp_sat` needs a release newer than `v1.0.0`; pin the action to that release or `@main` when using it |
+| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). `cp_sat` installs `ortools` automatically from `v1.0.1` |
 | `priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `threshold-groups` | `2` | Minimum suggested groups before posting the split plan |
 | `python-version` | `3.12` | Python version to use |
