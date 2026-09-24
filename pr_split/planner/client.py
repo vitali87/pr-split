@@ -516,18 +516,46 @@ def _plan_split_with_llm(
     return _refine_plan_with_llm(groups, parsed_diff, settings, system)
 
 
+def _single_group_plan(parsed_diff: ParsedDiff) -> list[Group]:
+    """One group holding every hunk: the plan for a diff that needs no split."""
+    group = Group(
+        id="pr-1",
+        title="review all changes",
+        description="The whole diff fits within --max-loc, so it is kept as a single PR.",
+        assignments=[
+            GroupAssignment(
+                file_path=pf.path,
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=list(range(len(pf))),
+            )
+            for pf in parsed_diff.patch_set
+        ],
+    )
+    recompute_estimated_loc([group], parsed_diff)
+    return [group]
+
+
 def plan_split(
     parsed_diff: ParsedDiff,
     settings: Settings,
 ) -> list[Group]:
+    if settings.partition_strategy not in (
+        PartitionStrategy.LLM,
+        PartitionStrategy.GRAPH,
+        PartitionStrategy.CP_SAT,
+    ):
+        raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
+    total_loc = parsed_diff.stats["total_loc"]
+    if total_loc <= settings.max_loc:
+        # Nothing to split: no backend (and no LLM call) is needed.
+        logger.info(logs.DIFF_WITHIN_MAX_LOC.format(loc=total_loc, max_loc=settings.max_loc))
+        return _single_group_plan(parsed_diff)
+
     logger.info(logs.PLANNING_WITH_BACKEND.format(backend=settings.partition_strategy))
-    match settings.partition_strategy:
-        case PartitionStrategy.LLM:
-            groups = _plan_split_with_llm(parsed_diff, settings)
-        case PartitionStrategy.GRAPH | PartitionStrategy.CP_SAT:
-            groups = partition_diff(parsed_diff, settings)
-        case _:
-            raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
+    if settings.partition_strategy is PartitionStrategy.LLM:
+        groups = _plan_split_with_llm(parsed_diff, settings)
+    else:
+        groups = partition_diff(parsed_diff, settings)
 
     metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(

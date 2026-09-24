@@ -10,6 +10,7 @@ from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import ErrorMsg, LLMError, PRSplitError
+from pr_split.graph import PlanDAG
 from pr_split.planner.client import (
     RawToolOutput,
     _call_anthropic,
@@ -29,6 +30,7 @@ from pr_split.planner.client import (
     plan_split,
 )
 from pr_split.planner.prompts import SPLIT_TOOL_NAME
+from pr_split.planner.validator import validate_plan
 from pr_split.schemas import Group, GroupAssignment
 
 
@@ -290,8 +292,10 @@ diff --git a/a.py b/a.py
 new file mode 100644
 --- /dev/null
 +++ b/a.py
-@@ -0,0 +1 @@
+@@ -0,0 +1,3 @@
 +x
++y
++z
 """
         )
         mock_partition.return_value = [Group(id="pr-1", title="t", description="d")]
@@ -312,10 +316,33 @@ new file mode 100644
         settings = Settings(
             provider=Provider.ANTHROPIC,
             partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=2,
         )
         groups = plan_split(parsed, settings)
         assert len(groups) == 1
         mock_partition.assert_called_once()
+
+    @pytest.mark.parametrize("strategy", list(PartitionStrategy))
+    @patch("pr_split.planner.client._plan_split_with_llm")
+    @patch("pr_split.planner.client.partition_diff")
+    def test_diff_within_max_loc_is_one_group_without_a_backend(
+        self,
+        mock_partition: MagicMock,
+        mock_llm: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        strategy: PartitionStrategy,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-rejected-by-the-server")
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(provider=Provider.ANTHROPIC, partition_strategy=strategy)
+
+        groups = plan_split(parsed, settings)
+
+        mock_llm.assert_not_called()
+        mock_partition.assert_not_called()
+        assert [g.id for g in groups] == ["pr-1"]
+        assert groups[0].estimated_loc == parsed.stats["total_loc"]
+        assert validate_plan(groups, parsed, PlanDAG(groups), settings.max_loc) == []
 
     def test_unsupported_partition_strategy_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")

@@ -31,6 +31,7 @@ AUTHOR_PRESERVED = "Preserving author: {author}"
 COUNTING_TOKENS = "Counting input tokens ({model})"
 TOKEN_COUNT = "Token count: {tokens} (limit: {limit})"
 PLANNING_WITH_BACKEND = "Planning split with backend '{backend}'"
+DIFF_WITHIN_MAX_LOC = "Diff is {loc} LOC, within --max-loc {max_loc}; keeping it as a single PR"
 CHUNK_STRATEGY_SELECTED = "Using chunking strategy '{strategy}'"
 DIFF_TOO_LARGE = (
     "Diff exceeds context window ({tokens} tokens > {limit} limit), switching to chunked mode"
