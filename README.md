@@ -84,7 +84,7 @@ pr-split split feature-branch --base main --dry-run
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--draft` | `false` | Open every sub-PR as a draft |
-| `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
+| `--dry-run` | `false` | Preview plan and save to `.pr-split/plans/<dev-branch>.json` without creating branches or PRs |
 
 ### Stack dependent PRs
 
@@ -123,6 +123,16 @@ Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
 ```bash
 pr-split merge --notify https://hooks.slack.com/...
 ```
+
+### Several splits in one checkout
+
+Each split's plan is saved per dev branch under `.pr-split/plans/`, so splitting a second branch does not overwrite the first. `execute`, `status`, `merge` and `clean` use the only saved plan, or the one you name with the global `--branch` option when several are saved:
+
+```bash
+pr-split --branch feat/big status
+```
+
+`.pr-split/` is added to the repository's `.git/info/exclude`, so the plan (which holds the whole diff) never shows up in `git status` or gets committed. A plan saved by an older version at `.pr-split/plan.json` is moved to its branch's file the first time it is used.
 
 ### Execute a saved dry-run plan
 
