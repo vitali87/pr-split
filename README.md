@@ -147,6 +147,15 @@ pr-split adopt test/allowlist test/derive --base main
 
 Registers existing branches, bottom first, as a native GitHub stack on `--base`, opening a PR for any branch that has none, and saves them as a plan so `status` and `merge` work on them. Each branch must contain the one below it (the first must contain `--base`); otherwise it is refused. Pass `--yes` to skip the confirmation.
 
+### Move a split onto a new base
+
+```bash
+pr-split retarget            # onto the repository's default branch
+pr-split retarget --to develop
+```
+
+When a split was made with `--base <feature-branch>` and that branch later merges, its root PRs still target the merged branch, and GitHub refuses to change the base of a PR that is in a stack. `retarget` unstacks the plan's native stacks, points the root PRs at the new base, links the stacks again on it and updates the saved plan. `status` warns and `merge` refuses while the plan's base branch has already merged.
+
 ### Interactive plan editing
 
 After the plan is displayed, an interactive editor lets you adjust the plan before confirming:

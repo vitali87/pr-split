@@ -211,3 +211,38 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
         author=author,
         fork_full_name=fork_full_name,
     )
+
+
+def default_branch() -> str:
+    """The repository's default branch on GitHub."""
+    return _run_gh("repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name")
+
+
+def branch_has_merged(branch: str) -> bool:
+    """True when a PR from ``branch`` has been merged (the branch itself landed)."""
+    raw = _run_gh(
+        "pr", "list", "--head", branch, "--state", "merged", "--json", "number", "--limit", "1"
+    )
+    try:
+        return bool(json.loads(raw or "[]"))
+    except json.JSONDecodeError:
+        return False
+
+
+def stack_numbers_for(pr_numbers: Sequence[int]) -> set[int]:
+    """Native stacks that contain any of ``pr_numbers``."""
+    stacks: set[int] = set()
+    for number in pr_numbers:
+        raw = _run_gh(
+            "api", f"repos/{{owner}}/{{repo}}/stacks?pull_request={number}", "--jq", ".[].number"
+        )
+        stacks.update(int(n) for n in raw.split())
+    return stacks
+
+
+def unstack(stack_number: int) -> None:
+    _run_gh("stack", "unstack", str(stack_number))
+
+
+def set_pr_base(pr_number: int, base: str) -> None:
+    _run_gh("pr", "edit", str(pr_number), "--base", base)
