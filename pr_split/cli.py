@@ -714,28 +714,57 @@ def _drop_empty_groups(
         for gid in dropped
     }
 
-    def _surviving(dep: str, seen: set[str]) -> list[str]:
-        # Walk through chains of dropped groups to the nearest kept groups.
+    def _surviving(dep: str, seen: set[str]) -> tuple[list[str], list[str]]:
+        # Walk through chains of dropped groups to the nearest kept ancestors,
+        # collecting the kept groups that took over the dropped groups' hunks.
         if dep not in dropped:
-            return [dep]
-        out: list[str] = []
+            return [dep], []
+        ancestors: list[str] = []
+        taken_over: list[str] = list(recipients[dep])
         for parent in dropped[dep]:
             if parent not in seen:
                 seen.add(parent)
-                out.extend(_surviving(parent, seen))
-        out.extend(recipients[dep])
-        return out
+                more_ancestors, more_taken = _surviving(parent, seen)
+                ancestors.extend(more_ancestors)
+                taken_over.extend(more_taken)
+        return ancestors, taken_over
 
-    kept: list[Group] = []
+    # Inherited ancestors first: they are transitive ancestors in the original
+    # acyclic plan, so rewiring to them cannot create a cycle.
+    deps: dict[str, list[str]] = {}
+    wanted: dict[str, list[str]] = {}
     for group in groups:
         if group.id in dropped:
             continue
-        deps: list[str] = []
+        deps[group.id] = []
+        wanted[group.id] = []
         for dep in group.depends_on:
-            for candidate in _surviving(dep, set()):
-                if candidate not in deps and candidate != group.id:
-                    deps.append(candidate)
-        kept.append(group.model_copy(update={"depends_on": deps}))
+            ancestors, taken_over = _surviving(dep, set())
+            for candidate in ancestors:
+                if candidate not in deps[group.id] and candidate != group.id:
+                    deps[group.id].append(candidate)
+            wanted[group.id].extend(taken_over)
+
+    def _depends_on(start: str, target: str) -> bool:
+        stack, seen = [start], set()
+        while stack:
+            node = stack.pop()
+            if node == target:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(deps.get(node, []))
+        return False
+
+    # Then the groups that took over dropped hunks, skipping any that already
+    # build on the dependant (the user moved the hunk downstream of it).
+    for gid, candidates in wanted.items():
+        for candidate in candidates:
+            if candidate in deps[gid] or candidate == gid or _depends_on(candidate, gid):
+                continue
+            deps[gid].append(candidate)
+
+    kept = [g.model_copy(update={"depends_on": deps[g.id]}) for g in groups if g.id not in dropped]
     console.print(f"[yellow]Dropped empty group(s) after editing: {', '.join(dropped)}[/yellow]")
     return kept
 

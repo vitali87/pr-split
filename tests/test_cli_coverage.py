@@ -30,6 +30,7 @@ from pr_split.cli import (
 from pr_split.constants import AssignmentType, Priority
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import GitOperationError, PRSplitError
+from pr_split.graph import PlanDAG
 from pr_split.schemas import (
     BranchRecord,
     GitState,
@@ -1072,6 +1073,43 @@ class TestDropEmptyGroups:
         result = _drop_empty_groups([root, d, e, c], held_before, {"a.py": 1})
 
         assert result[-1].depends_on == ["pr-1", "pr-2"]
+
+    def test_downstream_recipient_is_not_added_as_a_dependency(self) -> None:
+        # D already builds on C; making C depend on D would be a cycle.
+        partial = AssignmentType.PARTIAL_HUNKS
+        e = _group("pr-1", "e")
+        c = _group("pr-2", "c", depends_on=["pr-1"], files=["c.py"])
+        d = _group("pr-3", "d", depends_on=["pr-2"])
+        d.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0])
+        ]
+        held_before = {"pr-1": {("a.py", 0)}, "pr-2": set(), "pr-3": set()}
+
+        result = _drop_empty_groups([e, c, d], held_before, {"a.py": 1})
+
+        assert {g.id: g.depends_on for g in result} == {"pr-2": [], "pr-3": ["pr-2"]}
+        PlanDAG(result).validate_acyclic()
+
+    def test_crossed_recipients_do_not_form_a_cycle(self) -> None:
+        # C depended on E1 whose hunk moved to D; D depended on E2 whose hunk
+        # moved to C. Only the first recipient edge can be kept.
+        partial = AssignmentType.PARTIAL_HUNKS
+        e1 = _group("pr-1", "e1")
+        e2 = _group("pr-2", "e2")
+        c = _group("pr-3", "c", depends_on=["pr-1"])
+        c.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[1])
+        ]
+        d = _group("pr-4", "d", depends_on=["pr-2"])
+        d.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0])
+        ]
+        held_before = {"pr-1": {("a.py", 0)}, "pr-2": {("a.py", 1)}}
+
+        result = _drop_empty_groups([e1, e2, c, d], held_before, {"a.py": 2})
+
+        assert {g.id: g.depends_on for g in result} == {"pr-3": ["pr-4"], "pr-4": []}
+        PlanDAG(result).validate_acyclic()
 
 
 class TestEditorEmptiedGroupEndToEnd:
