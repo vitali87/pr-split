@@ -667,6 +667,84 @@ class TestExecuteRetriesAfterFailedPush:
         mock_save.assert_called_once()
 
     @staticmethod
+    def _plan_with_one_of_two_prs(pr_groups: list[str]) -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, PRRecord, SplitPlan
+
+        return PlanFile(
+            plan=SplitPlan(
+                dev_branch="feature-branch",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                merge_base_sha="0123456789abcdef",
+                raw_diff="some diff",
+                groups=[
+                    _group("pr-1", "feat: a", files=["a.py"]),
+                    _group("pr-2", "feat: b", files=["b.py"]),
+                ],
+            ),
+            git_state=GitState(
+                branches=[
+                    BranchRecord(
+                        group_id=gid,
+                        branch_name=f"pr-split/feature-branch/{gid}",
+                        base_branch="main",
+                        commit_sha="abc123",
+                    )
+                    for gid in ("pr-1", "pr-2")
+                ],
+                prs=[PRRecord(group_id=gid, pr_number=10, pr_url="u") for gid in pr_groups],
+            ),
+        )
+
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_partial_prs_are_kept_and_the_rest_created(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_validate: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._plan_with_one_of_two_prs(["pr-1"])
+
+        result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0, result.output
+        assert "opened 1 of 2 PR(s)" in result.output.replace("\n", " ")
+        assert set(mock_create.call_args.kwargs["keep"]) == {"pr-1"}
+        assert set(mock_push.call_args.kwargs["existing_prs"]) == {"pr-1"}
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_every_group_with_a_pr_is_refused(
+        self, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_with_one_of_two_prs(["pr-1", "pr-2"])
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "already has PRs" in result.output
+
+    @staticmethod
     def _plan_with_stale_pr2() -> object:
         from pr_split.constants import Priority
         from pr_split.schemas import BranchRecord, GitState, PlanFile, SplitPlan

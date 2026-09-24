@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 
 from loguru import logger
 
@@ -74,9 +75,35 @@ def commit_files(file_paths: list[str], message: str, *, author: str | None = No
     return run_git("rev-parse", "HEAD")
 
 
+# Server-side failures GitHub reports for a push that can succeed on retry.
+_TRANSIENT_PUSH_ERRORS = (
+    "fatal error in commit_refs",
+    "the remote end hung up unexpectedly",
+    "internal server error",
+    "http 500",
+    "http 502",
+    "http 503",
+    "connection reset",
+    "operation timed out",
+)
+_PUSH_ATTEMPTS = 3
+_PUSH_RETRY_DELAY = 2.0
+
+
 def push_branch(branch: str) -> None:
     logger.info(logs.PUSHING_BRANCH.format(branch=branch))
-    run_git("push", "--force-with-lease", "-u", "origin", branch)
+    for attempt in range(1, _PUSH_ATTEMPTS + 1):
+        try:
+            run_git("push", "--force-with-lease", "-u", "origin", branch)
+            return
+        except GitOperationError as exc:
+            transient = any(marker in str(exc).lower() for marker in _TRANSIENT_PUSH_ERRORS)
+            if not transient or attempt == _PUSH_ATTEMPTS:
+                raise
+            logger.warning(
+                logs.PUSH_RETRY.format(branch=branch, attempt=attempt, error=str(exc).strip())
+            )
+            time.sleep(_PUSH_RETRY_DELAY * attempt)
 
 
 def delete_branch(branch: str, *, remote: bool = False) -> None:

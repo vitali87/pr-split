@@ -178,6 +178,30 @@ class TestPushAndCreatePrs:
         assert result[0].group_id == "pr-1"
         assert result[1].group_id == "pr-2"
 
+    @patch("pr_split.cli.create_pr", return_value=(2, "https://github.com/pr/2"))
+    @patch("pr_split.cli.push_branch")
+    def test_groups_with_existing_prs_are_not_pushed_or_reopened(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups = [_group("pr-1", "feat: a"), _group("pr-2", "feat: b", ["pr-1"])]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            BranchRecord(
+                group_id="pr-2",
+                branch_name="pr-split/ns/pr-2",
+                base_branch="pr-split/ns/pr-1",
+                commit_sha="abc123",
+            ),
+        ]
+        existing = PRRecord(group_id="pr-1", pr_number=1, pr_url="https://github.com/pr/1")
+
+        result = _push_and_create_prs(groups, records, existing_prs={"pr-1": existing})
+
+        assert [call.args[0] for call in mock_push.call_args_list] == ["pr-split/ns/pr-2"]
+        mock_create.assert_called_once()
+        assert result[0] is existing
+        assert result[1].pr_number == 2
+
     @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
     @patch("pr_split.cli.push_branch")
     def test_pushes_all_branches(self, mock_push: MagicMock, mock_create: MagicMock) -> None:
