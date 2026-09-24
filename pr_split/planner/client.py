@@ -20,7 +20,8 @@ from ..constants import (
     Provider,
 )
 from ..diff_ops import ParsedDiff
-from ..exceptions import ErrorMsg, LLMError, PRSplitError
+from ..exceptions import ErrorMsg, LLMError, PlanValidationError, PRSplitError
+from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import (
     assign_uncovered_hunks,
@@ -42,7 +43,7 @@ from .prompts import (
     build_user_prompt,
 )
 from .scoring import score_plan
-from .validator import detect_loc_bound_violations
+from .validator import detect_loc_bound_violations, validate_coverage, validate_no_conflicts
 
 _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
@@ -107,7 +108,18 @@ def _count_tokens_openai(texts: list[str], *, model: str) -> int:
     return sum(len(enc.encode(t)) for t in texts)
 
 
+def _utf8_safe(text: str) -> str:
+    """Replace surrogate-escaped bytes so the text can be sent as JSON.
+
+    Diff text keeps undecodable bytes as surrogates so files round-trip on
+    disk; the HTTP clients encode request bodies as strict UTF-8, so the
+    prompt copy gets U+FFFD instead.
+    """
+    return text.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _count_tokens_anthropic(system, user, settings=settings)
@@ -182,6 +194,7 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
 
 
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _call_anthropic(system, user, settings=settings)
@@ -217,6 +230,16 @@ def _call_chunk_with_retry(
 
 
 def _parse_groups(raw: RawToolOutput) -> list[Group]:
+    # Malformed shapes (missing keys, bad enum values, wrong types) must
+    # surface as LLMError so the chunk retry loop and the refinement
+    # fallback can handle them; pydantic's ValidationError is a ValueError.
+    try:
+        return _parse_groups_strict(raw)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"{type(exc).__name__}: {exc}")) from exc
+
+
+def _parse_groups_strict(raw: RawToolOutput) -> list[Group]:
     groups: list[Group] = []
     for entry in raw["groups"]:
         assignments = [
@@ -408,6 +431,36 @@ def _refine_plan_with_llm(
             raw = _call_llm(system=system, user=user, settings=settings)
             refined = _parse_groups(raw)
             recompute_estimated_loc(refined, parsed_diff)
+            # The incoming plan only had LOC warnings; never trade it for one
+            # that drops or duplicates hunks, has a broken dependency graph
+            # (duplicate ids, unknown parents, a cycle, overlapping independent
+            # groups), or that is no better.
+            try:
+                validate_coverage(refined, parsed_diff)
+                refined_dag = PlanDAG(refined)
+                refined_dag.validate_acyclic()
+                validate_no_conflicts(
+                    refined, refined_dag, {pf.path: len(pf) for pf in parsed_diff.patch_set}
+                )
+            except PlanValidationError as exc:
+                logger.warning(
+                    logs.REFINEMENT_REJECTED.format(
+                        iteration=iteration, reason=exc, remaining=len(violations)
+                    )
+                )
+                return groups
+            refined_violations = detect_loc_bound_violations(
+                refined, settings.max_loc, settings.min_loc
+            )
+            if len(refined_violations) >= len(violations):
+                logger.warning(
+                    logs.REFINEMENT_NO_IMPROVEMENT.format(
+                        iteration=iteration,
+                        before=len(violations),
+                        after=len(refined_violations),
+                    )
+                )
+                return groups
             groups = refined
         except LLMError:
             logger.warning(
@@ -446,7 +499,14 @@ def _plan_split_with_llm(
         logger.warning(logs.DIFF_TOO_LARGE.format(tokens=token_count, limit=effective_limit))
         groups = _plan_split_chunked(parsed_diff, settings, system, token_count)
         logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
-        return _refine_plan_with_llm(groups, parsed_diff, settings, system)
+        # The refinement prompt embeds the full labeled diff, which is exactly
+        # what did not fit; sending it would fail and be swallowed as an
+        # exhausted refinement. Say so instead of wasting the call.
+        if settings.max_refinement_iterations > 0:
+            violations = detect_loc_bound_violations(groups, settings.max_loc, settings.min_loc)
+            if violations:
+                logger.warning(logs.REFINEMENT_SKIPPED_CHUNKED.format(remaining=len(violations)))
+        return groups
 
     logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
     raw = _call_llm(system=system, user=user, settings=settings)
