@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Sequence
 
 from loguru import logger
 
@@ -42,6 +43,20 @@ def check_gh_stack() -> bool:
     """
     installed = _run_gh("extension", "list")
     return any(GH_STACK_EXTENSION in line.split() for line in installed.splitlines())
+
+
+def find_open_pr(branch: str) -> tuple[int, str] | None:
+    """The open PR whose head is ``branch`` in this repository, if any."""
+    raw = _run_gh(
+        "pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not prs:
+        return None
+    return int(prs[0]["number"]), str(prs[0]["url"])
 
 
 def create_pr(
@@ -93,7 +108,8 @@ def close_pr(pr_number: int) -> None:
     logger.info(logs.PR_CLOSED.format(number=pr_number))
 
 
-def link_stack(pr_numbers: list[int], base: str) -> None:
+def link_stack(pr_numbers: Sequence[int | str], base: str) -> None:
+    """Link PRs (numbers, or branch names to open PRs for) into a stack, bottom first."""
     # Without --base, gh stack link roots the stack on the repository default
     # branch and retargets the bottom PR there.
     try:

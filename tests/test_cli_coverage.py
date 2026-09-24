@@ -7,6 +7,7 @@ _show_group_detail, _move_assignment, and split command argument validation.
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1162,3 +1163,86 @@ class TestEditorEmptiedGroupEndToEnd:
         assert groups[0].assignments[0].hunk_indices == [0, 1]
         assert groups[0].estimated_loc == 3
         assert validate_plan(groups, parsed, PlanDAG(groups), max_loc=400) == []
+
+
+class TestAdoptExistingBranches:
+    """`adopt` registers already-built branches as a stack and saves them as a plan."""
+
+    def _repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+            monkeypatch.setenv(var, "t")
+        for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+            monkeypatch.setenv(var, "t@x")
+        monkeypatch.chdir(tmp_path)
+
+        def git(*args: str) -> None:
+            subprocess.run(["git", *args], cwd=tmp_path, check=True, capture_output=True)
+
+        git("init", "-q", "-b", "main")
+        (tmp_path / "a.txt").write_text("a\n")
+        git("add", "a.txt")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "test/allowlist")
+        (tmp_path / "b.txt").write_text("b\n")
+        git("add", "b.txt")
+        git("commit", "-qm", "parent")
+        git("checkout", "-qb", "test/derive")
+        (tmp_path / "c.txt").write_text("c\n")
+        git("add", "c.txt")
+        git("commit", "-qm", "child")
+        git("checkout", "-qb", "unrelated", "main")
+        (tmp_path / "d.txt").write_text("d\n")
+        git("add", "d.txt")
+        git("commit", "-qm", "unrelated")
+        git("checkout", "-q", "main")
+
+    @patch("pr_split.cli.find_open_pr")
+    @patch("pr_split.cli.link_stack")
+    @patch("pr_split.cli.check_gh_stack", return_value=True)
+    def test_chain_is_linked_on_base_and_saved_as_a_stacked_plan(
+        self,
+        mock_stack: MagicMock,
+        mock_link: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+        mock_find.side_effect = [(1951, "https://x/1951"), (1952, "https://x/1952")]
+
+        result = runner.invoke(
+            app, ["adopt", "test/allowlist", "test/derive", "--base", "main", "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        mock_link.assert_called_once_with(["test/allowlist", "test/derive"], base="main")
+        from pr_split.plan_store import load_plan
+
+        saved = load_plan()
+        assert saved.plan.stacked is True
+        assert [(g.id, g.depends_on) for g in saved.plan.groups] == [
+            ("pr-1", []),
+            ("pr-2", ["pr-1"]),
+        ]
+        assert [(b.branch_name, b.base_branch) for b in saved.git_state.branches] == [
+            ("test/allowlist", "main"),
+            ("test/derive", "test/allowlist"),
+        ]
+        assert [p.pr_number for p in saved.git_state.prs] == [1951, 1952]
+
+    @patch("pr_split.cli.link_stack")
+    def test_branch_that_does_not_contain_its_parent_is_refused(
+        self, mock_link: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+
+        result = runner.invoke(app, ["adopt", "test/allowlist", "unrelated", "--yes"])
+
+        assert result.exit_code == 1
+        assert "unrelated does not contain test/allowlist" in result.output
+        mock_link.assert_not_called()
+
+    def test_a_single_branch_is_refused(self) -> None:
+        result = runner.invoke(app, ["adopt", "only-one"])
+        assert result.exit_code == 1
+        assert "at least two branches" in result.output
