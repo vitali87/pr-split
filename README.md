@@ -24,7 +24,7 @@ Vibe coding with AI assistants can produce massive PRs that no one wants to revi
 
 ## How it works
 
-`pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
+`pr-split` takes a large pull request (local branch, PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
 
 <img src="pr-split.png" alt="pr-split system design" width="100%">
 
@@ -56,7 +56,9 @@ uv tool install "pr-split[cp-sat]"
 pr-split split feature-branch --base main
 ```
 
-### Split a fork PR by number
+### Split a PR by number
+
+Works for same-repo and fork PRs: the PR's head is fetched (from `origin`, or from the fork) and its base branch is used.
 
 ```bash
 pr-split split '#42' --base main
