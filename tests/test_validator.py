@@ -266,13 +266,12 @@ class TestValidateCoverageWholeFileExpansion:
 
     def test_stale_whole_file_index_does_not_create_a_phantom_conflict(self) -> None:
         # a.py has exactly one hunk. g1's WHOLE_FILE assignment carries a stale
-        # index 99; an independent g2 lists the same bogus index for a.py. The
-        # only real hunk (0) is covered once, so the plan must validate: 99 is
-        # not a hunk and must not be reported as an overlapping region.
-        parsed = parse_diff(SAMPLE_DIFF)
+        # index 99; an independent g2 lists the same bogus index for a.py.
+        # Coverage validation rejects g2's index as an unknown hunk, so exercise
+        # the conflict check alone: 99 is not a hunk and must not be reported
+        # as a region the two groups both touch.
         groups = [
             _make_group("g1", [_ga("a.py", WHOLE, [0, 99])], 3),
             _make_group("g2", [_ga("b.py", WHOLE, [0]), _ga("a.py", PARTIAL, [99])], 4),
         ]
-        dag = PlanDAG(groups)
-        assert validate_plan(groups, parsed, dag, max_loc=400) == []
+        validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})
