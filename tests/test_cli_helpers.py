@@ -717,6 +717,22 @@ class TestOversizedGroupsReport:
         out = " ".join(capture.get().split())
         assert "2 of 3 groups exceed --max-loc 400 (largest: pr-1 at 876 LOC)" in out
 
+    def test_single_hunk_group_is_named_as_irreducible(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        big_file = self._sized("pr-1", 734)
+        big_file.assignments = [
+            GroupAssignment(
+                file_path="tests/test_big.py",
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=[0],
+            )
+        ]
+        with console.capture() as capture:
+            _report_oversized_groups([big_file], 400)
+        out = " ".join(capture.get().split())
+        assert "pr-1 hold a single hunk each and cannot be split below the limit" in out
+
     def test_nothing_printed_within_the_limit(self) -> None:
         from pr_split.cli import _report_oversized_groups, console
 

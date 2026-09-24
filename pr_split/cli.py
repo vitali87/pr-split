@@ -224,10 +224,20 @@ def _report_oversized_groups(groups: list[Group], max_loc: int) -> None:
     if not oversized:
         return
     largest = max(oversized, key=lambda g: g.estimated_loc)
+    # A group holding one hunk (e.g. a whole new file) cannot be split by any
+    # plan; say so rather than leave it looking like a planning miss.
+    single_hunk = [g.id for g in oversized if sum(len(a.hunk_indices) for a in g.assignments) == 1]
+    irreducible = (
+        f" {', '.join(escape(gid) for gid in single_hunk)} hold a single hunk each and"
+        " cannot be split below the limit."
+        if single_hunk
+        else ""
+    )
     console.print(
         f"[yellow]{len(oversized)} of {len(groups)} groups exceed --max-loc {max_loc}"
-        f" (largest: {escape(largest.id)} at {largest.estimated_loc} LOC). Use the editor,"
-        " --max-refinement-iterations or --strict-loc-bounds to act on it.[/yellow]"
+        f" (largest: {escape(largest.id)} at {largest.estimated_loc} LOC).{irreducible}"
+        " Use the editor, --max-refinement-iterations or --strict-loc-bounds to act on it."
+        "[/yellow]"
     )
 
 
