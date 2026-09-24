@@ -109,16 +109,24 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number)) from exc
 
-    pr_data: dict[str, object] = json.loads(raw)
-    head = pr_data["head"]
-    base = pr_data["base"]
+    try:
+        pr_data = json.loads(raw)
+        head = pr_data["head"]
+        base = pr_data["base"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GitOperationError(
+            ErrorMsg.PR_RESPONSE_INVALID(number=pr_number, detail=str(exc))
+        ) from exc
 
     if not isinstance(head, dict) or not isinstance(base, dict):
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
 
     head_repo = head.get("repo")
-    if not isinstance(head_repo, dict) or not head_repo.get("fork"):
+    if not isinstance(head_repo, dict):
+        # head.repo is null when the fork was deleted
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
+    if not head_repo.get("fork"):
+        raise GitOperationError(ErrorMsg.PR_NOT_FROM_FORK(number=pr_number))
 
     clone_url = str(head_repo["clone_url"])
     head_ref = str(head["ref"])

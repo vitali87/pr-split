@@ -182,3 +182,24 @@ class TestSettingsEmptyKeyValidation:
         monkeypatch.setenv("OPENAI_API_KEY", "")
         with pytest.raises(ValidationError, match="OPENAI_API_KEY"):
             Settings(provider=Provider.OPENAI)
+
+
+class TestDerivedMinLocFloor:
+    @pytest.mark.parametrize("max_loc", [2, 3])
+    def test_tiny_max_loc_derives_min_loc_of_one(
+        self, monkeypatch: pytest.MonkeyPatch, max_loc: int
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        settings = Settings(max_loc=max_loc, max_refinement_iterations=1)
+        assert settings.min_loc == 1
+
+    def test_max_loc_of_one_with_refinement_is_rejected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        with pytest.raises(ValueError, match="min_loc 1 must be less than max_loc 1"):
+            Settings(max_loc=1, max_refinement_iterations=1)
+
+    def test_normal_max_loc_uses_ratio(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+        assert Settings(max_loc=400, max_refinement_iterations=1).min_loc == 100
