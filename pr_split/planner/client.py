@@ -20,7 +20,8 @@ from ..constants import (
     Provider,
 )
 from ..diff_ops import ParsedDiff
-from ..exceptions import ErrorMsg, LLMError, PRSplitError
+from ..exceptions import ErrorMsg, LLMError, PlanValidationError, PRSplitError
+from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import (
     assign_uncovered_hunks,
@@ -42,7 +43,7 @@ from .prompts import (
     build_user_prompt,
 )
 from .scoring import score_plan
-from .validator import detect_loc_bound_violations
+from .validator import detect_loc_bound_violations, validate_coverage, validate_no_conflicts
 
 _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
@@ -418,6 +419,36 @@ def _refine_plan_with_llm(
             raw = _call_llm(system=system, user=user, settings=settings)
             refined = _parse_groups(raw)
             recompute_estimated_loc(refined, parsed_diff)
+            # The incoming plan only had LOC warnings; never trade it for one
+            # that drops or duplicates hunks, has a broken dependency graph
+            # (duplicate ids, unknown parents, a cycle, overlapping independent
+            # groups), or that is no better.
+            try:
+                validate_coverage(refined, parsed_diff)
+                refined_dag = PlanDAG(refined)
+                refined_dag.validate_acyclic()
+                validate_no_conflicts(
+                    refined, refined_dag, {pf.path: len(pf) for pf in parsed_diff.patch_set}
+                )
+            except PlanValidationError as exc:
+                logger.warning(
+                    logs.REFINEMENT_REJECTED.format(
+                        iteration=iteration, reason=exc, remaining=len(violations)
+                    )
+                )
+                return groups
+            refined_violations = detect_loc_bound_violations(
+                refined, settings.max_loc, settings.min_loc
+            )
+            if len(refined_violations) >= len(violations):
+                logger.warning(
+                    logs.REFINEMENT_NO_IMPROVEMENT.format(
+                        iteration=iteration,
+                        before=len(violations),
+                        after=len(refined_violations),
+                    )
+                )
+                return groups
             groups = refined
         except LLMError:
             logger.warning(

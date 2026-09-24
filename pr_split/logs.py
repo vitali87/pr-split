@@ -65,6 +65,14 @@ REFINEMENT_RESOLVED = (
 REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
+REFINEMENT_REJECTED = (
+    "Refinement iteration {iteration} produced an invalid plan ({reason}); "
+    "keeping the current plan, {remaining} violation(s) remain"
+)
+REFINEMENT_NO_IMPROVEMENT = (
+    "Refinement iteration {iteration} did not reduce violations ({before} -> {after}); "
+    "keeping the current plan"
+)
 STACK_LINKED = "Linked stack for PRs {prs}"
 MERGE_NODE_NOT_STACKED = (
     "Group '{group}' depends on multiple groups; native stacks are linear, so its"
