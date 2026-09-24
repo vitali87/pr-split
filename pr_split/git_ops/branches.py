@@ -49,6 +49,27 @@ def branch_exists(branch: str) -> bool:
     return True
 
 
+def adopt_remote_branch(branch: str) -> bool:
+    """Create local ``branch`` from its remote-tracking ref when that is unambiguous.
+
+    A fresh clone or worktree has ``origin/<branch>`` but no local branch;
+    like ``git checkout <branch>``, adopt the single remote that has it.
+    Returns True when a local branch was created.
+    """
+    if branch_exists(f"refs/heads/{branch}"):
+        return False
+    try:
+        listing = run_git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/*/{branch}")
+    except GitOperationError:
+        return False
+    candidates = [ref for ref in listing.splitlines() if ref.split("/", 1)[1:] == [branch]]
+    if len(candidates) != 1:
+        return False
+    run_git("branch", "--no-track", branch, candidates[0])
+    logger.info(logs.ADOPTED_REMOTE_BRANCH.format(branch=branch, remote_ref=candidates[0]))
+    return True
+
+
 def is_worktree_clean() -> bool:
     output = run_git("status", "--porcelain")
     return all(line.startswith("??") for line in output.splitlines())

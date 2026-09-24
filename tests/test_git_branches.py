@@ -9,6 +9,7 @@ import pytest
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
+    adopt_remote_branch,
     branch_exists,
     commit_exists,
     commit_files_in_dir,
@@ -319,3 +320,52 @@ class TestCommitExists:
     )
     def test_false_when_missing(self, mock_git: MagicMock) -> None:
         assert commit_exists("0123456789abcdef") is False
+
+
+class TestAdoptRemoteBranch:
+    def _clone_with_remote_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *remotes: str
+    ) -> Path:
+        _git_identity(monkeypatch)
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=upstream, check=True)
+        (upstream / "a.txt").write_text("a\n")
+        subprocess.run(["git", "add", "a.txt"], cwd=upstream, check=True)
+        subprocess.run(["git", "commit", "-qm", "a"], cwd=upstream, check=True)
+        subprocess.run(["git", "branch", "feat/move-op"], cwd=upstream, check=True)
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "init", "-q", "-b", "other", str(clone)], check=True)
+        for remote in remotes:
+            subprocess.run(["git", "remote", "add", remote, str(upstream)], cwd=clone, check=True)
+            subprocess.run(["git", "fetch", "-q", remote], cwd=clone, check=True)
+        monkeypatch.chdir(clone)
+        return clone
+
+    def test_branch_on_one_remote_is_created_locally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin")
+        assert not branch_exists("refs/heads/feat/move-op")
+
+        assert adopt_remote_branch("feat/move-op") is True
+
+        assert run_git("rev-parse", "refs/heads/feat/move-op") == run_git(
+            "rev-parse", "origin/feat/move-op"
+        )
+
+    def test_branch_on_two_remotes_is_ambiguous_and_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin", "upstream")
+        assert adopt_remote_branch("feat/move-op") is False
+        assert not branch_exists("refs/heads/feat/move-op")
+
+    def test_existing_local_branch_is_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin")
+        run_git("branch", "--no-track", "feat/move-op", "origin/main")
+        before = run_git("rev-parse", "refs/heads/feat/move-op")
+        assert adopt_remote_branch("feat/move-op") is False
+        assert run_git("rev-parse", "refs/heads/feat/move-op") == before
