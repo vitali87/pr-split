@@ -118,6 +118,40 @@ class TestPushBranch:
         )
 
 
+class TestPushBranchRetries:
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_transient_server_error_is_retried(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_git.side_effect = [
+            GitOperationError("remote: fatal error in commit_refs"),
+            "",
+        ]
+        push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_rejection_is_not_retried(self, mock_git: MagicMock, mock_sleep: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("! [rejected] (stale info)")
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_gives_up_after_the_last_attempt(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_git.side_effect = GitOperationError("fatal: the remote end hung up unexpectedly")
+        with pytest.raises(GitOperationError, match="hung up"):
+            push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 3
+
+
 class TestDeleteBranch:
     @patch("pr_split.git_ops.branches.run_git")
     def test_local_only(self, mock_git: MagicMock) -> None:
