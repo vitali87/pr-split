@@ -780,6 +780,7 @@ class TestExecuteCommand:
         mock_plan_file.plan.dev_branch_arg = "feature"
         mock_plan_file.plan.dev_branch = "feature"
         mock_plan_file.plan.base_branch = "main"
+        mock_plan_file.plan.max_loc = 400
         mock_plan_file.plan.groups = [_group("pr-1", "t", files=["a.py"])]
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])

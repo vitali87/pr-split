@@ -700,3 +700,32 @@ class TestWorktreeWritesPreserveCrlf:
         assert written["c.txt"] == b"a\r\nb\r\n"
         content_writes = [c for c in wt.call_args_list if c.args[1] == "a\r\nb\r\n"]
         assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)
+
+
+class TestOversizedGroupsReport:
+    def _sized(self, gid: str, loc: int) -> Group:
+        group = _group(gid, gid)
+        group.estimated_loc = loc
+        return group
+
+    def test_summary_names_count_limit_and_largest(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 120), self._sized("pr-3", 401)]
+        with console.capture() as capture:
+            _report_oversized_groups(groups, 400)
+        out = " ".join(capture.get().split())
+        assert "2 of 3 groups exceed --max-loc 400 (largest: pr-1 at 876 LOC)" in out
+
+    def test_nothing_printed_within_the_limit(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        with console.capture() as capture:
+            _report_oversized_groups([self._sized("pr-1", 400)], 400)
+        assert capture.get() == ""
+
+    def test_oversized_ids_are_recorded(self) -> None:
+        from pr_split.cli import _oversized_group_ids
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 400)]
+        assert _oversized_group_ids(groups, 400) == ["pr-1"]
