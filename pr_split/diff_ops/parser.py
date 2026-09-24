@@ -77,11 +77,13 @@ def unquote_git_path(path: str) -> str:
     """
     if len(path) < 2 or path[0] != '"' or path[-1] != '"':
         return path
+    # Literal spans may carry surrogates for undecodable filename bytes (see
+    # extract_diff); surrogateescape turns them back into those bytes.
     out = bytearray()
     pos = 0
     body = path[1:-1]
     for match in _C_ESCAPE_RE.finditer(body):
-        out += body[pos : match.start()].encode("utf-8")
+        out += body[pos : match.start()].encode("utf-8", errors="surrogateescape")
         escape = match.group(1)
         if escape[0] in "01234567":
             # Octal escapes are single bytes; consecutive ones form one
@@ -90,7 +92,7 @@ def unquote_git_path(path: str) -> str:
         else:
             out += _C_ESCAPES.get(escape, escape.encode("utf-8"))
         pos = match.end()
-    out += body[pos:].encode("utf-8")
+    out += body[pos:].encode("utf-8", errors="surrogateescape")
     return bytes(out).decode("utf-8", errors="surrogateescape")
 
 

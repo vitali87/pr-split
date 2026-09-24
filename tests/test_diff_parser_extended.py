@@ -248,6 +248,9 @@ class TestUnquoteGitPath:
             ('"b/back\\\\slash.py"', "b/back\\slash.py"),
             ('"b/caf\\303\\251.txt"', "b/café.txt"),
             ('"b/bell\\a\\1.txt"', "b/bell\a\x01.txt"),
+            # A non-UTF-8 filename byte reaches us as a surrogate (see
+            # extract_diff) and must come back out as the same byte.
+            ('"b/q\\"\udcff.txt"', 'b/q"\udcff.txt'),
             ('""', ""),
             ('"', '"'),
         ],
