@@ -30,15 +30,17 @@ Vibe coding with AI assistants can produce massive PRs that no one wants to revi
 
 ## Installation
 
+pr-split is not published on PyPI; install it from this repository.
+
 ```bash
 # With uv (recommended)
-uv tool install pr-split
+uv tool install "git+https://github.com/vitali87/pr-split"
 
 # With pip
-pip install pr-split
+pip install "git+https://github.com/vitali87/pr-split"
 
 # With the optional CP-SAT partitioning backend
-uv tool install "pr-split[cp-sat]"
+uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"
 ```
 
 ## Prerequisites
@@ -262,7 +264,7 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"`.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 
