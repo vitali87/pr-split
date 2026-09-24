@@ -12,6 +12,7 @@ from pr_split.diff_ops.reconstructor import (
     apply_hunks,
     materialize_group_files,
     merge_chain_assignments,
+    split_git_lines,
 )
 from pr_split.exceptions import GitOperationError
 from pr_split.schemas import Group, GroupAssignment
@@ -379,3 +380,162 @@ class TestAddedFileLineEndings:
         )
         result = materialize_group_files(parsed, group, "abc123")
         assert result["new_file.py"] == 'def hello():\n    return "world"\n\n'
+
+
+class TestMaterializeDuplicateAssignments:
+    @patch("pr_split.diff_ops.reconstructor._get_base_file_content")
+    def test_two_assignments_for_one_file_apply_both_hunks(self, mock_base: MagicMock) -> None:
+        mock_base.return_value = _base_content()
+        parsed = parse_diff(PATCH_TEXT)
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="example.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                ),
+                GroupAssignment(
+                    file_path="example.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                ),
+            ],
+        )
+        with patch("pr_split.diff_ops.reconstructor.logger.info") as mock_log:
+            result = materialize_group_files(parsed, group, "main")
+        content = result["example.py"]
+        assert content is not None
+        assert "inserted_after_1" in content
+        assert "inserted_after_11" in content
+        assert mock_base.call_count == 1
+        assert "Materializing 1 file" in mock_log.call_args[0][0]
+
+    def test_duplicate_assignments_on_new_file_apply_both_hunks(self) -> None:
+        # Two hunks in a new file (unidiff splits them when the context gap
+        # is large enough), each claimed by a separate PARTIAL assignment.
+        parsed = parse_diff(
+            "diff --git a/n.py b/n.py\nnew file mode 100644\n--- /dev/null\n+++ b/n.py\n"
+            "@@ -0,0 +1,2 @@\n+one\n+two\n"
+            "@@ -0,0 +10,1 @@\n+ten\n"
+        )
+        assert len(parsed.patch_set[0]) == 2
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="n.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                ),
+                GroupAssignment(
+                    file_path="n.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                ),
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main")["n.py"] == "one\ntwo\nten\n"
+
+
+class TestMissingTrailingNewline:
+    NO_EOL_PATCH = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\\ No newline at end of file
++c
+\\ No newline at end of file
+"""
+
+    def test_existing_file_keeps_missing_trailing_newline(self) -> None:
+        patch_file = PatchSet(self.NO_EOL_PATCH)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nc"
+
+    def test_newline_added_when_dev_branch_adds_one(self) -> None:
+        patch = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
+-b
+\\ No newline at end of file
++b
+"""
+        patch_file = PatchSet(patch)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nb\n"
+
+    def test_marker_after_removed_line_does_not_strip_target(self) -> None:
+        patch = """\
+--- a/f.txt
++++ b/f.txt
+@@ -1,2 +1,2 @@
+ a
++c
+-b
+\\ No newline at end of file
+"""
+        patch_file = PatchSet(patch)[0]
+        assert apply_hunks("a\nb", patch_file, [0]) == "a\nc\n"
+
+    def test_new_file_without_trailing_newline(self) -> None:
+        diff = """\
+diff --git a/n.txt b/n.txt
+new file mode 100644
+--- /dev/null
++++ b/n.txt
+@@ -0,0 +1,2 @@
++x
++y
+\\ No newline at end of file
+"""
+        parsed = parse_diff(diff)
+        group = Group(
+            id="g",
+            title="g",
+            description="g",
+            depends_on=[],
+            assignments=[
+                GroupAssignment(
+                    file_path="n.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+            estimated_loc=2,
+        )
+        assert materialize_group_files(parsed, group, "base")["n.txt"] == "x\ny"
+
+
+class TestSplitGitLines:
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            pytest.param("", [], id="empty"),
+            pytest.param("a\n", ["a\n"], id="one-line"),
+            pytest.param("a\nb", ["a\n", "b"], id="no-trailing-newline"),
+            pytest.param("a\x0cb\nc\n", ["a\x0cb\n", "c\n"], id="form-feed"),
+            pytest.param("a\x0bb\nc\n", ["a\x0bb\n", "c\n"], id="vertical-tab"),
+            pytest.param("a\u2028b\nc\n", ["a\u2028b\n", "c\n"], id="line-separator"),
+            pytest.param("a\x85b\n", ["a\x85b\n"], id="nel"),
+            pytest.param("a\r\nb\r\n", ["a\r\n", "b\r\n"], id="crlf"),
+            pytest.param("\n\n", ["\n", "\n"], id="blank-lines"),
+        ],
+    )
+    def test_splits_on_newline_only(self, content: str, expected: list[str]) -> None:
+        assert split_git_lines(content) == expected
+
+
+class TestApplyHunksWithSplitlinesSeparators:
+    def test_form_feed_in_earlier_line_does_not_shift_hunk(self) -> None:
+        base = "a\x0cb\n" + "".join(f"{c}\n" for c in "cdefghijkl")
+        dev = base.replace("k\n", "K\n")
+        diff = "--- a/f.txt\n+++ b/f.txt\n@@ -7,5 +7,5 @@\n h\n i\n j\n-k\n+K\n l\n"
+        pf = PatchSet(diff)[0]
+        assert apply_hunks(base, pf, [0]) == dev

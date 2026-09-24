@@ -44,11 +44,18 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    ErrorMsg,
+    GitOperationError,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
     check_gh_auth,
+    check_gh_stack,
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
@@ -59,11 +66,11 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import run_git
+from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
-from .planner import plan_split, validate_coverage, validate_plan
+from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .schemas import (
     BranchRecord,
     GitState,
@@ -125,19 +132,73 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
-def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
+def _require_local_branch(base: str) -> None:
+    """Exit unless ``base`` names a local branch head.
+
+    A remote-tracking ref such as origin/main (or a tag or SHA) resolves
+    locally, so the split would run to completion -- branches created and
+    pushed -- and only fail when GitHub is asked to open PRs against a
+    branch it does not have.
+    """
+    if branch_exists(f"refs/heads/{base}"):
+        return
+    remote_prefix = "refs/remotes/" if base.startswith("refs/remotes/") else ""
+    stripped = base.removeprefix(remote_prefix)
+    suggestion = ""
+    if remote_prefix or "/" in stripped:
+        remote, _, name = stripped.partition("/")
+        if name and remote in _remote_names():
+            suggestion = f" (for example '{name}')"
+    console.print(
+        f"[red]{ErrorMsg.BASE_NOT_A_LOCAL_BRANCH(base=base, suggestion=suggestion)}[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _remote_names() -> set[str]:
+    try:
+        return set(run_git("remote").split())
+    except PRSplitError:
+        return set()
+
+
+def _require_gh_stack() -> None:
+    try:
+        installed = check_gh_stack()
+    except GitOperationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not installed:
+        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
+        raise typer.Exit(1)
+
+
+def _validate_inputs(
+    dev_branch: str, base: str, *, dry_run: bool = False, stacked: bool = False
+) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
         raise typer.Exit(1)
     if not branch_exists(base):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=base)}[/red]")
         raise typer.Exit(1)
+    _require_local_branch(base)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if not dry_run and stacked:
+        _require_gh_stack()
+
+
+def _load_plan_or_exit() -> PlanFile:
+    try:
+        return load_plan()
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) -> None:
@@ -180,6 +241,13 @@ _WORKTREE_MAX_WORKERS = 4
 _worktree_ref_lock = Lock()
 
 
+def _discard_worktree(worktree_path: str) -> None:
+    try:
+        remove_worktree(worktree_path)
+    except PRSplitError as exc:
+        logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+
+
 def _create_single_branch_and_commit(
     group: Group,
     parsed_diff: ParsedDiff,
@@ -214,11 +282,18 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
-    finally:
+    except Exception:
+        # add_worktree succeeded, so this run created branch_name (a
+        # pre-existing branch of that name was already replaced). Delete it
+        # here, where that is known for certain: if add_worktree itself had
+        # failed it restores the previous branch and never reaches this path.
+        _discard_worktree(worktree_path)
         try:
-            remove_worktree(worktree_path)
+            delete_branch(branch_name)
         except PRSplitError as exc:
-            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+            logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+        raise
+    _discard_worktree(worktree_path)
 
     return BranchRecord(
         group_id=group.id,
@@ -236,14 +311,20 @@ def _stacked_batch_args(
     merge_base_ref: str,
     hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
-    effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
         batch_args: list[tuple[Group, str, str]] = []
         for gid in batch:
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Files are rebuilt from the merge base, so a child must carry
+                # every ancestor's hunks for the files it touches - not only
+                # its direct parent's - or it silently reverts them.
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
@@ -262,7 +343,6 @@ def _stacked_batch_args(
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
-            effective[gid] = merged
             batch_args.append((merged, group_base, start_point))
         yield batch_args
 
@@ -320,6 +400,8 @@ def _create_branches_and_commits(
                 break
 
         if errors:
+            # Failed groups already removed their own branch inside the
+            # worker; only the successful ones remain to roll back.
             for record in results.values():
                 try:
                     delete_branch(record.branch_name)
@@ -691,15 +773,33 @@ def split(
             help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
         ),
     ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
-    priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    priority: Annotated[
+        Priority,
+        typer.Option("--priority", envvar="PR_SPLIT_PRIORITY", help="Grouping priority"),
+    ] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
-        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+        ChunkStrategy,
+        typer.Option(
+            "--chunk-strategy",
+            envvar="PR_SPLIT_CHUNK_STRATEGY",
+            help="Chunking strategy for large diffs",
+        ),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
+        PartitionStrategy,
+        typer.Option(
+            "--partition-strategy",
+            envvar="PR_SPLIT_PARTITION_STRATEGY",
+            help="Backend for hunk-to-PR partitioning",
+        ),
     ] = DEFAULT_PARTITION_STRATEGY,
     cp_sat_timeout: Annotated[
-        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+        float,
+        typer.Option(
+            "--cp-sat-timeout",
+            envvar="PR_SPLIT_CP_SAT_TIMEOUT",
+            help="Maximum seconds to spend in the CP-SAT solver",
+        ),
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     stack: Annotated[
         bool,
@@ -732,7 +832,11 @@ def split(
         if not is_worktree_clean():
             console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
             raise typer.Exit(1)
-        fork_info = _resolve_fork_ref(dev_branch)
+        try:
+            fork_info = _resolve_fork_ref(dev_branch)
+        except PRSplitError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
         if not fork_info:
             console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
             raise typer.Exit(1)
@@ -740,10 +844,10 @@ def split(
         base = fork_info["base_branch"]
         author = fork_info["author"]
 
-    _validate_inputs(dev_branch, base, dry_run=dry_run)
+    _validate_inputs(dev_branch, base, dry_run=dry_run, stacked=stack)
 
     if plan_exists():
-        existing = load_plan()
+        existing = _load_plan_or_exit()
         has_git_state = existing.git_state.branches or existing.git_state.prs
         if has_git_state:
             console.print("[yellow]An existing split plan with branches/PRs was found.[/yellow]")
@@ -785,6 +889,11 @@ def split(
             partition_strategy=partition_strategy,
         )
     except (ValidationError, ValueError) as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        validate_no_binary_files(parsed_diff)
+    except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     groups = plan_split(parsed_diff, settings)
@@ -847,9 +956,13 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
-    branch_records = _create_branches_and_commits(
-        groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     except PRCreationError as exc:
@@ -860,15 +973,14 @@ def split(
             )
         )
         raise
-    if stack:
-        _link_stacks(dag, pr_records)
-
     save_plan(
         PlanFile(
             plan=split_plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if stack:
+        _link_stacks(dag, pr_records)
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
@@ -878,7 +990,7 @@ def status() -> None:
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     git_state = plan_file.git_state
 
@@ -905,6 +1017,7 @@ def status() -> None:
     table.add_column("State")
     table.add_column("Review")
 
+    unverified: list[int] = []
     for group in plan.groups:
         branch_name = branch_map.get(group.id, "")
         pr_record = pr_map.get(group.id)
@@ -912,22 +1025,43 @@ def status() -> None:
         pr_state = ""
         review = ""
         if pr_record:
-            live = live_states.get(pr_record.pr_number, {})
-            pr_state = live.get("state", pr_record.state.value).upper()
-            review = (live.get("reviewDecision") or "").replace("_", " ").title()
+            live = live_states.get(pr_record.pr_number) or {}
+            if live:
+                pr_state = str(live.get("state") or "").upper()
+                review = str(live.get("reviewDecision") or "").replace("_", " ").title()
+            else:
+                # The recorded state is never written back after merge/close,
+                # so showing it would claim OPEN for a PR that may be gone.
+                pr_state = "UNKNOWN"
+                unverified.append(pr_record.pr_number)
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
+    if unverified:
+        console.print(
+            f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
+            f"{', '.join(f'#{n}' for n in unverified)}. Check 'gh auth status'.[/yellow]"
+        )
 
 
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
+        # gh refuses to close a merged PR and silently succeeds on a closed
+        # one; neither needs a warning nor should count as newly closed, but
+        # both are "done" for the purpose of removing the plan.
+        state = str(get_pr_state(pr_record.pr_number).get("state") or "").upper()
+        if state in ("MERGED", "CLOSED"):
+            logger.info(
+                logs.PR_ALREADY_DONE.format(number=pr_record.pr_number, state=state.lower())
+            )
+            closed_prs += 1
+            continue
         try:
             close_pr(pr_record.pr_number)
             closed_prs += 1
-        except PRSplitError:
-            logger.warning(f"Could not close PR #{pr_record.pr_number}")
+        except PRSplitError as exc:
+            logger.warning(f"Could not close PR #{pr_record.pr_number}: {exc}")
 
     logger.info(logs.CLEANING_BRANCHES)
     deleted_branches = 0
@@ -938,8 +1072,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
+    complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
     plan_path = Path(PLAN_FILE)
-    if plan_path.exists():
+    if complete and plan_path.exists():
         plan_path.unlink()
 
     return closed_prs, deleted_branches
@@ -951,12 +1086,15 @@ def clean() -> None:
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     git_state = plan_file.git_state
 
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
+    if closed_prs < len(git_state.prs) or deleted_branches < len(git_state.branches):
+        console.print(f"[yellow]{logs.CLEAN_INCOMPLETE}[/yellow]")
+        raise typer.Exit(1)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
@@ -985,7 +1123,7 @@ def execute(
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(1)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     if stack and not plan.stacked:
         plan = plan.model_copy(update={"stacked": True})
@@ -1009,20 +1147,36 @@ def execute(
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
         raise typer.Exit(1)
+    if not commit_exists(plan.merge_base_sha):
+        console.print(
+            f"[red]Plan's merge base {plan.merge_base_sha} is not in this repository "
+            "(plan copied from another checkout, or history rewritten). "
+            "Fetch it or re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
+        raise typer.Exit(1)
 
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
+    # A plan saved by an older version may record a remote-tracking base.
+    _require_local_branch(plan.base_branch)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
     if not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if plan.stacked:
+        _require_gh_stack()
 
     parsed_diff = parse_diff(plan.raw_diff)
 
     try:
+        validate_no_binary_files(parsed_diff)
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
@@ -1032,15 +1186,19 @@ def execute(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
-    branch_records = _create_branches_and_commits(
-        plan.groups,
-        parsed_diff,
-        plan.base_branch,
-        plan.merge_base_sha,
-        namespace,
-        author=plan.author,
-        stacked=plan.stacked,
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            plan.groups,
+            parsed_diff,
+            plan.base_branch,
+            plan.merge_base_sha,
+            namespace,
+            author=plan.author,
+            stacked=plan.stacked,
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     except PRCreationError as exc:
@@ -1051,15 +1209,15 @@ def execute(
             )
         )
         raise
-    if plan.stacked:
-        _link_stacks(PlanDAG(plan.groups), pr_records)
-
     save_plan(
         PlanFile(
             plan=plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if plan.stacked:
+        _link_stacks(PlanDAG(plan.groups), pr_records)
+    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
@@ -1110,7 +1268,14 @@ def _send_webhook(url: str, payload: dict[str, object]) -> None:
 )
 def merge_all(
     auto: Annotated[
-        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+        bool,
+        typer.Option(
+            "--auto",
+            help=(
+                "Queue merges to run after CI checks pass, waiting up to 10 minutes per "
+                "batch for them to land before merging dependent PRs"
+            ),
+        ),
     ] = False,
     notify: Annotated[
         str | None,
@@ -1125,7 +1290,7 @@ def merge_all(
         console.print(ErrorMsg.NO_PLAN())
         raise typer.Exit(0)
 
-    plan_file = load_plan()
+    plan_file = _load_plan_or_exit()
     plan = plan_file.plan
     git_state = plan_file.git_state
     pr_map = {r.group_id: r for r in git_state.prs}
@@ -1134,10 +1299,18 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    # A hand-edited plan.json can carry unknown or cyclic dependencies;
+    # report that instead of a traceback from the DAG walk.
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
+    blocked: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1164,6 +1337,18 @@ def merge_all(
             if state == "MERGED":
                 logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
                 merged.append(group_id)
+                continue
+
+            # Checked after the live state so a PR that already merged on GitHub
+            # (e.g. into a still-open parent branch) counts as merged rather
+            # than being reported as blocked.
+            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
+            if unmerged_parents:
+                deps = ", ".join(unmerged_parents)
+                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
+                skipped_ids.add(group_id)
+                blocked.append(group_id)
+                skipped.append(f"{group_id} (dependency {deps} not merged)")
                 continue
 
             if state != "OPEN":
@@ -1227,9 +1412,20 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if blocked:
+        console.print(
+            f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
+            f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
+        )
     if notify:
         exit_reason = (
-            "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
+            "merge_error"
+            if stopped
+            else "incomplete_batch"
+            if exited_early
+            else "unmerged_dependency"
+            if blocked
+            else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
         _send_webhook(
@@ -1239,11 +1435,11 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early),
+                "success": not (failed or stopped or exited_early or blocked),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early:
+    if failed or stopped or exited_early or blocked:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")

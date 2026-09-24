@@ -4,6 +4,7 @@ import pytest
 
 from pr_split.constants import AssignmentType, ChunkStrategy
 from pr_split.diff_ops.parser import parse_diff
+from pr_split.exceptions import PRSplitError
 from pr_split.planner.chunker import (
     assign_uncovered_hunks,
     build_chunk_diff_from_hunks,
@@ -120,7 +121,7 @@ class TestChunkHunks:
 
     def test_hunk_exceeding_budget_raises(self) -> None:
         refs = [HunkRef("a.py", 0, 500)]
-        with pytest.raises(ValueError, match="exceeds budget"):
+        with pytest.raises(PRSplitError, match="exceeds budget"):
             chunk_hunks(refs, 100)
 
     def test_empty_input_returns_empty(self) -> None:
@@ -145,7 +146,7 @@ class TestChunkHunks:
 
     def test_unknown_strategy_raises(self) -> None:
         refs = [HunkRef("a.py", 0, 100)]
-        with pytest.raises(ValueError, match="Unknown chunk strategy"):
+        with pytest.raises(PRSplitError, match="Unknown chunk strategy"):
             chunk_hunks(refs, 100, "invalid")
 
 
@@ -330,3 +331,11 @@ class TestFormatGroupCatalogExtended:
     def test_empty_groups(self) -> None:
         result = format_group_catalog([])
         assert result == ""
+
+
+class TestChunkerErrorsAreProjectErrors:
+    def test_oversized_hunk_is_pr_split_error_for_both_strategies(self) -> None:
+        refs = [HunkRef("a.py", 0, 500)]
+        for strategy in (ChunkStrategy.GREEDY, ChunkStrategy.DYNAMIC_PROGRAMMING):
+            with pytest.raises(PRSplitError, match=r"a\.py\[0\].*exceeds budget 100"):
+                chunk_hunks(refs, 100, strategy)

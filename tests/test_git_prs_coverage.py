@@ -164,3 +164,35 @@ class TestFetchForkBranch:
 
         with pytest.raises(GitOperationError, match="Failed to fetch"):
             fetch_fork_branch("user", "branch")
+
+
+class TestFetchForkPrNotFromFork:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_same_repo_pr_gets_specific_message(self, mock_gh: MagicMock) -> None:
+        pr_data = {
+            "head": {
+                "ref": "feature",
+                "repo": {
+                    "fork": False,
+                    "clone_url": "https://github.com/org/repo.git",
+                    "full_name": "org/repo",
+                },
+            },
+            "base": {"ref": "main"},
+        }
+        mock_gh.return_value = json.dumps(pr_data)
+        with pytest.raises(GitOperationError, match="PR #42 is not from a fork"):
+            fetch_fork_pr(42)
+
+
+class TestFetchForkPrMalformedResponse:
+    @pytest.mark.parametrize(
+        "raw", ["not json", "[]", '{"head": {}}'], ids=["text", "list", "no-base"]
+    )
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_malformed_response_is_a_git_operation_error(
+        self, mock_gh: MagicMock, raw: str
+    ) -> None:
+        mock_gh.return_value = raw
+        with pytest.raises(GitOperationError, match="Unexpected response from GitHub for PR #42"):
+            fetch_fork_pr(42)
