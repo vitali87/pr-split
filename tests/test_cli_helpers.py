@@ -420,8 +420,34 @@ class TestLinkStacks:
             PRRecord(group_id="pr-2", pr_number=12, pr_url="u"),
             PRRecord(group_id="pr-3", pr_number=13, pr_url="u"),
         ]
-        _link_stacks(PlanDAG(groups), prs)
-        mock_link.assert_called_once_with([12, 13])
+        branches = [
+            BranchRecord(group_id=g.id, branch_name=f"b/{g.id}", base_branch="feat/base")
+            for g in groups
+        ]
+        _link_stacks(PlanDAG(groups), prs, branches)
+        mock_link.assert_called_once_with([12, 13], base="feat/base")
+
+    @patch("pr_split.cli.link_stack")
+    def test_stack_is_rooted_on_its_bottom_prs_base_not_the_default_branch(
+        self, mock_link: MagicMock
+    ) -> None:
+        # pr-3 depends on two groups, so it targets the plan base directly and
+        # starts a new chain with pr-4; that stack must sit on the plan base.
+        groups = [
+            _group("pr-1", "a"),
+            _group("pr-2", "b"),
+            _group("pr-3", "c", ["pr-1", "pr-2"]),
+            _group("pr-4", "d", ["pr-3"]),
+        ]
+        prs = [PRRecord(group_id=g.id, pr_number=20 + i, pr_url="u") for i, g in enumerate(groups)]
+        branches = [
+            BranchRecord(group_id=g.id, branch_name=f"b/{g.id}", base_branch=base)
+            for g, base in zip(
+                groups, ["feat/base", "feat/base", "feat/base", "b/pr-3"], strict=True
+            )
+        ]
+        _link_stacks(PlanDAG(groups), prs, branches)
+        mock_link.assert_called_once_with([22, 23], base="feat/base")
 
 
 class TestPushAndCreatePrsDraft:

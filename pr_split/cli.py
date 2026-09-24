@@ -570,12 +570,15 @@ def _push_and_create_prs(
     return [results[g.id] for g in groups]
 
 
-def _link_stacks(dag: PlanDAG, pr_records: list[PRRecord]) -> None:
+def _link_stacks(
+    dag: PlanDAG, pr_records: list[PRRecord], branch_records: list[BranchRecord]
+) -> None:
     pr_by_group = {r.group_id: r.pr_number for r in pr_records}
+    base_by_group = {r.group_id: r.base_branch for r in branch_records}
     for chain in dag.linear_chains():
         if len(chain) < 2:
             continue
-        link_stack([pr_by_group[gid] for gid in chain])
+        link_stack([pr_by_group[gid] for gid in chain], base=base_by_group[chain[0]])
 
 
 def _move_assignment(
@@ -1105,7 +1108,7 @@ def split(
         )
     )
     if stack:
-        _link_stacks(dag, pr_records)
+        _link_stacks(dag, pr_records, branch_records)
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
@@ -1341,7 +1344,7 @@ def execute(
         )
     )
     if plan.stacked:
-        _link_stacks(PlanDAG(plan.groups), pr_records)
+        _link_stacks(PlanDAG(plan.groups), pr_records, branch_records)
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
