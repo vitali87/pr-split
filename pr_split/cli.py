@@ -71,6 +71,7 @@ from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
+from .planner.chunker import recompute_estimated_loc
 from .schemas import (
     BranchRecord,
     GitState,
@@ -671,6 +672,115 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     console.print()
 
 
+def _held_hunks(
+    groups: list[Group], hunk_counts: dict[str, int]
+) -> dict[str, set[tuple[str, int]]]:
+    """Map each group id to the (file, hunk index) pairs its assignments cover."""
+    return {
+        g.id: {
+            (a.file_path, idx)
+            for a in g.assignments
+            for idx in a.covered_indices(hunk_counts.get(a.file_path, 0))
+        }
+        for g in groups
+    }
+
+
+def _drop_empty_groups(
+    groups: list[Group],
+    held_before: dict[str, set[tuple[str, int]]],
+    hunk_counts: dict[str, int],
+) -> list[Group]:
+    """Remove groups the user emptied in the editor and unlink them from the DAG.
+
+    Moving every hunk out of a group is a legitimate way to dissolve it;
+    aborting the session there would throw away all the other edits. A
+    dropped group's dependants inherit its own dependencies and every kept
+    group that now holds one of its former hunks (``held_before`` is the
+    coverage snapshot taken before editing), so a stacked dependant still
+    builds on the code it was planned against. A move that cannot keep that
+    guarantee (the hunk went to a group that itself builds on the dependant)
+    is refused, since the dependant's stacked branch would lose the hunk.
+    """
+    dropped = {g.id: list(g.depends_on) for g in groups if not g.assignments}
+    if not dropped:
+        return groups
+
+    held_now = _held_hunks(groups, hunk_counts)
+    recipients = {
+        gid: [
+            g.id
+            for g in groups
+            if g.id not in dropped and held_before.get(gid, set()) & held_now[g.id]
+        ]
+        for gid in dropped
+    }
+
+    def _surviving(dep: str, seen: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
+        # Walk through chains of dropped groups to the nearest kept ancestors,
+        # collecting the kept groups that took over the dropped groups' hunks.
+        if dep not in dropped:
+            return [dep], []
+        ancestors: list[str] = []
+        taken_over = [(recipient, dep) for recipient in recipients[dep]]
+        for parent in dropped[dep]:
+            if parent not in seen:
+                seen.add(parent)
+                more_ancestors, more_taken = _surviving(parent, seen)
+                ancestors.extend(more_ancestors)
+                taken_over.extend(more_taken)
+        return ancestors, taken_over
+
+    # Inherited ancestors first: they are transitive ancestors in the original
+    # acyclic plan, so rewiring to them cannot create a cycle.
+    deps: dict[str, list[str]] = {}
+    wanted: dict[str, list[tuple[str, str]]] = {}
+    for group in groups:
+        if group.id in dropped:
+            continue
+        deps[group.id] = []
+        wanted[group.id] = []
+        for dep in group.depends_on:
+            ancestors, taken_over = _surviving(dep, set())
+            for candidate in ancestors:
+                if candidate not in deps[group.id] and candidate != group.id:
+                    deps[group.id].append(candidate)
+            wanted[group.id].extend(taken_over)
+
+    def _depends_on(start: str, target: str) -> bool:
+        stack, seen = [start], set()
+        while stack:
+            node = stack.pop()
+            if node == target:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(deps.get(node, []))
+        return False
+
+    # Then the groups that took over dropped hunks. One that already builds on
+    # the dependant cannot become its parent without a cycle, and leaving it out
+    # would build the dependant's branch without the moved hunk: refuse.
+    for gid, candidates in wanted.items():
+        for candidate, source in candidates:
+            # Already reachable through an inherited ancestor: a direct edge
+            # would only turn a linear stack into a multi-parent node.
+            if candidate == gid or _depends_on(gid, candidate):
+                continue
+            if _depends_on(candidate, gid):
+                console.print(
+                    f"[red]Cannot drop emptied group '{source}': its hunks moved to"
+                    f" '{candidate}', which builds on '{gid}', so '{gid}' would lose code"
+                    " it was planned on. Move them to a group it can depend on.[/red]"
+                )
+                raise typer.Exit(1)
+            deps[gid].append(candidate)
+
+    kept = [g.model_copy(update={"depends_on": deps[g.id]}) for g in groups if g.id not in dropped]
+    console.print(f"[yellow]Dropped empty group(s) after editing: {', '.join(dropped)}[/yellow]")
+    return kept
+
+
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
@@ -720,7 +830,11 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             if hunk_index < 0:
                 console.print("[red]Hunk index must be non-negative.[/red]")
                 continue
-            _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id)
+            if _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id):
+                # Keep per-group LOC in step with the new assignments so the
+                # plan table, strict LOC bounds, plan.json and PR bodies are
+                # accurate.
+                recompute_estimated_loc(groups, parsed_diff)
         else:
             console.print(
                 "[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]"
@@ -896,24 +1010,35 @@ def split(
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    groups = plan_split(parsed_diff, settings)
+    try:
+        groups = plan_split(parsed_diff, settings)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     logger.info(logs.VALIDATING_PLAN)
-    dag = PlanDAG(groups)
-    warnings = validate_plan(groups, parsed_diff, dag, settings.max_loc, min_loc=settings.min_loc)
+    try:
+        dag = PlanDAG(groups)
+        warnings = validate_plan(
+            groups, parsed_diff, dag, settings.max_loc, min_loc=settings.min_loc
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
     logger.success(logs.VALIDATION_PASSED)
 
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
+    held_before = _held_hunks(groups, hunk_counts)
     groups = _interactive_edit(groups, parsed_diff)
 
     # Re-validate after user edits
-    empty_groups = [g for g in groups if not g.assignments]
-    if empty_groups:
-        empty_ids = [g.id for g in empty_groups]
-        console.print(f"[red]Groups {empty_ids} are empty after editing.[/red]")
+    groups = _drop_empty_groups(groups, held_before, hunk_counts)
+    if not groups:
+        console.print("[red]Every group is empty after editing; nothing to split.[/red]")
         raise typer.Exit(1)
     try:
         dag = PlanDAG(groups)
