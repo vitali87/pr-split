@@ -698,7 +698,9 @@ def _drop_empty_groups(
     dropped group's dependants inherit its own dependencies and every kept
     group that now holds one of its former hunks (``held_before`` is the
     coverage snapshot taken before editing), so a stacked dependant still
-    builds on the code it was planned against.
+    builds on the code it was planned against. A move that cannot keep that
+    guarantee (the hunk went to a group that itself builds on the dependant)
+    is refused, since the dependant's stacked branch would lose the hunk.
     """
     dropped = {g.id: list(g.depends_on) for g in groups if not g.assignments}
     if not dropped:
@@ -714,13 +716,13 @@ def _drop_empty_groups(
         for gid in dropped
     }
 
-    def _surviving(dep: str, seen: set[str]) -> tuple[list[str], list[str]]:
+    def _surviving(dep: str, seen: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
         # Walk through chains of dropped groups to the nearest kept ancestors,
         # collecting the kept groups that took over the dropped groups' hunks.
         if dep not in dropped:
             return [dep], []
         ancestors: list[str] = []
-        taken_over: list[str] = list(recipients[dep])
+        taken_over = [(recipient, dep) for recipient in recipients[dep]]
         for parent in dropped[dep]:
             if parent not in seen:
                 seen.add(parent)
@@ -732,7 +734,7 @@ def _drop_empty_groups(
     # Inherited ancestors first: they are transitive ancestors in the original
     # acyclic plan, so rewiring to them cannot create a cycle.
     deps: dict[str, list[str]] = {}
-    wanted: dict[str, list[str]] = {}
+    wanted: dict[str, list[tuple[str, str]]] = {}
     for group in groups:
         if group.id in dropped:
             continue
@@ -756,12 +758,20 @@ def _drop_empty_groups(
                 stack.extend(deps.get(node, []))
         return False
 
-    # Then the groups that took over dropped hunks, skipping any that already
-    # build on the dependant (the user moved the hunk downstream of it).
+    # Then the groups that took over dropped hunks. One that already builds on
+    # the dependant cannot become its parent without a cycle, and leaving it out
+    # would build the dependant's branch without the moved hunk: refuse.
     for gid, candidates in wanted.items():
-        for candidate in candidates:
-            if candidate in deps[gid] or candidate == gid or _depends_on(candidate, gid):
+        for candidate, source in candidates:
+            if candidate in deps[gid] or candidate == gid:
                 continue
+            if _depends_on(candidate, gid):
+                console.print(
+                    f"[red]Cannot drop emptied group '{source}': its hunks moved to"
+                    f" '{candidate}', which builds on '{gid}', so '{gid}' would lose code"
+                    " it was planned on. Move them to a group it can depend on.[/red]"
+                )
+                raise typer.Exit(1)
             deps[gid].append(candidate)
 
     kept = [g.model_copy(update={"depends_on": deps[g.id]}) for g in groups if g.id not in dropped]

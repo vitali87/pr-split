@@ -1074,8 +1074,9 @@ class TestDropEmptyGroups:
 
         assert result[-1].depends_on == ["pr-1", "pr-2"]
 
-    def test_downstream_recipient_is_not_added_as_a_dependency(self) -> None:
-        # D already builds on C; making C depend on D would be a cycle.
+    def test_move_to_a_downstream_group_is_refused(self) -> None:
+        # D already builds on C, so it cannot become C's parent; accepting the
+        # edit would build C's stacked branch without the hunk it inherited.
         partial = AssignmentType.PARTIAL_HUNKS
         e = _group("pr-1", "e")
         c = _group("pr-2", "c", depends_on=["pr-1"], files=["c.py"])
@@ -1084,15 +1085,16 @@ class TestDropEmptyGroups:
             GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0])
         ]
         held_before = {"pr-1": {("a.py", 0)}, "pr-2": set(), "pr-3": set()}
+        from pr_split.cli import console
 
-        result = _drop_empty_groups([e, c, d], held_before, {"a.py": 1})
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _drop_empty_groups([e, c, d], held_before, {"a.py": 1})
 
-        assert {g.id: g.depends_on for g in result} == {"pr-2": [], "pr-3": ["pr-2"]}
-        PlanDAG(result).validate_acyclic()
+        assert "Cannot drop emptied group 'pr-1'" in " ".join(capture.get().split())
 
-    def test_crossed_recipients_do_not_form_a_cycle(self) -> None:
+    def test_crossed_moves_are_refused(self) -> None:
         # C depended on E1 whose hunk moved to D; D depended on E2 whose hunk
-        # moved to C. Only the first recipient edge can be kept.
+        # moved to C. Both edges cannot hold, so the edit is refused.
         partial = AssignmentType.PARTIAL_HUNKS
         e1 = _group("pr-1", "e1")
         e2 = _group("pr-2", "e2")
@@ -1106,10 +1108,8 @@ class TestDropEmptyGroups:
         ]
         held_before = {"pr-1": {("a.py", 0)}, "pr-2": {("a.py", 1)}}
 
-        result = _drop_empty_groups([e1, e2, c, d], held_before, {"a.py": 2})
-
-        assert {g.id: g.depends_on for g in result} == {"pr-3": ["pr-4"], "pr-4": []}
-        PlanDAG(result).validate_acyclic()
+        with pytest.raises(typer.Exit):
+            _drop_empty_groups([e1, e2, c, d], held_before, {"a.py": 2})
 
 
 class TestEditorEmptiedGroupEndToEnd:
@@ -1119,7 +1119,6 @@ class TestEditorEmptiedGroupEndToEnd:
     ) -> None:
         from pr_split.cli import _drop_empty_groups, _held_hunks, _interactive_edit
         from pr_split.diff_ops.parser import parse_diff
-        from pr_split.graph import PlanDAG
         from pr_split.planner.validator import validate_plan
 
         parsed = parse_diff(TWO_HUNK_DIFF)
