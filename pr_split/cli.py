@@ -672,20 +672,50 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
     console.print()
 
 
-def _drop_empty_groups(groups: list[Group]) -> list[Group]:
+def _held_hunks(
+    groups: list[Group], hunk_counts: dict[str, int]
+) -> dict[str, set[tuple[str, int]]]:
+    """Map each group id to the (file, hunk index) pairs its assignments cover."""
+    return {
+        g.id: {
+            (a.file_path, idx)
+            for a in g.assignments
+            for idx in a.covered_indices(hunk_counts.get(a.file_path, 0))
+        }
+        for g in groups
+    }
+
+
+def _drop_empty_groups(
+    groups: list[Group],
+    held_before: dict[str, set[tuple[str, int]]],
+    hunk_counts: dict[str, int],
+) -> list[Group]:
     """Remove groups the user emptied in the editor and unlink them from the DAG.
 
     Moving every hunk out of a group is a legitimate way to dissolve it;
     aborting the session there would throw away all the other edits. A
-    dropped group's own dependencies are inherited by its dependants so
-    ordering is preserved.
+    dropped group's dependants inherit its own dependencies and every kept
+    group that now holds one of its former hunks (``held_before`` is the
+    coverage snapshot taken before editing), so a stacked dependant still
+    builds on the code it was planned against.
     """
     dropped = {g.id: list(g.depends_on) for g in groups if not g.assignments}
     if not dropped:
         return groups
 
+    held_now = _held_hunks(groups, hunk_counts)
+    recipients = {
+        gid: [
+            g.id
+            for g in groups
+            if g.id not in dropped and held_before.get(gid, set()) & held_now[g.id]
+        ]
+        for gid in dropped
+    }
+
     def _surviving(dep: str, seen: set[str]) -> list[str]:
-        # Walk through chains of dropped groups to the nearest kept ancestors.
+        # Walk through chains of dropped groups to the nearest kept groups.
         if dep not in dropped:
             return [dep]
         out: list[str] = []
@@ -693,6 +723,7 @@ def _drop_empty_groups(groups: list[Group]) -> list[Group]:
             if parent not in seen:
                 seen.add(parent)
                 out.extend(_surviving(parent, seen))
+        out.extend(recipients[dep])
         return out
 
     kept: list[Group] = []
@@ -949,10 +980,12 @@ def split(
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
+    held_before = _held_hunks(groups, hunk_counts)
     groups = _interactive_edit(groups, parsed_diff)
 
     # Re-validate after user edits
-    groups = _drop_empty_groups(groups)
+    groups = _drop_empty_groups(groups, held_before, hunk_counts)
     if not groups:
         console.print("[red]Every group is empty after editing; nothing to split.[/red]")
         raise typer.Exit(1)

@@ -991,7 +991,7 @@ diff --git a/a.py b/a.py
 class TestDropEmptyGroups:
     def test_no_empty_groups_returns_same_list(self) -> None:
         groups = [_group("pr-1", "a", files=["a.py"]), _group("pr-2", "b", files=["b.py"])]
-        assert _drop_empty_groups(groups) is groups
+        assert _drop_empty_groups(groups, {}, {}) is groups
 
     def test_empty_group_is_dropped_and_dependants_inherit_its_parents(self) -> None:
         root = _group("pr-1", "root", files=["a.py"])
@@ -1000,7 +1000,7 @@ class TestDropEmptyGroups:
         from pr_split.cli import console
 
         with console.capture() as capture:
-            result = _drop_empty_groups([root, emptied, leaf])
+            result = _drop_empty_groups([root, emptied, leaf], {}, {})
 
         assert [g.id for g in result] == ["pr-1", "pr-3"]
         assert result[1].depends_on == ["pr-1"]
@@ -1009,7 +1009,7 @@ class TestDropEmptyGroups:
     def test_dropping_a_root_leaves_dependants_as_roots(self) -> None:
         emptied = _group("pr-1", "emptied")
         leaf = _group("pr-2", "leaf", depends_on=["pr-1"], files=["b.py"])
-        result = _drop_empty_groups([emptied, leaf])
+        result = _drop_empty_groups([emptied, leaf], {}, {})
         assert [g.id for g in result] == ["pr-2"]
         assert result[0].depends_on == []
 
@@ -1018,7 +1018,7 @@ class TestDropEmptyGroups:
         e1 = _group("pr-2", "e1", depends_on=["pr-1"])
         e2 = _group("pr-3", "e2", depends_on=["pr-2"])
         leaf = _group("pr-4", "leaf", depends_on=["pr-3"], files=["d.py"])
-        result = _drop_empty_groups([root, e1, e2, leaf])
+        result = _drop_empty_groups([root, e1, e2, leaf], {}, {})
         assert [g.id for g in result] == ["pr-1", "pr-4"]
         assert result[1].depends_on == ["pr-1"]
 
@@ -1027,7 +1027,7 @@ class TestDropEmptyGroups:
         e1 = _group("pr-2", "e1", depends_on=["pr-1"])
         e2 = _group("pr-3", "e2", depends_on=["pr-2"])
         leaf = _group("pr-4", "leaf", depends_on=["pr-3", "pr-1"], files=["d.py"])
-        result = _drop_empty_groups([root, e1, e2, leaf])
+        result = _drop_empty_groups([root, e1, e2, leaf], {}, {})
         assert result[1].depends_on == ["pr-1"]
 
     def test_diamond_through_dropped_groups(self) -> None:
@@ -1037,9 +1037,41 @@ class TestDropEmptyGroups:
         e2 = _group("pr-4", "e2", depends_on=["pr-2"])
         e3 = _group("pr-5", "e3", depends_on=["pr-3", "pr-4"])
         leaf = _group("pr-6", "leaf", depends_on=["pr-5"], files=["f.py"])
-        result = _drop_empty_groups([a, b, e1, e2, e3, leaf])
+        result = _drop_empty_groups([a, b, e1, e2, e3, leaf], {}, {})
         assert [g.id for g in result] == ["pr-1", "pr-2", "pr-6"]
         assert result[2].depends_on == ["pr-1", "pr-2"]
+
+    def test_dependants_of_a_dropped_group_depend_on_its_hunks_new_owner(self) -> None:
+        # E's only hunk moved to the unrelated group D; C was planned on top of
+        # E, so it must now build on D or its stacked branch misses that hunk.
+        partial = AssignmentType.PARTIAL_HUNKS
+        d = _group("pr-1", "d")
+        d.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0, 1])
+        ]
+        e = _group("pr-2", "e")
+        c = _group("pr-3", "c", depends_on=["pr-2"], files=["c.py"])
+        held_before = {"pr-1": {("a.py", 0)}, "pr-2": {("a.py", 1)}, "pr-3": set()}
+
+        result = _drop_empty_groups([d, e, c], held_before, {"a.py": 2})
+
+        assert [g.id for g in result] == ["pr-1", "pr-3"]
+        assert result[1].depends_on == ["pr-1"]
+
+    def test_recipient_is_added_after_inherited_ancestors(self) -> None:
+        partial = AssignmentType.PARTIAL_HUNKS
+        root = _group("pr-1", "root", files=["r.py"])
+        d = _group("pr-2", "d")
+        d.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0])
+        ]
+        e = _group("pr-3", "e", depends_on=["pr-1"])
+        c = _group("pr-4", "c", depends_on=["pr-3"], files=["c.py"])
+        held_before = {"pr-2": set(), "pr-3": {("a.py", 0)}}
+
+        result = _drop_empty_groups([root, d, e, c], held_before, {"a.py": 1})
+
+        assert result[-1].depends_on == ["pr-1", "pr-2"]
 
 
 class TestEditorEmptiedGroupEndToEnd:
@@ -1047,7 +1079,7 @@ class TestEditorEmptiedGroupEndToEnd:
     def test_moving_the_last_hunk_out_yields_a_valid_one_group_plan(
         self, mock_prompt: MagicMock
     ) -> None:
-        from pr_split.cli import _drop_empty_groups, _interactive_edit
+        from pr_split.cli import _drop_empty_groups, _held_hunks, _interactive_edit
         from pr_split.diff_ops.parser import parse_diff
         from pr_split.graph import PlanDAG
         from pr_split.planner.validator import validate_plan
@@ -1067,8 +1099,10 @@ class TestEditorEmptiedGroupEndToEnd:
         ]
         mock_prompt.side_effect = ["move a.py:1 pr-2 pr-1", "done"]
 
+        hunk_counts = {pf.path: len(pf) for pf in parsed.patch_set}
+        held_before = _held_hunks([g1, g2], hunk_counts)
         edited = _interactive_edit([g1, g2], parsed)
-        groups = _drop_empty_groups(edited)
+        groups = _drop_empty_groups(edited, held_before, hunk_counts)
 
         assert [g.id for g in groups] == ["pr-1"]
         assert groups[0].assignments[0].hunk_indices == [0, 1]
