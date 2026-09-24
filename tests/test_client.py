@@ -573,6 +573,58 @@ class TestRefinePlanWithLlm:
         assert "produced an invalid plan" in warning
         assert "b.py[0] not assigned to any group" in warning
 
+    @pytest.mark.parametrize(
+        ("ids", "deps", "reason"),
+        [
+            (["pr-1", "pr-2"], [["pr-2"], ["pr-1"]], "cycle"),
+            (["pr-1", "pr-2"], [[], ["pr-9"]], "unknown group 'pr-9'"),
+            (["pr-1", "pr-1"], [[], []], "used more than once"),
+        ],
+        ids=["cycle", "unknown-dependency", "duplicate-id"],
+    )
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_with_a_broken_dependency_graph_is_rejected(
+        self,
+        mock_call_llm: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        ids: list[str],
+        deps: list[list[str]],
+        reason: str,
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=2,
+        )
+        mock_call_llm.return_value = RawToolOutput(
+            groups=[
+                {
+                    "id": gid,
+                    "title": f"feat: {path}",
+                    "description": path,
+                    "depends_on": dep,
+                    "assignments": [
+                        {"file_path": path, "assignment_type": "whole_file", "hunk_indices": [0]}
+                    ],
+                    "estimated_loc": 3,
+                }
+                for gid, dep, path in zip(ids, deps, ["a.py", "b.py"], strict=True)
+            ]
+        )
+
+        groups = _undersized_groups()
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+
+        assert result is groups
+        warning = mock_logger.warning.call_args[0][0]
+        assert "produced an invalid plan" in warning
+        assert reason in warning
+
     @patch("pr_split.planner.client._call_llm")
     def test_refinement_that_does_not_improve_is_rejected(
         self, mock_call_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
