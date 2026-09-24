@@ -15,6 +15,7 @@ import typer
 from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
@@ -67,7 +68,14 @@ from .git_ops import (
     remove_worktree,
 )
 from .git_ops.branches import commit_exists, run_git
-from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
+from .git_ops.prs import (
+    close_pr,
+    create_pr,
+    find_open_pr,
+    get_pr_state,
+    link_stack,
+    merge_pr,
+)
 from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
@@ -1206,6 +1214,105 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         plan_path.unlink()
 
     return closed_prs, deleted_branches
+
+
+@app.command(
+    help="Register branches you already built as a native stack (bottom to top) and "
+    "save them as a plan, so 'status' and 'merge' work on them."
+)
+def adopt(
+    branches: Annotated[
+        list[str], typer.Argument(help="Branches in stack order, bottom first (at least two)")
+    ],
+    base: Annotated[str, typer.Option(help="Branch the bottom of the stack targets")] = "main",
+    yes: Annotated[
+        bool, typer.Option("--yes", "-y", help="Register the stack without asking to confirm")
+    ] = False,
+) -> None:
+    if len(branches) < 2:
+        console.print("[red]adopt needs at least two branches, bottom of the stack first.[/red]")
+        raise typer.Exit(1)
+    if len(set(branches)) != len(branches):
+        console.print("[red]Each branch may appear only once.[/red]")
+        raise typer.Exit(1)
+    if plan_exists():
+        existing = _load_plan_or_exit()
+        if existing.git_state.branches or existing.git_state.prs:
+            console.print(
+                "[red]A split plan with branches/PRs already exists."
+                " Run 'pr-split clean' (or merge it) first.[/red]"
+            )
+            raise typer.Exit(1)
+    for name in (base, *branches):
+        if not branch_exists(f"refs/heads/{name}"):
+            console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=name)}[/red]")
+            raise typer.Exit(1)
+    # A stacked PR shows only its own diff on top of its parent, so each
+    # branch must actually contain the one below it.
+    for parent, child in zip((base, *branches), branches, strict=False):
+        try:
+            run_git("merge-base", "--is-ancestor", parent, child)
+        except GitOperationError as exc:
+            console.print(
+                f"[red]{child} does not contain {parent}; rebase it onto {parent} first.[/red]"
+            )
+            raise typer.Exit(1) from exc
+
+    console.print(f"Stack ({base}) <- " + " <- ".join(escape(b) for b in branches))
+    if not yes:
+        typer.confirm("Register these branches as a native stack?", abort=True)
+
+    try:
+        _require_gh_stack()
+        link_stack(list(branches), base=base)
+        prs = [find_open_pr(name) for name in branches]
+    except PRSplitError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    missing = [name for name, pr in zip(branches, prs, strict=True) if pr is None]
+    if missing:
+        console.print(f"[red]No open PR found for: {', '.join(missing)}[/red]")
+        raise typer.Exit(1)
+
+    groups: list[Group] = []
+    branch_records: list[BranchRecord] = []
+    pr_records: list[PRRecord] = []
+    for i, (name, pr) in enumerate(zip(branches, prs, strict=True), start=1):
+        assert pr is not None
+        gid = f"pr-{i}"
+        parent = base if i == 1 else branches[i - 2]
+        groups.append(
+            Group(
+                id=gid,
+                title=name,
+                description=f"Adopted branch {name}",
+                depends_on=[] if i == 1 else [f"pr-{i - 1}"],
+            )
+        )
+        branch_records.append(
+            BranchRecord(
+                group_id=gid,
+                branch_name=name,
+                base_branch=parent,
+                commit_sha=run_git("rev-parse", name),
+            )
+        )
+        pr_records.append(PRRecord(group_id=gid, pr_number=pr[0], pr_url=pr[1]))
+    save_plan(
+        PlanFile(
+            plan=SplitPlan(
+                dev_branch=branches[-1],
+                base_branch=base,
+                max_loc=DEFAULT_MAX_LOC,
+                stacked=True,
+                priority=Priority.ORTHOGONAL,
+                groups=groups,
+                merge_base_sha=run_git("merge-base", base, branches[-1]),
+            ),
+            git_state=GitState(branches=branch_records, prs=pr_records),
+        )
+    )
+    logger.success(f"Adopted {len(branches)} branches as a stack on {base}")
 
 
 @app.command(help="Close all split PRs and delete their branches.")
