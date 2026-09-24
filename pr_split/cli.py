@@ -763,7 +763,9 @@ def _drop_empty_groups(
     # would build the dependant's branch without the moved hunk: refuse.
     for gid, candidates in wanted.items():
         for candidate, source in candidates:
-            if candidate in deps[gid] or candidate == gid:
+            # Already reachable through an inherited ancestor: a direct edge
+            # would only turn a linear stack into a multi-parent node.
+            if candidate == gid or _depends_on(gid, candidate):
                 continue
             if _depends_on(candidate, gid):
                 console.print(

@@ -1074,6 +1074,23 @@ class TestDropEmptyGroups:
 
         assert result[-1].depends_on == ["pr-1", "pr-2"]
 
+    def test_recipient_already_reached_through_an_ancestor_adds_no_edge(self) -> None:
+        # pr-3's hunks moved to pr-1; pr-4 already reaches pr-1 through pr-2,
+        # so a direct edge would make pr-4 a multi-parent node for no reason.
+        partial = AssignmentType.PARTIAL_HUNKS
+        root = _group("pr-1", "root")
+        root.assignments = [
+            GroupAssignment(file_path="a.py", assignment_type=partial, hunk_indices=[0])
+        ]
+        mid = _group("pr-2", "mid", depends_on=["pr-1"], files=["b.py"])
+        emptied = _group("pr-3", "emptied", depends_on=["pr-2"])
+        leaf = _group("pr-4", "leaf", depends_on=["pr-3"], files=["d.py"])
+        held_before = {"pr-1": set(), "pr-3": {("a.py", 0)}}
+
+        result = _drop_empty_groups([root, mid, emptied, leaf], held_before, {"a.py": 1})
+
+        assert result[-1].depends_on == ["pr-2"]
+
     def test_move_to_a_downstream_group_is_refused(self) -> None:
         # D already builds on C, so it cannot become C's parent; accepting the
         # edit would build C's stacked branch without the hunk it inherited.
