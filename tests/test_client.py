@@ -9,7 +9,7 @@ import pytest
 from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
-from pr_split.exceptions import LLMError, PRSplitError
+from pr_split.exceptions import ErrorMsg, LLMError, PRSplitError
 from pr_split.planner.client import (
     RawToolOutput,
     _call_anthropic,
@@ -710,7 +710,7 @@ class TestCallAnthropic:
             _call_anthropic("sys", "usr", settings=settings)
 
     @patch("pr_split.planner.client.anthropic.Anthropic")
-    def test_stop_reason_not_tool_use_still_succeeds(self, mock_cls: MagicMock) -> None:
+    def test_stop_reason_not_tool_use_raises(self, mock_cls: MagicMock) -> None:
         from anthropic.types.beta import BetaToolUseBlock
 
         tool_block = BetaToolUseBlock(
@@ -725,8 +725,8 @@ class TestCallAnthropic:
         )
         mock_cls.return_value.beta.messages.create.return_value = mock_response
         settings = _make_settings(Provider.ANTHROPIC)
-        result = _call_anthropic("sys", "usr", settings=settings)
-        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        with pytest.raises(LLMError, match=r"cut off.*stop_reason=max_tokens"):
+            _call_anthropic("sys", "usr", settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -1055,3 +1055,151 @@ class TestPlanSplitWithLlm:
         result = _plan_split_with_llm(parsed, settings)
         assert len(result) == 1
         mock_chunked.assert_called_once()
+
+
+class TestOpenAIIncompleteResponse:
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_incomplete_status_raises(self, mock_cls: MagicMock) -> None:
+        item = SimpleNamespace(
+            type="function_call",
+            name=SPLIT_TOOL_NAME,
+            arguments=json.dumps({"groups": _SAMPLE_RAW_GROUPS}),
+        )
+        mock_response = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+            output=[item],
+        )
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        with pytest.raises(LLMError, match=r"cut off.*max_output_tokens"):
+            _call_openai("sys", "usr", settings=settings)
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_completed_status_is_accepted(self, mock_cls: MagicMock) -> None:
+        item = SimpleNamespace(
+            type="function_call",
+            name=SPLIT_TOOL_NAME,
+            arguments=json.dumps({"groups": _SAMPLE_RAW_GROUPS}),
+        )
+        mock_response = SimpleNamespace(status="completed", output=[item])
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        assert _call_openai("sys", "usr", settings=settings)["groups"] == _SAMPLE_RAW_GROUPS
+
+
+class TestTruncationIsRetried:
+    @patch("pr_split.planner.client._call_llm")
+    def test_chunk_retry_recovers_from_truncated_first_attempt(self, mock_call: MagicMock) -> None:
+        mock_call.side_effect = [
+            LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail="stop_reason=max_tokens")),
+            {"groups": _SAMPLE_RAW_GROUPS},
+        ]
+        settings = _make_settings(Provider.ANTHROPIC)
+        groups = _call_chunk_with_retry(
+            "sys", "usr", settings=settings, chunk_index=1, total_chunks=2
+        )
+        assert [g.id for g in groups] == [g["id"] for g in _SAMPLE_RAW_GROUPS]
+        assert mock_call.call_count == 2
+
+
+class TestMergeChunkGroupsSameFile:
+    def test_same_file_in_later_chunk_is_merged_into_one_assignment(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].hunk_indices == [0, 1]
+        assert merged.assignments[0].assignment_type == AssignmentType.PARTIAL_HUNKS
+
+    def test_whole_file_wins_when_merging(self) -> None:
+        partial = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.PARTIAL_HUNKS, hunk_indices=[0]
+        )
+        whole = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        first = Group(id="pr-1", title="t", description="d", assignments=[partial])
+        later = Group(id="pr-1", title="t", description="d", assignments=[whole])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].assignment_type == AssignmentType.WHOLE_FILE
+        assert merged.assignments[0].hunk_indices == [0]
+
+    def test_other_files_untouched(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="b.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[2],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("a.py", [0]),
+            ("b.py", [2]),
+        ]
+
+    def test_pre_existing_duplicates_in_accumulated_group_are_kept(self) -> None:
+        def _pa(path: str, hunks: list[int]) -> GroupAssignment:
+            return GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=hunks,
+            )
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("g.py", [0])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("f.py", [0, 1]),
+            ("g.py", [0]),
+        ]
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]

@@ -9,11 +9,27 @@ from ..schemas import Group
 from ..types_defs import LocBoundViolation
 
 
+def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
+    """Refuse diffs with binary files.
+
+    Binary patches carry no hunks, so coverage validation would pass
+    without any group claiming them and the change would silently be
+    dropped from every sub-PR.
+    """
+    binary = [pf.path for pf in parsed_diff.patch_set if pf.is_binary_file]
+    if binary:
+        raise PlanValidationError(ErrorMsg.BINARY_FILES_UNSUPPORTED(files=", ".join(binary)))
+
+
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
+            if assignment.file_path not in hunk_counts:
+                raise PlanValidationError(
+                    ErrorMsg.UNKNOWN_FILE(file=assignment.file_path, group=group.id)
+                )
             # A WHOLE_FILE assignment claims every hunk of the file even when
             # its hunk_indices list was left empty.
             if assignment.assignment_type is AssignmentType.WHOLE_FILE:
@@ -25,6 +41,12 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
                 assigned.setdefault(key, []).append(group.id)
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
+
+    for key, group_ids in assigned.items():
+        if key not in all_hunks:
+            raise PlanValidationError(
+                ErrorMsg.UNKNOWN_HUNK(file=key[0], index=key[1], group=group_ids[0])
+            )
 
     for key in all_hunks:
         if key not in assigned:
@@ -138,6 +160,7 @@ def validate_plan(
     min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
+    validate_no_binary_files(parsed_diff)
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
     validate_no_conflicts(groups, dag)

@@ -19,7 +19,12 @@ PLAN_LOADED = "Loaded plan with {count} groups from {path}"
 CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
+PR_ALREADY_DONE = "PR #{number} is already {state}, nothing to close"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
+CLEAN_INCOMPLETE = (
+    "Some PRs or branches could not be cleaned up; the plan file was kept"
+    " so 'pr-split clean' can be re-run"
+)
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
@@ -40,6 +45,7 @@ CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups}
 LLM_OUTPUT_TRUNCATED = (
     "LLM output truncated (stop_reason: {stop_reason}), keys in partial output: {keys}"
 )
+LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
     "Group '{group}': invalid hunk index {index} for {file} (max: {max}), skipping"
@@ -60,7 +66,6 @@ REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
-STACK_LINK_FAILED = "Could not link stack for PRs {prs}: {detail}"
 MERGE_NODE_NOT_STACKED = (
     "Group '{group}' depends on multiple groups; native stacks are linear, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
@@ -68,4 +73,8 @@ MERGE_NODE_NOT_STACKED = (
 )
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
+)
+CP_SAT_NOT_OPTIMAL = (
+    "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
+    "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )

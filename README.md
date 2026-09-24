@@ -45,6 +45,7 @@ uv tool install "pr-split[cp-sat]"
 
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
+- [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`) when using `--stack`
 - `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend
 
 ## Usage
@@ -85,6 +86,7 @@ pr-split split feature-branch --base main --dry-run
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
@@ -97,7 +99,7 @@ pr-split split feature-branch --base main --stack
 
 Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
 
-Linear chains in the plan are also registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`). If the extension is missing the linking step is skipped with a warning — the PRs are already correctly chained without it. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
+Linear chains in the plan are registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack), which is **required** for `--stack`: install it with `gh extension install github/gh-stack`. `pr-split` checks for it up front and refuses to run a stacked split (or `execute` a stacked plan) without it; a `--dry-run` does not need it. If linking fails after the PRs are created, the command exits with an error — the plan state is already saved, so `pr-split clean` can undo the split. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
 ### Check status of an existing split
 
@@ -105,7 +107,7 @@ Linear chains in the plan are also registered as [native GitHub stacks](https://
 pr-split status
 ```
 
-Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub.
+Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/CLOSED/MERGED), and review decision (Approved, Changes Requested, etc.) queried directly from GitHub. A PR whose state could not be fetched is shown as UNKNOWN with a warning, never as a stale OPEN.
 
 ### Merge split PRs in dependency order
 
@@ -113,13 +115,15 @@ Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/
 pr-split merge
 ```
 
-Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs. Stops if a merge fails or a dependency wasn't merged to prevent out-of-order merges.
+Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed or any PR was left blocked, so re-run once the blocking PRs are ready.
 
 Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 
 ```bash
 pr-split merge --auto
 ```
+
+`--auto` is not fire-and-forget: after queueing a batch, `merge` waits for every PR in it to reach `MERGED` before moving on to the dependent batch, polling GitHub every 10 seconds for up to 10 minutes per batch. If a PR is still unmerged when the timeout expires, or gets closed while waiting, the command stops before the dependent batch and exits 1 (webhook `exit_reason: incomplete_batch`); re-run `pr-split merge --auto` once CI has caught up to continue from where it left off.
 
 Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
 
@@ -195,6 +199,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
@@ -222,7 +227,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: vitali87/pr-split@v1.0.0
+      - uses: vitali87/pr-split@v1.0.1
         with:
           max-loc: "400"
           partition-strategy: "graph"
@@ -235,7 +240,7 @@ jobs:
 |-------|---------|-------------|
 | `max-loc` | `400` | Maximum target diff lines per sub-PR |
 | `min-loc` | (unset) | Minimum target diff lines per sub-PR |
-| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). Automatic `ortools` install for `cp_sat` needs a release newer than `v1.0.0`; pin the action to that release or `@main` when using it |
+| `partition-strategy` | `graph` | Backend for partitioning (`graph` or `cp_sat`). `cp_sat` installs `ortools` automatically from `v1.0.1` |
 | `priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `threshold-groups` | `2` | Minimum suggested groups before posting the split plan |
 | `python-version` | `3.12` | Python version to use |

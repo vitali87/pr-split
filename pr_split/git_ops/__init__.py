@@ -5,16 +5,7 @@ from .branches import (
     branch_exists as branch_exists,
 )
 from .branches import (
-    checkout_branch as checkout_branch,
-)
-from .branches import (
-    commit_files as commit_files,
-)
-from .branches import (
     commit_files_in_dir as commit_files_in_dir,
-)
-from .branches import (
-    create_group_branch as create_group_branch,
 )
 from .branches import (
     delete_branch as delete_branch,
@@ -36,6 +27,9 @@ from .branches import (
 )
 from .prs import (
     check_gh_auth as check_gh_auth,
+)
+from .prs import (
+    check_gh_stack as check_gh_stack,
 )
 from .prs import (
     close_pr as close_pr,

@@ -131,6 +131,11 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
     except anthropic.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
     if response.stop_reason != "tool_use":
+        # A max_tokens stop means the tool input was cut off mid-plan.
+        # Accepting it would silently drop groups and let
+        # assign_uncovered_hunks paper over the gap, so fail and let the
+        # chunk retry loop / caller handle it. Other stop reasons without a
+        # tool block are reported below as "no tool_use block".
         stop_reason = getattr(response, "stop_reason", "unknown")
         keys: list[str] = []
         for block in getattr(response, "content", []):
@@ -138,6 +143,8 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
                 keys = list(block.input.keys())
                 break
         logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
+        if stop_reason == "max_tokens":
+            raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"stop_reason={stop_reason}"))
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
@@ -156,6 +163,12 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
         )
     except openai.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        details = getattr(response, "incomplete_details", None)
+        reason = getattr(details, "reason", None) or "unknown"
+        logger.warning(logs.LLM_OUTPUT_INCOMPLETE.format(status=status, reason=reason))
+        raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"status={status}, reason={reason}"))
     for item in response.output:
         if item.type == "function_call" and item.name == SPLIT_TOOL_NAME:
             try:
@@ -237,12 +250,38 @@ def _parse_groups_strict(raw: RawToolOutput) -> list[Group]:
     return groups
 
 
+def _merge_assignment(existing: GroupAssignment, incoming: GroupAssignment) -> GroupAssignment:
+    if (
+        existing.assignment_type is AssignmentType.WHOLE_FILE
+        or incoming.assignment_type is AssignmentType.WHOLE_FILE
+    ):
+        assignment_type = AssignmentType.WHOLE_FILE
+    else:
+        assignment_type = AssignmentType.PARTIAL_HUNKS
+    return GroupAssignment(
+        file_path=existing.file_path,
+        assignment_type=assignment_type,
+        hunk_indices=sorted(set(existing.hunk_indices) | set(incoming.hunk_indices)),
+    )
+
+
 def _merge_chunk_groups(accumulated: list[Group], chunk_groups: list[Group]) -> list[Group]:
     acc_map = {g.id: g for g in accumulated}
     for cg in chunk_groups:
         if cg.id in acc_map:
             existing = acc_map[cg.id]
-            existing.assignments.extend(cg.assignments)
+            # A later chunk may assign more hunks of a file this group already
+            # holds. Keep one assignment per path: materialization writes a
+            # file once per assignment, so duplicates would drop hunks.
+            by_path: dict[str, GroupAssignment] = {}
+            for assignment in [*existing.assignments, *cg.assignments]:
+                if assignment.file_path in by_path:
+                    by_path[assignment.file_path] = _merge_assignment(
+                        by_path[assignment.file_path], assignment
+                    )
+                else:
+                    by_path[assignment.file_path] = assignment
+            existing.assignments = list(by_path.values())
             for dep in cg.depends_on:
                 if dep not in existing.depends_on:
                     existing.depends_on.append(dep)
