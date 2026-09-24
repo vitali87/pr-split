@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -97,7 +99,7 @@ class TestExtractDiffSubprocess:
     @patch("pr_split.diff_ops.parser.subprocess.run")
     def test_extract_diff_success(self, mock_run: MagicMock) -> None:
         mock_run.return_value = subprocess.CompletedProcess(
-            args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE, stderr=""
+            args=["git", "diff"], returncode=0, stdout=EXTRACT_DIFF_SAMPLE.encode(), stderr=b""
         )
         result = extract_diff("feature", "main")
         assert result == EXTRACT_DIFF_SAMPLE
@@ -115,7 +117,6 @@ class TestExtractDiffSubprocess:
                 "main...feature",
             ],
             capture_output=True,
-            text=True,
         )
 
     @patch("pr_split.diff_ops.parser.subprocess.run")
@@ -123,8 +124,8 @@ class TestExtractDiffSubprocess:
         mock_run.return_value = subprocess.CompletedProcess(
             args=["git", "diff"],
             returncode=1,
-            stdout="",
-            stderr="fatal: bad revision",
+            stdout=b"",
+            stderr=b"fatal: bad revision",
         )
         with pytest.raises(GitOperationError, match="bad revision"):
             extract_diff("bad-branch", "main")
@@ -134,3 +135,71 @@ class TestRawDiffPreserved:
     def test_raw_diff_preserved(self) -> None:
         parsed = parse_diff(EXTRACT_DIFF_SAMPLE)
         assert parsed.raw_diff == EXTRACT_DIFF_SAMPLE
+
+
+class TestExtractDiffPreservesCarriageReturns:
+    @patch("pr_split.diff_ops.parser.subprocess.run")
+    def test_crlf_diff_is_returned_verbatim(self, mock_run: MagicMock) -> None:
+        raw = b"--- a/c.txt\n+++ b/c.txt\n@@ -1 +1 @@\n-old\r\n+new\r\n"
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git", "diff"], returncode=0, stdout=raw, stderr=b""
+        )
+        result = extract_diff("feature", "main")
+        assert "\r\n" in result
+        assert result == raw.decode()
+        assert mock_run.call_args.kwargs.get("text") is not True
+
+
+class TestNonUtf8FileContent:
+    def test_latin1_file_round_trips_byte_for_byte(self, tmp_path: Path) -> None:
+        from pr_split.constants import AssignmentType
+        from pr_split.diff_ops.reconstructor import materialize_group_files
+        from pr_split.git_ops.branches import merge_base
+        from pr_split.schemas import Group, GroupAssignment
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-c", "user.name=t", "-c", "user.email=t@x", *args],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        git("init", "-q", "-b", "main")
+        base_bytes = "caf\xe9 one\nkeep\n".encode("latin-1")
+        dev_bytes = "caf\xe9 two\nkeep\n".encode("latin-1")
+        (tmp_path / "legacy.txt").write_bytes(base_bytes)
+        git("add", "-A")
+        git("commit", "-qm", "base")
+        git("checkout", "-qb", "dev")
+        (tmp_path / "legacy.txt").write_bytes(dev_bytes)
+        git("add", "-A")
+        git("commit", "-qm", "dev")
+
+        cwd = os.getcwd()
+        os.chdir(tmp_path)
+        try:
+            parsed = parse_diff(extract_diff("dev", "main"))
+            group = Group(
+                id="pr-1",
+                title="t",
+                description="d",
+                assignments=[
+                    GroupAssignment(
+                        file_path="legacy.txt",
+                        assignment_type=AssignmentType.WHOLE_FILE,
+                        hunk_indices=[0],
+                    )
+                ],
+            )
+            materialized = materialize_group_files(parsed, group, merge_base("main", "dev"))
+            out = tmp_path / "out.txt"
+            content = materialized["legacy.txt"]
+            assert content is not None
+            out.write_text(content, encoding="utf-8", errors="surrogateescape", newline="")
+        finally:
+            os.chdir(cwd)
+
+        assert [pf.path for pf in parsed.patch_set] == ["legacy.txt"]
+        assert out.read_bytes() == dev_bytes

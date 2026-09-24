@@ -1357,3 +1357,24 @@ class TestMergeChunkGroupsSameFile:
         later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
         (merged,) = _merge_chunk_groups([first], [later])
         assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]
+
+
+class TestSurrogateSafePrompts:
+    @patch("pr_split.planner.client._call_anthropic")
+    def test_call_llm_replaces_surrogates_before_the_request(self, mock_call: MagicMock) -> None:
+        from pr_split.planner.client import _call_llm
+
+        user = b"diff caf\xe9".decode("utf-8", errors="surrogateescape")
+        _call_llm("sys", user, settings=_make_settings())
+        sent_user = mock_call.call_args.args[1]
+        assert "\udce9" not in sent_user
+        assert sent_user == "diff caf\ufffd"
+        sent_user.encode("utf-8")  # must be JSON-serialisable
+
+    @patch("pr_split.planner.client._count_tokens_anthropic", return_value=3)
+    def test_count_tokens_replaces_surrogates(self, mock_count: MagicMock) -> None:
+        from pr_split.planner.client import _count_tokens
+
+        user = b"caf\xe9".decode("utf-8", errors="surrogateescape")
+        assert _count_tokens("sys", user, settings=_make_settings()) == 3
+        mock_count.call_args.args[1].encode("utf-8")
