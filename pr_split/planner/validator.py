@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from loguru import logger
+
 from .. import logs
 from ..constants import AssignmentType, LocViolationType
 from ..diff_ops import ParsedDiff
@@ -7,6 +9,7 @@ from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
 from ..schemas import Group
 from ..types_defs import LocBoundViolation
+from .symbols import symbol_dependencies
 
 
 def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
@@ -153,6 +156,27 @@ def validate_loc_bounds(
     ]
 
 
+def detect_symbol_order_violations(
+    groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG
+) -> list[str]:
+    """Groups that use a name defined in a group they do not build on.
+
+    Such a sub-PR cannot compile or import on its own, e.g. a definition
+    placed in a child of the PR that uses it.
+    """
+    warnings: list[str] = []
+    for user, definers in sorted(symbol_dependencies(groups, parsed_diff).items()):
+        ancestors = dag.ancestors(user)
+        for definer, names in sorted(definers.items()):
+            if definer not in ancestors:
+                warnings.append(
+                    logs.SYMBOL_ORDER_VIOLATION.format(
+                        user=user, definer=definer, names=", ".join(sorted(names)[:5])
+                    )
+                )
+    return warnings
+
+
 def validate_plan(
     groups: list[Group],
     parsed_diff: ParsedDiff,
@@ -165,4 +189,6 @@ def validate_plan(
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
     validate_no_conflicts(groups, dag, {pf.path: len(pf) for pf in parsed_diff.patch_set})
+    for warning in detect_symbol_order_violations(groups, parsed_diff, dag):
+        logger.warning(warning)
     return validate_loc_bounds(groups, max_loc, min_loc)

@@ -15,6 +15,7 @@ from ..exceptions import PRSplitError
 from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
+from .symbols import symbol_dependencies
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -550,7 +551,44 @@ def _build_groups_from_units(
 
     recompute_estimated_loc(groups, parsed_diff)
     _derive_merge_order_dependencies(groups)
+    _add_symbol_dependencies(groups, parsed_diff)
     return groups
+
+
+def _add_symbol_dependencies(groups: list[Group], parsed_diff: ParsedDiff) -> None:
+    """Make a group depend on every group whose newly defined names it uses.
+
+    File order alone misses a new test file that imports a new module, so the
+    test's sub-PR would target the base and fail on import. An edge that
+    would close a cycle is skipped with a warning.
+    """
+    by_id = {g.id: g for g in groups}
+    for user, definers in sorted(symbol_dependencies(groups, parsed_diff).items()):
+        for definer, names in sorted(definers.items()):
+            group = by_id[user]
+            if definer in group.depends_on:
+                continue
+            group.depends_on.append(definer)
+            try:
+                PlanDAG(groups).validate_acyclic()
+            except PRSplitError:
+                group.depends_on.remove(definer)
+                logger.warning(
+                    logs.SYMBOL_EDGE_SKIPPED.format(
+                        user=user, definer=definer, names=", ".join(sorted(names)[:5])
+                    )
+                )
+    _reduce_transitive_dependencies(groups)
+
+
+def _reduce_transitive_dependencies(groups: list[Group]) -> None:
+    dep_map = {group.id: set(group.depends_on) for group in groups}
+    for group in groups:
+        reduced_deps = set(dep_map[group.id])
+        for dep in list(reduced_deps):
+            if _has_alternative_path(dep_map, group.id, dep):
+                reduced_deps.remove(dep)
+        group.depends_on = sorted(reduced_deps)
 
 
 def _has_alternative_path(dep_map: dict[str, set[str]], source: str, target: str) -> bool:
@@ -586,11 +624,8 @@ def _derive_merge_order_dependencies(groups: list[Group]) -> None:
             dep_map[child_id].add(parent_id)
 
     for group in groups:
-        reduced_deps = set(dep_map[group.id])
-        for dep in list(reduced_deps):
-            if _has_alternative_path(dep_map, group.id, dep):
-                reduced_deps.remove(dep)
-        group.depends_on = sorted(reduced_deps)
+        group.depends_on = sorted(dep_map[group.id])
+    _reduce_transitive_dependencies(groups)
 
 
 def partition_diff(parsed_diff: ParsedDiff, settings: Settings) -> list[Group]:
