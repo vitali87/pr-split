@@ -52,6 +52,8 @@ class Settings(BaseSettings):
                     self.model = DEFAULT_MODEL
                 case Provider.OPENAI:
                     self.model = OPENAI_MODEL
+                case Provider.CLAUDE_CLI:
+                    pass  # the CLI's own configured default model
                 case _:
                     raise NotImplementedError(f"No default model for provider '{self.provider}'")
         return self
@@ -83,6 +85,8 @@ class Settings(BaseSettings):
             case Provider.OPENAI:
                 if not self.openai_api_key:
                     raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
+            case Provider.CLAUDE_CLI:
+                pass  # authenticated through the CLI's own login
             case _:
                 raise NotImplementedError(
                     f"API key check not implemented for provider '{self.provider}'"
@@ -96,13 +100,15 @@ class Settings(BaseSettings):
                 return self.anthropic_api_key
             case Provider.OPENAI:
                 return self.openai_api_key
+            case Provider.CLAUDE_CLI:
+                return ""
             case _:
                 raise NotImplementedError(f"Provider '{self.provider}' is not supported")
 
     @property
     def max_context_tokens(self) -> int:
         match self.provider:
-            case Provider.ANTHROPIC:
+            case Provider.ANTHROPIC | Provider.CLAUDE_CLI:
                 return ANTHROPIC_MAX_CONTEXT_TOKENS
             case Provider.OPENAI:
                 return OPENAI_MAX_CONTEXT_TOKENS

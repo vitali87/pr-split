@@ -36,6 +36,9 @@ class PRState(StrEnum):
 class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    # The locally installed Claude Code CLI (`claude -p`), which uses its own
+    # login instead of an API key.
+    CLAUDE_CLI = "claude-cli"
 
 
 BRANCH_PREFIX = "pr-split/"
