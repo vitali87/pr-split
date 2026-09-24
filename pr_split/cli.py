@@ -15,6 +15,7 @@ import typer
 from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
@@ -211,6 +212,33 @@ def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) 
 
     for warning in warnings:
         logger.warning(warning)
+
+
+def _oversized_group_ids(groups: list[Group], max_loc: int) -> list[str]:
+    return [g.id for g in groups if g.estimated_loc > max_loc]
+
+
+def _report_oversized_groups(groups: list[Group], max_loc: int) -> None:
+    """One visible line when groups miss the --max-loc target, so it is never silent."""
+    oversized = [g for g in groups if g.estimated_loc > max_loc]
+    if not oversized:
+        return
+    largest = max(oversized, key=lambda g: g.estimated_loc)
+    # A group holding one hunk (e.g. a whole new file) cannot be split by any
+    # plan; say so rather than leave it looking like a planning miss.
+    single_hunk = [g.id for g in oversized if sum(len(a.hunk_indices) for a in g.assignments) == 1]
+    irreducible = (
+        f" {', '.join(escape(gid) for gid in single_hunk)} hold a single hunk each and"
+        " cannot be split below the limit."
+        if single_hunk
+        else ""
+    )
+    console.print(
+        f"[yellow]{len(oversized)} of {len(groups)} groups exceed --max-loc {max_loc}"
+        f" (largest: {escape(largest.id)} at {largest.estimated_loc} LOC).{irreducible}"
+        " Use the editor, --max-refinement-iterations or --strict-loc-bounds to act on it."
+        "[/yellow]"
+    )
 
 
 def _present_plan(groups: list[Group]) -> None:
@@ -1052,6 +1080,7 @@ def split(
         )
         _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
         logger.success("Edited plan validation passed")
+        _report_oversized_groups(groups, settings.max_loc)
     except PRSplitError as exc:
         console.print(f"[red]Edited plan is invalid: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1072,6 +1101,7 @@ def split(
         merge_base_sha=merge_base_ref,
         dev_branch_arg=dev_branch_arg,
         raw_diff=raw_diff,
+        oversized_groups=_oversized_group_ids(groups, settings.max_loc),
     )
 
     if dry_run:
@@ -1309,6 +1339,7 @@ def execute(
         raise typer.Exit(1) from exc
 
     _present_plan(plan.groups)
+    _report_oversized_groups(plan.groups, plan.max_loc)
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
