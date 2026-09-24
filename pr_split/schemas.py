@@ -61,6 +61,12 @@ class SplitPlan(BaseModel):
     merge_base_sha: str | None = None
     dev_branch_arg: str | None = None
     raw_diff: str | None = None
+    # How the plan was produced, so a saved plan carries its provenance. The
+    # llm and cp_sat backends can return a different plan on each run.
+    partition_strategy: str | None = None
+    chunk_strategy: str | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class BranchRecord(BaseModel):

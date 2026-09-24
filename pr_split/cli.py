@@ -15,6 +15,7 @@ import typer
 from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
@@ -211,6 +212,19 @@ def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) 
 
     for warning in warnings:
         logger.warning(warning)
+
+
+def _plan_provenance(plan: SplitPlan) -> str:
+    """One line naming how the plan was made; llm and cp_sat plans vary run to run."""
+    how = plan.partition_strategy or "unknown"
+    if plan.provider:
+        how += f" ({plan.provider}{' ' + plan.model if plan.model else ''})"
+    note = (
+        ""
+        if plan.partition_strategy == PartitionStrategy.GRAPH.value
+        else "; re-running may give a different plan, so keep the saved plan file"
+    )
+    return f"[dim]Planned with {escape(how)}{note}.[/dim]"
 
 
 def _present_plan(groups: list[Group]) -> None:
@@ -1072,7 +1086,16 @@ def split(
         merge_base_sha=merge_base_ref,
         dev_branch_arg=dev_branch_arg,
         raw_diff=raw_diff,
+        partition_strategy=settings.partition_strategy.value,
+        chunk_strategy=settings.chunk_strategy.value,
+        provider=(
+            settings.provider.value
+            if settings.partition_strategy is PartitionStrategy.LLM
+            else None
+        ),
+        model=settings.model if settings.partition_strategy is PartitionStrategy.LLM else None,
     )
+    console.print(_plan_provenance(split_plan))
 
     if dry_run:
         save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))
