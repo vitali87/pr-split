@@ -60,7 +60,7 @@ from .git_ops import (
 from .git_ops.branches import run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
-from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
+from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan, select_plan
 from .planner import plan_split, validate_coverage, validate_plan
 from .schemas import (
     BranchRecord,
@@ -78,6 +78,21 @@ app = typer.Typer(
     help="Decompose large PRs into reviewable dependency-ordered PRs",
 )
 console = Console()
+
+
+@app.callback()
+def _choose_plan(
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            envvar="PR_SPLIT_BRANCH",
+            help="Dev branch whose saved plan to use when several splits are in progress",
+        ),
+    ] = None,
+) -> None:
+    # Plans are saved per dev branch; without --branch the only saved plan is used.
+    select_plan(derive_split_namespace(branch) if branch else None)
 
 
 def _render_dag(groups: list[Group]) -> str:
@@ -730,6 +745,7 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
+    select_plan(derive_split_namespace(dev_branch_arg))
 
     if not branch_exists(dev_branch):
         if not check_gh_auth():

@@ -7,7 +7,7 @@ import pytest
 
 from pr_split.constants import Priority
 from pr_split.exceptions import PRSplitError
-from pr_split.plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
+from pr_split.plan_store import load_plan, plan_exists, plan_path, save_plan
 from pr_split.schemas import (
     BranchRecord,
     GitState,
@@ -101,7 +101,7 @@ class TestPlanStoreJson:
             ),
         )
         save_plan(plan_file)
-        raw = json.loads((tmp_path / ".pr-split" / "plan.json").read_text())
+        raw = json.loads((tmp_path / ".pr-split" / "plans" / "dev.json").read_text())
         assert "plan" in raw
         assert raw["plan"]["priority"] == "logical"
         assert raw["plan"]["min_loc"] == 25
@@ -165,9 +165,9 @@ class TestPlanPathsResolveAgainstTheRepoRoot:
         repo = self._repo(tmp_path)
         monkeypatch.chdir(repo / "src")
         save_plan(_make_plan_file())
-        assert (repo / ".pr-split" / "plan.json").exists()
+        assert (repo / ".pr-split" / "plans" / "feat-big.json").exists()
         assert not (repo / "src" / ".pr-split").exists()
-        assert plan_path() == (repo / ".pr-split" / "plan.json").resolve()
+        assert plan_path() == (repo / ".pr-split" / "plans" / "feat-big.json").resolve()
 
         monkeypatch.chdir(repo)
         assert plan_exists()
@@ -199,7 +199,8 @@ class TestSavePlanIsAtomic:
     ) -> None:
         monkeypatch.chdir(tmp_path)
         save_plan(_make_plan_file())
-        leftovers = [p.name for p in plan_dir().iterdir() if p.name != "plan.json"]
+        target = plan_path()
+        leftovers = [p.name for p in target.parent.iterdir() if p != target]
         assert leftovers == []
 
     def test_failed_write_preserves_the_previous_plan(
@@ -226,3 +227,91 @@ class TestSavePlanIsAtomic:
         assert plan_path().read_text() == before
         loaded = load_plan()
         assert loaded.plan.dev_branch == _make_plan_file().plan.dev_branch
+
+
+class TestPerBranchPlans:
+    @pytest.fixture(autouse=True)
+    def _repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from pr_split.plan_store import select_plan
+
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+        monkeypatch.chdir(tmp_path)
+        select_plan(None)
+        yield
+        select_plan(None)
+
+    def test_two_splits_keep_separate_plans(self, tmp_path: Path) -> None:
+        from pr_split.plan_store import saved_plan_slugs, select_plan
+
+        select_plan("feat-a")
+        save_plan(_make_plan_file())
+        select_plan("feat-b")
+        save_plan(_make_plan_file())
+
+        assert saved_plan_slugs() == ["feat-a", "feat-b"]
+        select_plan(None)
+        with pytest.raises(
+            PRSplitError, match=r"Several split plans are saved \(feat-a, feat-b\)"
+        ):
+            load_plan()
+        select_plan("feat-a")
+        assert load_plan().plan.dev_branch == "feat/big"
+
+    def test_the_only_plan_is_used_without_selection(self) -> None:
+        from pr_split.plan_store import select_plan
+
+        select_plan("feat-a")
+        save_plan(_make_plan_file())
+        select_plan(None)
+        assert plan_exists()
+        assert plan_path().name == "feat-a.json"
+
+    def test_plan_dir_is_excluded_from_git_once(self, tmp_path: Path) -> None:
+        import subprocess
+
+        from pr_split.plan_store import select_plan
+
+        select_plan("feat-a")
+        save_plan(_make_plan_file())
+        save_plan(_make_plan_file())
+
+        exclude = (tmp_path / ".git" / "info" / "exclude").read_text().splitlines()
+        assert exclude.count("/.pr-split/") == 1
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=tmp_path, capture_output=True, text=True
+        ).stdout
+        assert ".pr-split" not in status
+
+    def test_legacy_single_plan_file_still_loads(self, tmp_path: Path) -> None:
+        legacy = tmp_path / ".pr-split" / "plan.json"
+        legacy.parent.mkdir()
+        legacy.write_text(_make_plan_file().model_dump_json())
+        assert load_plan().plan.dev_branch == "feat/big"
+
+
+class TestLegacyPlanMigration:
+    @pytest.fixture(autouse=True)
+    def _repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        from pr_split.plan_store import select_plan
+
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+        monkeypatch.chdir(tmp_path)
+        select_plan(None)
+        yield
+        select_plan(None)
+
+    def test_legacy_plan_moves_to_its_branch_file(self, tmp_path: Path) -> None:
+        from pr_split.plan_store import saved_plan_slugs, select_plan
+
+        legacy = tmp_path / ".pr-split" / "plan.json"
+        legacy.parent.mkdir()
+        legacy.write_text(_make_plan_file().model_dump_json())
+
+        select_plan("feat-big")
+        assert load_plan().plan.dev_branch == "feat/big"
+        assert not legacy.exists()
+        assert saved_plan_slugs() == ["feat-big"]

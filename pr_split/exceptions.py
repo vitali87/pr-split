@@ -17,6 +17,10 @@ class ErrorMsg(StrEnum):
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
+    PLAN_AMBIGUOUS = (
+        "Several split plans are saved ({branches}); pick one with"
+        " 'pr-split --branch <dev-branch> <command>'"
+    )
     PLAN_LOAD_FAILED = (
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
