@@ -68,15 +68,12 @@ def validate_loc(groups: list[Group], parsed_diff: ParsedDiff) -> None:
         )
 
 
-def validate_no_conflicts(
-    groups: list[Group], dag: PlanDAG, hunk_counts: dict[str, int] | None = None
-) -> None:
-    counts = hunk_counts or {}
+def validate_no_conflicts(groups: list[Group], dag: PlanDAG, hunk_counts: dict[str, int]) -> None:
     group_files: dict[str, dict[str, set[int]]] = {}
     for group in groups:
         file_hunks: dict[str, set[int]] = {}
         for assignment in group.assignments:
-            covered = assignment.covered_indices(counts.get(assignment.file_path, 0))
+            covered = assignment.covered_indices(hunk_counts.get(assignment.file_path, 0))
             file_hunks.setdefault(assignment.file_path, set()).update(covered)
         group_files[group.id] = file_hunks
 

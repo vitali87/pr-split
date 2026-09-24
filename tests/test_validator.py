@@ -180,7 +180,7 @@ class TestValidateNoConflicts:
             _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
         ]
         dag = PlanDAG(groups)
-        validate_no_conflicts(groups, dag)
+        validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
 
     def test_independent_overlapping_hunks_raises(self) -> None:
         groups = [
@@ -189,7 +189,7 @@ class TestValidateNoConflicts:
         ]
         dag = PlanDAG(groups)
         with pytest.raises(PlanValidationError, match="overlapping"):
-            validate_no_conflicts(groups, dag)
+            validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
 
     def test_whole_file_with_empty_indices_conflicts_with_partial(self) -> None:
         groups = [
@@ -210,7 +210,7 @@ class TestValidateNoConflicts:
             ),
         ]
         dag = PlanDAG(groups)
-        validate_no_conflicts(groups, dag)
+        validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
 
 
 class TestValidateLocBounds:
