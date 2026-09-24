@@ -65,6 +65,11 @@ REFINEMENT_RESOLVED = (
 REFINEMENT_EXHAUSTED = (
     "Refinement iteration limit reached ({iterations}), {remaining} violation(s) remain"
 )
+REFINEMENT_SKIPPED_CHUNKED = (
+    "Skipping LOC refinement: the diff exceeded the context window and was planned in"
+    " chunks, and the refinement prompt embeds the full diff; {remaining} violation(s)"
+    " remain. Adjust --min-loc/--max-loc or use the interactive editor"
+)
 REFINEMENT_REJECTED = (
     "Refinement iteration {iteration} produced an invalid plan ({reason}); "
     "keeping the current plan, {remaining} violation(s) remain"
