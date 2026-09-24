@@ -85,7 +85,7 @@ pr-split split feature-branch --base main --dry-run
 | `--max-refinement-iterations` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
-| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`). `graph` is deterministic; `llm` and `cp_sat` can return a different plan on each run, so treat the saved plan file as the artifact of record |
 | `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--draft` | `false` | Open every sub-PR as a draft |
