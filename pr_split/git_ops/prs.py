@@ -22,6 +22,30 @@ def _run_gh(*args: str) -> str:
     return result.stdout.strip()
 
 
+PR_BODY_MAX_CHARS = 65_536
+_PR_BODY_TRUNCATION_NOTE = "\n\n_(body truncated: GitHub's limit is 65,536 characters)_"
+
+
+def _truncate_pr_body(body: str) -> str:
+    """Keep the body under GitHub's hard limit so PR creation cannot fail on it.
+
+    The cut lands on a line boundary and closes an open code fence (the
+    dependency graph is the last section of every generated body), so the
+    truncation note renders as a note rather than as code text.
+    """
+    if len(body) <= PR_BODY_MAX_CHARS:
+        return body
+    fence_close = "\n```"
+    keep = PR_BODY_MAX_CHARS - len(_PR_BODY_TRUNCATION_NOTE) - len(fence_close)
+    cut = body[:keep]
+    newline = cut.rfind("\n")
+    if newline > 0:
+        cut = cut[:newline]
+    if cut.count("```") % 2 == 1:
+        cut += fence_close
+    return cut + _PR_BODY_TRUNCATION_NOTE
+
+
 def check_gh_auth() -> bool:
     try:
         _run_gh("auth", "status")
@@ -47,6 +71,7 @@ def check_gh_stack() -> bool:
 def create_pr(
     head: str, base: str, title: str, body: str, *, draft: bool = False
 ) -> tuple[int, str]:
+    body = _truncate_pr_body(body)
     args = [
         "pr",
         "create",
