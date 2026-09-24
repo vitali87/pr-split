@@ -360,7 +360,11 @@ def _create_branches_and_commits(
 ) -> list[BranchRecord]:
     worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
 
-    if stacked:
+    # A plan with dependency edges is laid out along its DAG whether or not
+    # native stacking is on: each dependant builds on (and targets) its
+    # parent's branch, so it is reviewable and buildable against the code it
+    # depends on. ``stacked`` only adds native gh-stack registration on top.
+    if stacked or any(g.depends_on for g in groups):
         dag = PlanDAG(groups)
         groups_by_id = {g.id: g for g in groups}
         branch_names = {g.id: f"{BRANCH_PREFIX}{namespace}/{g.id}" for g in groups}
@@ -920,7 +924,7 @@ def split(
         typer.Option(
             "--stack",
             envvar="PR_SPLIT_STACK",
-            help="Stack dependent PRs: each child branches from and targets its parent's branch",
+            help="Register dependent PR chains as native GitHub stacks",
         ),
     ] = False,
     draft: Annotated[
@@ -1232,7 +1236,7 @@ def execute(
         typer.Option(
             "--stack",
             envvar="PR_SPLIT_STACK",
-            help="Stack dependent PRs even if the saved plan was not created with --stack",
+            help="Register native GitHub stacks even if the plan was saved without --stack",
         ),
     ] = False,
     draft: Annotated[

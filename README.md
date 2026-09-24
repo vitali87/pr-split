@@ -14,7 +14,7 @@
 
 ## Latest News 🔥
 
-- Stacked PR Mode — pass `--stack` and every dependent PR branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Chains are registered as native GitHub stacks via the `gh-stack` extension when it is installed.
+- Stacked PR Mode — every dependent PR branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Pass `--stack` to also register chains as native GitHub stacks via the `gh-stack` extension.
 - GitHub Action — add pr-split to any repo as a CI check. Scores every PR and posts a split plan comment when it's too large. No API key needed.
 - Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
 
@@ -87,7 +87,7 @@ pr-split split feature-branch --base main --dry-run
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
 | `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
 | `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
+| `--stack` | `false` | Register dependent PR chains as native GitHub stacks (dependent PRs always branch from and target their parent) |
 | `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
 
@@ -97,7 +97,7 @@ pr-split split feature-branch --base main --dry-run
 pr-split split feature-branch --base main --stack
 ```
 
-Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
+Each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch, with or without `--stack`. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge. Groups with no dependencies are cut from the merge base and target the base branch. `--stack` additionally registers the chains as native GitHub stacks.
 
 Linear chains in the plan are registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack), which is **required** for `--stack`: install it with `gh extension install github/gh-stack`. `pr-split` checks for it up front and refuses to run a stacked split (or `execute` a stacked plan) without it; a `--dry-run` does not need it. If linking fails after the PRs are created, the command exits with an error — the plan state is already saved, so `pr-split clean` can undo the split. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
@@ -200,7 +200,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
 | `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
+| `PR_SPLIT_STACK` | `false` | Register dependent PR chains as native GitHub stacks |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
