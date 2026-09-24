@@ -89,14 +89,57 @@ app = typer.Typer(
 console = Console()
 
 
+def _reachable_from_roots(groups: list[Group]) -> set[str]:
+    """Ids that a root-first walk will actually visit.
+
+    A group that is neither a root nor a descendant of one (unknown
+    dependency chain, cycle) is never drawn, so it must not count towards
+    the number of parents a child expects to be visited from.
+    """
+    children: dict[str, list[str]] = {g.id: [] for g in groups}
+    for g in groups:
+        for dep in g.depends_on:
+            if dep in children:
+                children[dep].append(g.id)
+    reachable: set[str] = set()
+    stack = [g.id for g in groups if not g.depends_on]
+    while stack:
+        current = stack.pop()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        stack.extend(children[current])
+    return reachable
+
+
+def _expected_visits(groups: list[Group]) -> dict[str, int]:
+    """How many times each group will be reached from a drawn parent.
+
+    Every reachable parent is drawn in full exactly once, so a child is
+    visited once per reachable parent. It is rendered as a stub until its
+    final visit, which guarantees the full node (with its subtree and the
+    "<-- this PR" marker) appears exactly once and every stub precedes it.
+    """
+    reachable = _reachable_from_roots(groups)
+    # A set, not a count: the walk visits a child once per distinct parent,
+    # so a duplicated depends_on entry must not raise the expected total.
+    return {g.id: len({d for d in g.depends_on if d in reachable}) for g in groups}
+
+
 def _render_dag(groups: list[Group]) -> str:
     roots = [g for g in groups if not g.depends_on]
     tree = Tree("Split Plan")
+    expected = _expected_visits(groups)
+    seen: dict[str, int] = {g.id: 0 for g in groups}
 
     def _add_children(parent_tree: Tree, parent_id: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for child in children:
-            deps_label = ", ".join(child.depends_on)
+            seen[child.id] += 1
+            if seen[child.id] < expected[child.id]:
+                parent_tree.add(f"{child.id}: {child.title} (see below)")
+                continue
+            deps_label = ", ".join(dict.fromkeys(child.depends_on))
             branch = parent_tree.add(f"{child.id}: {child.title} (depends on: {deps_label})")
             _add_children(branch, child.id)
 
@@ -112,14 +155,26 @@ def _render_dag(groups: list[Group]) -> str:
 def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     roots = [g for g in groups if not g.depends_on]
     lines: list[str] = []
+    expected = _expected_visits(groups)
+    seen: dict[str, int] = {g.id: 0 for g in groups}
 
     def _add_children(parent_id: str, prefix: str) -> None:
         children = [g for g in groups if parent_id in g.depends_on]
         for i, child in enumerate(children):
             is_last = i == len(children) - 1
             connector = "\u2514\u2500\u2500" if is_last else "\u251c\u2500\u2500"
+            seen[child.id] += 1
+            if seen[child.id] < expected[child.id]:
+                # Another parent will visit this node later; the full node
+                # (with its subtree and the "<-- this PR" marker) follows there.
+                lines.append(f"{prefix}{connector} {child.id}: {child.title} (see below)")
+                continue
             marker = "  <-- this PR" if child.id == current_id else ""
-            lines.append(f"{prefix}{connector} {child.id}: {child.title}{marker}")
+            also = ""
+            others = [d for d in dict.fromkeys(child.depends_on) if d != parent_id]
+            if others:
+                also = f" (also depends on: {', '.join(others)})"
+            lines.append(f"{prefix}{connector} {child.id}: {child.title}{also}{marker}")
             extension = "    " if is_last else "\u2502   "
             _add_children(child.id, prefix + extension)
 

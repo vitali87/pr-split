@@ -670,3 +670,128 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestRenderDagMultiParent:
+    def _diamond(self) -> list[Group]:
+        return [
+            _group("pr-1", "base"),
+            _group("pr-2", "left", depends_on=["pr-1"]),
+            _group("pr-3", "right", depends_on=["pr-1"]),
+            _group("pr-4", "merge", depends_on=["pr-2", "pr-3"]),
+            _group("pr-5", "after merge", depends_on=["pr-4"]),
+        ]
+
+    def test_markdown_renders_merge_node_and_subtree_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-4")
+        assert result.count("<-- this PR") == 1
+        assert result.count("pr-4: merge (also depends on: pr-2)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
+
+    def test_markdown_marks_descendant_of_merge_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-5")
+        assert result.count("<-- this PR") == 1
+
+    def test_tree_renders_merge_node_once(self) -> None:
+        result = _render_dag(self._diamond())
+        assert result.count("pr-4: merge (depends on: pr-2, pr-3)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
+
+    def test_stub_always_precedes_full_node(self) -> None:
+        # Traversal visits pr-4's branch before pr-2's even though pr-2 is the
+        # last-listed dependency of pr-5; the stub must still point downward.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-4", "short", depends_on=["pr-1"]),
+            _group("pr-6", "mid", depends_on=["pr-1"]),
+            _group("pr-2", "long", depends_on=["pr-6"]),
+            _group("pr-5", "merge", depends_on=["pr-2", "pr-4"]),
+        ]
+        for text, full_label in (
+            (_render_dag_markdown(groups, "pr-5"), "pr-5: merge (also depends on: pr-4)"),
+            (_render_dag(groups), "pr-5: merge (depends on: pr-2, pr-4)"),
+        ):
+            assert text.index("pr-5: merge (see below)") < text.index(full_label)
+            assert text.count("pr-5: merge (see below)") == 1
+            assert text.count(full_label) == 1
+
+    def test_unknown_dependency_does_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "ghost"]),
+        ]
+        text = _render_dag_markdown(groups, "pr-2")
+        assert "pr-2: child (also depends on: ghost)  <-- this PR" in text
+
+    def test_unreachable_parent_does_not_hide_node(self) -> None:
+        # pr-9 depends on an unknown group, so it is never visited; pr-2 must
+        # still be drawn in full (with its subtree and marker) under pr-1.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-9", "orphan", depends_on=["ghost"]),
+            _group("pr-2", "leaf", depends_on=["pr-1", "pr-9"]),
+            _group("pr-5", "after", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-2")
+        assert md.count("<-- this PR") == 1
+        assert "pr-2: leaf (also depends on: pr-9)  <-- this PR" in md
+        assert "pr-5: after" in md
+        assert "(see below)" not in md
+        tree = _render_dag(groups)
+        assert "pr-2: leaf (depends on: pr-1, pr-9)" in tree
+        assert "pr-5: after" in tree
+
+    def test_parent_still_being_walked_is_not_pending(self) -> None:
+        # pr-3 depends on pr-1 (its grandparent, mid-walk) and pr-2 (a sibling
+        # listed after it); it must be drawn in full under pr-2.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert "pr-3: merge (also depends on: pr-1)" in md
+        assert "pr-4: after  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-3: merge (depends on: pr-1, pr-2)" in tree
+        assert "pr-4: after" in tree
+
+    def test_topological_order_draws_merge_node_once(self) -> None:
+        # The natural planner order: pr-2 listed before pr-3. pr-3 is reached
+        # from pr-1 (still mid-walk) and from pr-2; it must be drawn once.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert md.count("pr-3: merge (also depends on:") == 1
+        assert md.count("pr-4: after") == 1
+        assert md.index("pr-3: merge (see below)") < md.index("pr-3: merge (also depends on:")
+        tree = _render_dag(groups)
+        assert tree.count("pr-3: merge (depends on: pr-1, pr-2)") == 1
+        assert tree.count("pr-3: merge (see below)") == 1
+        assert tree.count("pr-4: after") == 1
+
+    def test_duplicate_dependency_entries_do_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "pr-1"]),
+            _group("pr-3", "leaf", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-3")
+        assert "pr-2: child" in md
+        assert "(see below)" not in md
+        assert "also depends on" not in md
+        assert "pr-3: leaf  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-2: child (depends on: pr-1)" in tree
+        assert "pr-3: leaf" in tree
