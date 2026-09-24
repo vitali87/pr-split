@@ -66,3 +66,18 @@ class TestScorePlan:
         metrics = score_plan(groups, 100, min_loc=50)
         assert metrics.loc_underflow == 30
         assert metrics.undersized_groups == 1
+
+
+class TestDependencyEdgesAreDeduped:
+    def test_duplicate_dependency_counts_once(self) -> None:
+        groups = [
+            _group("pr-1", "a.py", [0], 10),
+            _group("pr-2", "b.py", [0], 10, depends_on=["pr-1", "pr-1"]),
+        ]
+        metrics = score_plan(groups, max_loc=100)
+        assert metrics.dependency_edges == 1
+        clean = [
+            _group("pr-1", "a.py", [0], 10),
+            _group("pr-2", "b.py", [0], 10, depends_on=["pr-1"]),
+        ]
+        assert metrics.objective == score_plan(clean, max_loc=100).objective

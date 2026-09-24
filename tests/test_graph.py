@@ -38,6 +38,10 @@ class TestPlanDAG:
         with pytest.raises(PlanValidationError):
             dag.validate_acyclic()
 
+    def test_unknown_dependency_raises(self) -> None:
+        with pytest.raises(PlanValidationError, match="'b' depends on unknown group 'zzz'"):
+            PlanDAG([_group("a"), _group("b", ["zzz"])])
+
     def test_acyclic_passes(self) -> None:
         groups = [_group("a"), _group("b", ["a"])]
         dag = PlanDAG(groups)
@@ -137,3 +141,26 @@ class TestLinearChains:
         ]
         dag = PlanDAG(groups)
         assert sorted(dag.linear_chains()) == [["a"], ["b", "c"], ["d"]]
+
+
+class TestPlanDAGRejectsDuplicateIds:
+    def test_duplicate_group_id_is_a_validation_error(self) -> None:
+        with pytest.raises(PlanValidationError, match="'pr-1' is used more than once"):
+            PlanDAG([_group("pr-1"), _group("pr-1")])
+
+    def test_distinct_ids_are_fine(self) -> None:
+        dag = PlanDAG([_group("pr-1"), _group("pr-2", ["pr-1"])])
+        assert dag.parents("pr-2") == ["pr-1"]
+
+
+class TestPlanDAGDedupesDependencies:
+    def test_duplicate_dependency_is_a_single_edge(self) -> None:
+        dag = PlanDAG([_group("pr-1"), _group("pr-2", ["pr-1", "pr-1"])])
+        assert dag.parents("pr-2") == ["pr-1"]
+        assert dag.children("pr-1") == ["pr-2"]
+        assert dag.is_merge_node("pr-2") is False
+        assert dag.linear_chains() == [["pr-1", "pr-2"]]
+
+    def test_duplicate_dependency_does_not_break_batching(self) -> None:
+        dag = PlanDAG([_group("pr-1"), _group("pr-2", ["pr-1", "pr-1"])])
+        assert list(dag.iter_ready()) == [["pr-1"], ["pr-2"]]

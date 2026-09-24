@@ -11,7 +11,9 @@ from pr_split.planner.validator import (
     validate_coverage,
     validate_loc,
     validate_loc_bounds,
+    validate_no_binary_files,
     validate_no_conflicts,
+    validate_plan,
 )
 from pr_split.schemas import Group, GroupAssignment
 
@@ -80,6 +82,35 @@ class TestValidateCoverage:
         with pytest.raises(PlanValidationError, match="not assigned"):
             validate_coverage(groups, parsed)
 
+    def test_out_of_range_hunk_index_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [0, 7])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"a\.py\[7\] assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_unknown_file_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0]), _ga("ghost.py", PARTIAL, [0])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_unknown_whole_file_path_raises(self) -> None:
+        # A WHOLE_FILE assignment for a path outside the diff expands to zero
+        # hunks, so it must be rejected before expansion.
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, []), _ga("ghost.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
     def test_duplicate_assignment_raises(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)
         groups = [
@@ -92,6 +123,35 @@ class TestValidateCoverage:
         ]
         with pytest.raises(PlanValidationError, match="multiple groups"):
             validate_coverage(groups, parsed)
+
+
+BINARY_DIFF = """\
+diff --git a/img.png b/img.png
+index 1111111..2222222 100644
+Binary files a/img.png and b/img.png differ
+diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1 +1 @@
+-x
++y
+"""
+
+
+class TestValidateNoBinaryFiles:
+    def test_binary_file_raises(self) -> None:
+        parsed = parse_diff(BINARY_DIFF)
+        with pytest.raises(PlanValidationError, match=r"binary files.*img\.png"):
+            validate_no_binary_files(parsed)
+
+    def test_text_only_diff_passes(self) -> None:
+        validate_no_binary_files(parse_diff(SAMPLE_DIFF))
+
+    def test_validate_plan_rejects_binary_even_when_text_hunks_are_covered(self) -> None:
+        parsed = parse_diff(BINARY_DIFF)
+        groups = [_make_group("g1", [_ga("a.py", WHOLE, [0])], 2)]
+        with pytest.raises(PlanValidationError, match="binary files"):
+            validate_plan(groups, parsed, PlanDAG(groups), max_loc=400)
 
 
 class TestValidateLoc:
@@ -203,3 +263,15 @@ class TestValidateCoverageWholeFileExpansion:
         ]
         with pytest.raises(PlanValidationError, match="multiple groups"):
             validate_coverage(groups, parsed)
+
+    def test_stale_whole_file_index_does_not_create_a_phantom_conflict(self) -> None:
+        # a.py has exactly one hunk. g1's WHOLE_FILE assignment carries a stale
+        # index 99; an independent g2 lists the same bogus index for a.py.
+        # Coverage validation rejects g2's index as an unknown hunk, so exercise
+        # the conflict check alone: 99 is not a hunk and must not be reported
+        # as a region the two groups both touch.
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0, 99])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0]), _ga("a.py", PARTIAL, [99])], 4),
+        ]
+        validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})

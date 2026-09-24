@@ -35,6 +35,18 @@ def _md_escape(s: str) -> str:
     return s.replace("|", "\\|")
 
 
+def load_plan_groups(plan_path: str) -> list[dict]:
+    """Return the groups from a saved plan file.
+
+    ``pr-split --dry-run`` writes a ``PlanFile`` whose top-level keys are
+    ``plan`` and ``git_state``; the groups live under ``plan``.
+    """
+    with open(plan_path) as f:
+        data = json.load(f)
+    plan = data.get("plan", data)
+    return plan.get("groups", [])
+
+
 def _parse_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, str(default))
     try:
@@ -51,8 +63,14 @@ def main() -> None:
     priority = os.environ.get("PRIORITY", "orthogonal")
     threshold = _parse_int_env("THRESHOLD_GROUPS", 2)
     pr_number = os.environ.get("PR_NUMBER", "")
-    base_branch = os.environ["BASE_BRANCH"]
-    head_branch = os.environ["HEAD_BRANCH"]
+    base_branch = os.environ.get("BASE_BRANCH", "")
+    head_branch = os.environ.get("HEAD_BRANCH", "")
+
+    if not base_branch or not head_branch:
+        # github.event.pull_request.* is empty on push / workflow_dispatch / schedule.
+        _set_output("total_loc", "0")
+        _skip("Not a pull_request event (no base/head branch); skipping pr-split score.")
+        return
 
     # Fetch refs — use refs/pull/{n}/head for fork compatibility
     _run(["git", "fetch", "origin", base_branch])
@@ -119,10 +137,7 @@ def main() -> None:
         _skip("No plan file generated.")
         return
 
-    with open(plan_path) as f:
-        plan = json.load(f)
-
-    groups = plan.get("groups", [])
+    groups = load_plan_groups(plan_path)
     total_groups = len(groups)
 
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
