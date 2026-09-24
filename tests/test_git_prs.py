@@ -129,14 +129,14 @@ class TestLinkStack:
     @patch("pr_split.git_ops.prs._run_gh")
     def test_links_bottom_to_top(self, mock_gh: MagicMock) -> None:
         mock_gh.return_value = ""
-        link_stack([12, 34, 56])
-        mock_gh.assert_called_once_with("stack", "link", "12", "34", "56")
+        link_stack([12, 34, 56], base="feat/parent")
+        mock_gh.assert_called_once_with("stack", "link", "--base", "feat/parent", "12", "34", "56")
 
     @patch("pr_split.git_ops.prs._run_gh")
     def test_failure_raises(self, mock_gh: MagicMock) -> None:
         mock_gh.side_effect = GitOperationError("unknown command: stack")
         with pytest.raises(GitOperationError, match="Failed to link stack for PRs \\[12, 34\\]"):
-            link_stack([12, 34])
+            link_stack([12, 34], base="main")
 
 
 class TestCheckGhStack:

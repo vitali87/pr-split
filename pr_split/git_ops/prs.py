@@ -93,9 +93,11 @@ def close_pr(pr_number: int) -> None:
     logger.info(logs.PR_CLOSED.format(number=pr_number))
 
 
-def link_stack(pr_numbers: list[int]) -> None:
+def link_stack(pr_numbers: list[int], base: str) -> None:
+    # Without --base, gh stack link roots the stack on the repository default
+    # branch and retargets the bottom PR there.
     try:
-        _run_gh("stack", "link", *[str(n) for n in pr_numbers])
+        _run_gh("stack", "link", "--base", base, *[str(n) for n in pr_numbers])
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.STACK_LINK_FAILED(prs=pr_numbers, detail=exc)) from exc
     logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
