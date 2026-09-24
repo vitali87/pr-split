@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
@@ -15,12 +16,13 @@ from ..exceptions import PRSplitError
 from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
-from .symbols import symbol_dependencies
+from .symbols import names_in, symbol_dependencies
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
     from ortools.sat.python.cp_model import IntVar
+    from unidiff import PatchedFile
 
     from ..config import Settings
     from ..diff_ops import ParsedDiff
@@ -31,6 +33,8 @@ _AFFINITY_SHARED_DIR_MULTIPLIER = 25
 _AFFINITY_SAME_SUFFIX = 10
 _AFFINITY_ORTHOGONAL_PENALTY = 20
 _AFFINITY_LOGICAL_SHARED_DIR_BONUS = 10
+# One unit uses a name the other defines: the strongest cross-file signal.
+_AFFINITY_SHARED_SYMBOL = 120
 _GRAPH_ORTHOGONAL_FILE_PENALTY = 25.0
 _CP_SAT_OVERFLOW_WEIGHT = 1_000
 _CP_SAT_UNDERFLOW_WEIGHT = 1_000
@@ -49,6 +53,26 @@ class PartitionUnit:
     hunk_indices: tuple[int, ...]
     loc: int
     position: int
+    # Names the unit's added lines define, and names they use; a unit that
+    # uses what another defines belongs with (or after) it.
+    defines: frozenset[str] = frozenset()
+    uses: frozenset[str] = frozenset()
+
+
+def _unit(patch_file: PatchedFile, indices: list[int], loc: int, position: int) -> PartitionUnit:
+    added = [
+        line.value.rstrip("\n") for idx in indices for line in patch_file[idx] if line.is_added
+    ]
+    defines, uses = names_in(added)
+    return PartitionUnit(
+        id=f"{patch_file.path}:{indices[0]}-{indices[-1]}",
+        file_path=patch_file.path,
+        hunk_indices=tuple(indices),
+        loc=loc,
+        position=position,
+        defines=defines,
+        uses=uses,
+    )
 
 
 def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[PartitionUnit]:
@@ -61,15 +85,7 @@ def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[Partiti
         for hunk_index, hunk in enumerate(patch_file):
             hunk_loc = hunk.added + hunk.removed
             if current_indices and current_loc + hunk_loc > max_loc:
-                units.append(
-                    PartitionUnit(
-                        id=f"{patch_file.path}:{current_indices[0]}-{current_indices[-1]}",
-                        file_path=patch_file.path,
-                        hunk_indices=tuple(current_indices),
-                        loc=current_loc,
-                        position=position,
-                    )
-                )
+                units.append(_unit(patch_file, current_indices, current_loc, position))
                 position += 1
                 current_indices = []
                 current_loc = 0
@@ -78,15 +94,7 @@ def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[Partiti
             current_loc += hunk_loc
 
         if current_indices:
-            units.append(
-                PartitionUnit(
-                    id=f"{patch_file.path}:{current_indices[0]}-{current_indices[-1]}",
-                    file_path=patch_file.path,
-                    hunk_indices=tuple(current_indices),
-                    loc=current_loc,
-                    position=position,
-                )
-            )
+            units.append(_unit(patch_file, current_indices, current_loc, position))
             position += 1
 
     return units
@@ -125,6 +133,8 @@ def _affinity_score(unit_a: PartitionUnit, unit_b: PartitionUnit, priority: Prio
     if PurePosixPath(unit_a.file_path).suffix == PurePosixPath(unit_b.file_path).suffix:
         score += _AFFINITY_SAME_SUFFIX
     score += _test_pair_bonus(unit_a.file_path, unit_b.file_path)
+    if unit_a.defines & unit_b.uses or unit_b.defines & unit_a.uses:
+        score += _AFFINITY_SHARED_SYMBOL
 
     if priority == Priority.ORTHOGONAL:
         score = max(0, score - _AFFINITY_ORTHOGONAL_PENALTY)
@@ -500,7 +510,15 @@ def _build_group_title(group_index: int, units: list[PartitionUnit]) -> str:
     if len(file_paths) == 1:
         stem = PurePosixPath(file_paths[0]).stem.replace("_", "-")
         return f"chore(split): review {stem}-{group_index}"
-    return f"chore(split): review-slice-{group_index}"
+    # Name a multi-file group after the directory its files share, or after
+    # its largest file, so every group title says what it covers.
+    parents = {PurePosixPath(path).parent for path in file_paths}
+    common = PurePosixPath(os.path.commonpath([str(p) for p in parents])) if parents else None
+    if common is not None and str(common) not in ("", "."):
+        return f"chore(split): review {common.name}-{group_index}"
+    largest = max(units, key=lambda unit: unit.loc).file_path
+    stem = PurePosixPath(largest).stem.replace("_", "-")
+    return f"chore(split): review {stem} and {len(file_paths) - 1} more-{group_index}"
 
 
 def _build_group_description(backend: PartitionStrategy, units: list[PartitionUnit]) -> str:
