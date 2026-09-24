@@ -29,6 +29,7 @@ class ErrorMsg(StrEnum):
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    CLAUDE_CLI_NOT_FOUND = "Provider 'claude-cli' needs the Claude Code CLI ('claude') on PATH"
     LLM_OUTPUT_TRUNCATED = (
         "LLM response was cut off before the plan was complete ({detail});"
         " the partial plan cannot be trusted"

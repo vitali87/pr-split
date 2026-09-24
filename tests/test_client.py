@@ -1378,3 +1378,55 @@ class TestSurrogateSafePrompts:
         user = b"caf\xe9".decode("utf-8", errors="surrogateescape")
         assert _count_tokens("sys", user, settings=_make_settings()) == 3
         mock_count.call_args.args[1].encode("utf-8")
+
+
+class TestClaudeCliProvider:
+    def _completed(self, returncode: int, stdout: str, stderr: str = "") -> object:
+        import subprocess
+
+        return subprocess.CompletedProcess(["claude"], returncode, stdout, stderr)
+
+    def test_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        settings = Settings(provider=Provider.CLAUDE_CLI, partition_strategy=PartitionStrategy.LLM)
+        assert settings.api_key == ""
+        assert settings.model == ""
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_structured_output_is_the_plan(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(
+            0, json.dumps({"result": "", "structured_output": {"groups": _SAMPLE_RAW_GROUPS}})
+        )
+        settings = _make_settings(Provider.CLAUDE_CLI)
+
+        result = _call_llm("the system prompt", "the diff", settings=settings)
+
+        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert cmd[cmd.index("--system-prompt") + 1] == "the system prompt"
+        assert "--json-schema" in cmd
+        assert "--model" not in cmd
+        assert mock_run.call_args.kwargs["input"] == "the diff"
+
+    @patch("pr_split.planner.client.subprocess.run", side_effect=FileNotFoundError())
+    def test_missing_cli_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        with pytest.raises(LLMError, match="Claude Code CLI"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_nonzero_exit_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(1, "", "Not logged in")
+        with pytest.raises(LLMError, match="Not logged in"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_missing_structured_output_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(0, json.dumps({"result": "I cannot do that"}))
+        with pytest.raises(LLMError, match="no structured output"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    def test_tokens_are_estimated_locally(self) -> None:
+        assert (
+            _count_tokens("system", "user text", settings=_make_settings(Provider.CLAUDE_CLI)) > 0
+        )
