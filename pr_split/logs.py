@@ -91,3 +91,11 @@ CP_SAT_NOT_OPTIMAL = (
     "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
+SYMBOL_EDGE_SKIPPED = (
+    "Group '{user}' uses {names} from group '{definer}', but depending on it would"
+    " create a cycle; the edge was not added"
+)
+SYMBOL_ORDER_VIOLATION = (
+    "Group '{user}' uses {names} defined in group '{definer}', which it does not build on;"
+    " its sub-PR will not compile or import on its own"
+)
