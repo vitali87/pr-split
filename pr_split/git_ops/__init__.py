@@ -14,6 +14,9 @@ from .branches import (
     derive_split_namespace as derive_split_namespace,
 )
 from .branches import (
+    diff_base_ref as diff_base_ref,
+)
+from .branches import (
     is_worktree_clean as is_worktree_clean,
 )
 from .branches import (

@@ -19,6 +19,18 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+BASE_FETCH_FAILED = (
+    "Could not fetch '{base}' from '{remote}' ({detail}); splitting against its last fetched state"
+)
+LOCAL_BASE_BEHIND = (
+    "Local '{base}' is {count} commit(s) behind '{upstream}'; splitting against '{upstream}',"
+    " which the sub-PRs target, so upstream commits are not split as branch work"
+)
+LOCAL_BASE_AHEAD = (
+    "Local '{base}' has {count} commit(s) not on '{upstream}'; the sub-PRs target '{upstream}',"
+    " so any of them on the dev branch are split as branch work. Push '{base}' first if that is"
+    " not intended"
+)
 CREATING_PR = "Creating PR for group '{group}'"
 PR_CREATED = "PR #{number} created: {url}"
 SAVING_PLAN = "Saving plan to {path}"
