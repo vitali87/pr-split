@@ -19,6 +19,18 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+REPAIR_UNKNOWN_FILE = (
+    "Plan repair: group '{group}' named '{file}', which is not in the diff; dropped"
+)
+REPAIR_UNKNOWN_HUNKS = (
+    "Plan repair: group '{group}' named hunks {indices} of '{file}', which do not exist; dropped"
+)
+REPAIR_DUPLICATE_HUNKS = (
+    "Plan repair: hunks {indices} of '{file}' were also in group '{owner}';"
+    " removed from group '{group}'"
+)
+REPAIR_UNKNOWN_DEPENDENCY = "Plan repair: group '{group}' depended on unknown ids {deps}; dropped"
+REPAIR_EMPTY_GROUP = "Plan repair: group '{group}' holds no hunks; dropped"
 PER_GROUP_STEP_RUNNING = "Running per-group step for {group}: {command}"
 RESTACKED_LAYER = "Rebased {branch} onto the current head of {parent}"
 RESTACK_FETCH_FAILED = "Could not fetch {branch} ({detail}); using the local branch"

@@ -43,6 +43,7 @@ from .prompts import (
     build_system_prompt,
     build_user_prompt,
 )
+from .repair import repair_plan
 from .scoring import score_plan
 from .validator import detect_loc_bound_violations, validate_coverage, validate_no_conflicts
 
@@ -473,8 +474,7 @@ def _plan_split_chunked(
     auto_assigned = assign_uncovered_hunks(accumulated, parsed_diff)
     if auto_assigned:
         logger.warning(logs.UNCOVERED_HUNKS_FIXED.format(count=auto_assigned))
-    recompute_estimated_loc(accumulated, parsed_diff)
-    return accumulated
+    return repair_plan(accumulated, parsed_diff)
 
 
 def _groups_to_raw_dicts(groups: list[Group]) -> list[dict[str, object]]:
@@ -606,8 +606,7 @@ def _plan_split_with_llm(
 
     logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
     raw = _call_llm(system=system, user=user, settings=settings)
-    groups = _parse_groups(raw)
-    recompute_estimated_loc(groups, parsed_diff)
+    groups = repair_plan(_parse_groups(raw), parsed_diff)
     logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
     return _refine_plan_with_llm(groups, parsed_diff, settings, system)
 
