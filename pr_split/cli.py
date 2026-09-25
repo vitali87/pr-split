@@ -76,6 +76,8 @@ from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
 from .planner.partitioning import refresh_generated_description
 from .planner.validator import validate_new_file_pieces
+from .restack import restack as restack_layers
+from .restack import stale_layers
 from .schemas import (
     BranchRecord,
     GitState,
@@ -1176,6 +1178,9 @@ def status() -> None:
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
+    for gid, branch, parent in stale_layers(plan_file):
+        behind = logs.LAYER_BEHIND_PARENT.format(group=gid, branch=branch, parent=parent)
+        console.print(f"[yellow]{behind}[/yellow]")
     if unverified:
         console.print(
             f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
@@ -1583,3 +1588,29 @@ def merge_all(
     if failed or stopped or exited_early or blocked:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
+
+
+@app.command(
+    help="Rebase every stacked layer onto its parent's current head and push it, so a fix on"
+    " a lower layer reaches the layers above it."
+)
+def restack(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report the layers that need restacking only")
+    ] = False,
+) -> None:
+    if not plan_exists():
+        console.print(f"[red]{ErrorMsg.NO_PLAN()}[/red]")
+        raise typer.Exit(1)
+    try:
+        results = restack_layers(_load_plan_or_exit(), dry_run=dry_run)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    table = Table(title="Restack")
+    table.add_column("ID")
+    table.add_column("Branch")
+    table.add_column("Result")
+    for result in results:
+        table.add_row(result.group_id, result.branch, result.action)
+    console.print(table)
