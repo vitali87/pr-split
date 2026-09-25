@@ -24,11 +24,31 @@ def _set_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
-def _skip(reason: str) -> None:
+COMMENT_MARKER = "<!-- pr-split-score -->"
+
+
+def _write_comment(body: str) -> None:
+    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
+    comment_path = Path(tmp_dir) / "pr-split-comment.md"
+    comment_path.write_text(body)
+    _set_output("comment_path", str(comment_path))
+
+
+def _skip(reason: str, *, within_limits: bool = False) -> None:
     print(reason)
     _set_output("total_groups", "1")
     _set_output("objective", "0")
     _set_output("should_split", "false")
+    if within_limits:
+        # Emit a comment body so an earlier "please split" comment on this
+        # PR is refreshed once it shrinks under the threshold (the action
+        # only updates an existing marker comment when should_split is
+        # false; it never creates one). Failure paths deliberately write no
+        # body so a transient error cannot overwrite a valid plan comment.
+        _write_comment(
+            f"{COMMENT_MARKER}\n## pr-split analysis\n\n{reason}\n\n"
+            "This PR is within acceptable size limits."
+        )
 
 
 def _md_escape(s: str) -> str:
@@ -101,7 +121,10 @@ def main() -> None:
     _set_output("total_loc", str(total_loc))
 
     if total_loc <= max_loc:
-        _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
+        _skip(
+            f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.",
+            within_limits=True,
+        )
         return
 
     # Create local branch refs for pr-split
@@ -161,7 +184,7 @@ def main() -> None:
 
     # Generate markdown comment
     lines = [
-        "<!-- pr-split-score -->",
+        COMMENT_MARKER,
         "## pr-split analysis",
         "",
         "| Metric | Value |",
@@ -198,11 +221,7 @@ def main() -> None:
     else:
         lines.append("This PR is within acceptable size limits.")
 
-    comment = "\n".join(lines)
-    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
-    comment_path = Path(tmp_dir) / "pr-split-comment.md"
-    comment_path.write_text(comment)
-    _set_output("comment_path", str(comment_path))
+    _write_comment("\n".join(lines))
 
 
 if __name__ == "__main__":
