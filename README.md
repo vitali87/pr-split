@@ -180,6 +180,8 @@ pr-split restack            # or: pr-split restack --dry-run
 
 After review feedback is fixed with a new commit on a lower layer's branch (locally or on GitHub), the layers above it lack the fix, and their diffs show it reversed. `restack` fetches the stack's branches, rebases each layer onto its parent's current head in plan order, and pushes the rewritten branches with `--force-with-lease`. It stops at the first conflicting layer, names it, and leaves that layer and everything above it unchanged. `pr-split status` warns about any layer that lacks its parent's head.
 
+When the base branch itself moves on (another PR lands on `main` and touches a line your bottom layer also touches), run `pr-split restack --onto-base`. It fetches the base and rebases the layers that target it onto its current head, then restacks every layer above them, with the same conflict handling.
+
 ### Move a hunk up an executed stack
 
 ```bash

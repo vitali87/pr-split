@@ -225,3 +225,69 @@ def test_cli_restack_and_status_warning(repo: Path) -> None:
     assert result.exit_code == 0, result.output
     assert "restacked" in result.output
     assert "pr-split restack" not in status_after.output
+
+
+def _advance_main(repo: Path, path: str, text: str) -> None:
+    _git(repo, "checkout", "-q", "main")
+    _commit(repo, path, text, f"main: {path}")
+    _git(repo, "push", "-q", "origin", "main")
+
+
+def test_onto_base_carries_the_whole_stack_onto_a_moved_base(repo: Path) -> None:
+    _advance_main(repo, "release.txt", "0.2.0\n")
+
+    results = restack(_plan_file(), onto_base=True)
+
+    assert [(r.group_id, r.action) for r in results] == [
+        ("pr-1", "restacked"),
+        ("pr-2", "restacked"),
+        ("pr-3", "restacked"),
+    ]
+    assert _contains(repo, "origin/main", _branch("pr-1"))
+    parent = "origin/main"
+    for gid in LAYERS:
+        assert _own_diff(repo, gid, parent) == [f"{gid}.txt"]
+        assert _git(repo, "rev-parse", _branch(gid)) == _git(
+            repo, "rev-parse", f"origin/{_branch(gid)}"
+        )
+        parent = _branch(gid)
+
+
+def test_without_onto_base_a_moved_base_is_left_alone(repo: Path) -> None:
+    _advance_main(repo, "release.txt", "0.2.0\n")
+    before = _git(repo, "rev-parse", _branch("pr-1"))
+
+    results = restack(_plan_file())
+
+    assert {r.action for r in results} == {"up to date"}
+    assert _git(repo, "rev-parse", _branch("pr-1")) == before
+
+
+def test_onto_base_conflict_names_the_bottom_layer(repo: Path) -> None:
+    # main adds the file pr-1 adds, with different content.
+    _advance_main(repo, "pr-1.txt", "from main\n")
+    before = {gid: _git(repo, "rev-parse", _branch(gid)) for gid in LAYERS}
+
+    with pytest.raises(PRSplitError, match=r"Rebasing 'pr-split/x/pr-1' onto"):
+        restack(_plan_file(), onto_base=True)
+
+    assert {gid: _git(repo, "rev-parse", _branch(gid)) for gid in LAYERS} == before
+
+
+def test_onto_base_dry_run_reports_the_bottom_layer(repo: Path) -> None:
+    _advance_main(repo, "release.txt", "0.2.0\n")
+
+    results = restack(_plan_file(), onto_base=True, dry_run=True)
+
+    assert results[0].action == "would restack onto origin/main"
+
+
+def test_cli_onto_base(repo: Path) -> None:
+    _advance_main(repo, "release.txt", "0.2.0\n")
+    with (
+        patch("pr_split.cli.plan_exists", return_value=True),
+        patch("pr_split.cli.load_plan", return_value=_plan_file()),
+    ):
+        result = CliRunner().invoke(app, ["restack", "--onto-base"])
+    assert result.exit_code == 0, result.output
+    assert _contains(repo, "origin/main", f"origin/{_branch('pr-3')}")

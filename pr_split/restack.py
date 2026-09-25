@@ -138,7 +138,32 @@ def stale_layers(plan_file: PlanFile) -> list[tuple[str, str, str]]:
     return stale
 
 
-def restack(plan_file: PlanFile, *, dry_run: bool = False) -> list[LayerResult]:
+def _stack_order(plan_file: PlanFile, *, onto_base: bool) -> list[tuple[str, str, str, str]]:
+    """(group id, branch, parent name, parent ref) in plan order.
+
+    Single-parent layers stack on their parent's branch. With ``onto_base``,
+    the layers that target the base branch (roots, and merge nodes that are
+    rebuilt from it) are included too, with the base's remote copy as parent.
+    """
+    branches = {r.group_id: r.branch_name for r in plan_file.git_state.branches}
+    base = plan_file.plan.base_branch
+    dag = PlanDAG(plan_file.plan.groups)
+    order: list[tuple[str, str, str, str]] = []
+    for gid in dag.topological_order():
+        if gid not in branches:
+            continue
+        parents = dag.parents(gid)
+        if len(parents) == 1 and parents[0] in branches:
+            parent = branches[parents[0]]
+            order.append((gid, branches[gid], parent, f"refs/heads/{parent}"))
+        elif onto_base and len(parents) != 1:
+            order.append((gid, branches[gid], f"{REMOTE}/{base}", _remote_ref(base)))
+    return order
+
+
+def restack(
+    plan_file: PlanFile, *, dry_run: bool = False, onto_base: bool = False
+) -> list[LayerResult]:
     if not plan_file.plan.stacked:
         raise PRSplitError(ErrorMsg.RESTACK_NOT_STACKED())
     if not plan_file.git_state.branches:
@@ -147,11 +172,17 @@ def restack(plan_file: PlanFile, *, dry_run: bool = False) -> list[LayerResult]:
     order = {g: i for i, g in enumerate(PlanDAG(plan_file.plan.groups).topological_order())}
     records = sorted(plan_file.git_state.branches, key=lambda r: order.get(r.group_id, 0))
     all_branches = [r.branch_name for r in records]
-    layers = _layers(plan_file)
+    layers = _stack_order(plan_file, onto_base=onto_base)
 
     _fetch(all_branches)
+    if onto_base:
+        base = plan_file.plan.base_branch
+        try:
+            run_git("fetch", "--quiet", REMOTE, f"+refs/heads/{base}:{_remote_ref(base)}")
+        except GitOperationError as exc:
+            raise PRSplitError(ErrorMsg.RESTACK_BASE_FETCH_FAILED(base=base, detail=exc)) from exc
     if not dry_run:
-        busy = _checked_out_branches() & {branch for _, branch, _ in layers}
+        busy = _checked_out_branches() & {branch for _, branch, _, _ in layers}
         if busy:
             raise PRSplitError(ErrorMsg.RESTACK_CHECKED_OUT(branches=", ".join(sorted(busy))))
         for branch in all_branches:
@@ -160,9 +191,9 @@ def restack(plan_file: PlanFile, *, dry_run: bool = False) -> list[LayerResult]:
 
     results: dict[str, LayerResult] = {}
     old_heads: dict[str, str] = {}
-    for gid, branch, parent in layers:
+    for gid, branch, parent, parent_ref in layers:
         child_head = _rev(f"refs/heads/{branch}")
-        parent_head = _rev(f"refs/heads/{parent}")
+        parent_head = _rev(parent_ref)
         if child_head is None or parent_head is None:
             missing = branch if child_head is None else parent
             results[gid] = LayerResult(gid, branch, f"skipped: branch '{missing}' not found")
@@ -176,7 +207,7 @@ def restack(plan_file: PlanFile, *, dry_run: bool = False) -> list[LayerResult]:
         # The child was cut from the parent's head before the parent was
         # rebased in this run, or from the point where the two diverge.
         upstream = old_heads.get(parent) or run_git("merge-base", child_head, parent_head)
-        new_head = _rebase(branch, parent, upstream)
+        new_head = _rebase(branch, parent_ref, upstream)
         run_git("update-ref", f"refs/heads/{branch}", new_head, child_head)
         old_heads[branch] = child_head
         logger.info(logs.RESTACKED_LAYER.format(branch=branch, parent=parent))
