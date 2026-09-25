@@ -72,7 +72,8 @@ from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
-from .planner.new_file_pieces import link_new_file_pieces, validate_new_file_pieces
+from .planner.new_file_pieces import link_new_file_pieces
+from .planner.validator import validate_new_file_pieces
 from .schemas import (
     BranchRecord,
     GitState,
@@ -1016,6 +1017,7 @@ def split(
         raise typer.Exit(1) from exc
     try:
         groups = plan_split(parsed_diff, settings)
+        link_new_file_pieces(groups, parsed_diff)
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1069,6 +1071,7 @@ def split(
         max_loc=settings.max_loc,
         strict_loc_bounds=settings.strict_loc_bounds,
         stacked=stack,
+        split_new_files_over=split_new_files_over,
         draft=draft,
         priority=priority,
         groups=groups,
@@ -1076,7 +1079,6 @@ def split(
         merge_base_sha=merge_base_ref,
         dev_branch_arg=dev_branch_arg,
         raw_diff=raw_diff,
-        split_new_files_over=split_new_files_over,
     )
 
     if dry_run:

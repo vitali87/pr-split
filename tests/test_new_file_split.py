@@ -10,8 +10,8 @@ from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PlanValidationError
 from pr_split.graph import PlanDAG
 from pr_split.planner.client import plan_split
-from pr_split.planner.new_file_pieces import link_new_file_pieces, validate_new_file_pieces
-from pr_split.planner.validator import validate_plan
+from pr_split.planner.new_file_pieces import link_new_file_pieces
+from pr_split.planner.validator import validate_new_file_pieces, validate_plan
 from pr_split.schemas import Group, GroupAssignment, SplitPlan
 
 
