@@ -296,3 +296,29 @@ class TestJsonFromText:
 
     def test_bare_object(self) -> None:
         assert _json_from_text('{"groups": []}') == {"groups": []}
+
+
+class TestOffMachineWarning:
+    @pytest.mark.parametrize(
+        "url", ["http://localhost:11434/v1", "http://127.0.0.1:8080/v1", "http://[::1]:8000/v1"]
+    )
+    def test_loopback_is_silent(self, url: str) -> None:
+        from unittest.mock import patch
+
+        from pr_split.planner.client import _warn_if_off_machine
+
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            _warn_if_off_machine(url)
+        mock_logger.warning.assert_not_called()
+
+    def test_other_host_is_warned_about_once(self) -> None:
+        from unittest.mock import patch
+
+        from pr_split.planner.client import _warn_if_off_machine, _warned_remote_hosts
+
+        _warned_remote_hosts.discard("gpu-box.lan")
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            _warn_if_off_machine("http://gpu-box.lan:8000/v1")
+            _warn_if_off_machine("http://gpu-box.lan:8000/v1")
+        assert mock_logger.warning.call_count == 1
+        assert "gpu-box.lan" in mock_logger.warning.call_args.args[0]
