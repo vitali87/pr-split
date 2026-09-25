@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 from typing import TypedDict
+from urllib.parse import urlsplit
 
 import anthropic
 import openai
@@ -233,11 +235,32 @@ def _json_from_text(text: str) -> dict[str, object] | None:
     return parsed
 
 
+_warned_remote_hosts: set[str] = set()
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _warn_if_off_machine(base_url: str) -> None:
+    """The local provider promises the diff stays on this machine; say so when it will not."""
+    host = urlsplit(base_url).hostname or ""
+    if not _is_loopback(host) and host not in _warned_remote_hosts:
+        _warned_remote_hosts.add(host)
+        logger.warning(logs.LOCAL_SERVER_OFF_MACHINE.format(host=host or base_url))
+
+
 def _call_local(system: str, user: str, *, settings: Settings) -> RawToolOutput:
     """Plan through an OpenAI-compatible chat-completions server (Ollama, llama.cpp, vLLM).
 
     Temperature 0 keeps the plan repeatable for the same diff.
     """
+    _warn_if_off_machine(settings.local_base_url)
     client = openai.OpenAI(
         base_url=settings.local_base_url,
         api_key=settings.api_key,
