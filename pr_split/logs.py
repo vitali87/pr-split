@@ -91,3 +91,10 @@ CP_SAT_NOT_OPTIMAL = (
     "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
+NEW_FILE_SPLIT = (
+    "New file '{file}' ({loc} lines) is over --max-loc; split it into {pieces} pieces"
+    " at top-level boundaries, each stacked on the one before"
+)
+NEW_FILE_PIECE_LINKED = (
+    "Group '{child}' holds a later piece of new file '{file}'; it now depends on '{parent}'"
+)

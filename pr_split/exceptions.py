@@ -22,6 +22,11 @@ class ErrorMsg(StrEnum):
     UNKNOWN_FILE = "File '{file}' assigned to group '{group}' does not exist in the diff"
     UNKNOWN_DEPENDENCY = "Group '{group}' depends on unknown group '{dep}'"
     DUPLICATE_GROUP_ID = "Group id '{group}' is used more than once"
+    NEW_FILE_PIECE_ORDER = (
+        "Group '{group}' holds piece {piece} of new file '{file}' but does not build on"
+        " group '{parent}', which holds piece {previous}; its sub-PR would create the file"
+        " without its beginning"
+    )
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"

@@ -7,6 +7,7 @@ from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
 from ..schemas import Group
 from ..types_defs import LocBoundViolation
+from .new_file_pieces import validate_new_file_pieces
 
 
 def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
@@ -161,6 +162,7 @@ def validate_plan(
     min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
+    validate_new_file_pieces(groups, parsed_diff, dag)
     validate_no_binary_files(parsed_diff)
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)

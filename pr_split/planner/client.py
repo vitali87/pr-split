@@ -33,6 +33,7 @@ from .chunker import (
     format_group_catalog,
     recompute_estimated_loc,
 )
+from .new_file_pieces import link_new_file_pieces
 from .partitioning import partition_diff
 from .prompts import (
     SPLIT_TOOL_NAME,
@@ -624,6 +625,7 @@ def plan_split(
             groups = partition_diff(parsed_diff, settings)
         case _:
             raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
+    link_new_file_pieces(groups, parsed_diff)
 
     metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(

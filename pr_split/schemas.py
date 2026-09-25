@@ -61,6 +61,9 @@ class SplitPlan(BaseModel):
     merge_base_sha: str | None = None
     dev_branch_arg: str | None = None
     raw_diff: str | None = None
+    # --max-loc when the split cut oversized new files into pieces (stacked
+    # splits only); raw_diff must be re-parsed with it to match the hunk indices.
+    split_new_files_over: int | None = None
 
 
 class BranchRecord(BaseModel):
