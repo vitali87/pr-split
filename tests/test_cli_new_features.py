@@ -894,7 +894,7 @@ class TestSplitMalformedLlmOutput:
         mock_save_plan: MagicMock,
     ) -> None:
         mock_extract_diff.return_value = (
-            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n-x\n+y\n+z\n"
         )
         mock_call_llm.return_value = {
             "groups": [
@@ -912,7 +912,7 @@ class TestSplitMalformedLlmOutput:
 
         result = runner.invoke(
             app,
-            ["split", "feature-branch", "--dry-run"],
+            ["split", "feature-branch", "--dry-run", "--max-loc", "2"],
             env={"ANTHROPIC_API_KEY": "sk-test"},
         )
 
