@@ -270,7 +270,7 @@ The `cp_sat` backend requires the optional [`ortools`](https://developers.google
 
 ### Local models
 
-The `llm` backend can run entirely on your machine. Any server exposing the OpenAI-compatible `/v1/chat/completions` endpoint with tool calling works. The diff never leaves the machine and no API key is needed:
+The `llm` backend can run entirely on your machine. Any server exposing the OpenAI-compatible `/v1/chat/completions` endpoint with tool calling works, and no API key is needed. With the default `PR_SPLIT_LOCAL_BASE_URL` (localhost) the diff never leaves the machine. If you point it at another host, the diff is sent there, and `pr-split` warns once that it is:
 
 ```bash
 ollama pull qwen2.5-coder:14b
