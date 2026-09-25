@@ -62,13 +62,23 @@ def _chunk_slack_penalty(used_tokens: int, token_budget: int) -> float:
     return (slack * slack) / max(1, token_budget)
 
 
-def _chunk_boundary_penalty(hunk_sequence: list[HunkRef], boundary_index: int) -> float:
+def _same_file_boundary_penalty(token_budget: int) -> float:
+    # The slack penalty can reach token_budget per chunk, so a fixed penalty
+    # is dwarfed at real budgets (hundreds of thousands of tokens) and the
+    # DP happily cuts a file in half to balance chunk sizes. Make cutting a
+    # file always cost more than any slack it could save.
+    return max(_DP_SAME_FILE_BOUNDARY_PENALTY, 2.0 * token_budget)
+
+
+def _chunk_boundary_penalty(
+    hunk_sequence: list[HunkRef], boundary_index: int, token_budget: int
+) -> float:
     if boundary_index >= len(hunk_sequence) - 1:
         return 0.0
     left = hunk_sequence[boundary_index]
     right = hunk_sequence[boundary_index + 1]
     if left.file_path == right.file_path:
-        return _DP_SAME_FILE_BOUNDARY_PENALTY
+        return _same_file_boundary_penalty(token_budget)
     return 0.0
 
 
@@ -109,7 +119,7 @@ def chunk_hunks_dynamic_programming(
                 _DP_CHUNK_BASE_COST
                 + _chunk_slack_penalty(used_tokens, token_budget)
                 + file_mix_penalty
-                + _chunk_boundary_penalty(hunk_sequence, end - 1)
+                + _chunk_boundary_penalty(hunk_sequence, end - 1, token_budget)
             )
             candidate_cost = best_cost[start - 1] + chunk_cost
             if candidate_cost < best_cost[end]:

@@ -25,7 +25,7 @@ def _chunk_plan_cost(
             100.0
             + _chunk_slack_penalty(used_tokens, token_budget)
             + file_mix_penalty
-            + _chunk_boundary_penalty(hunk_sequence, end_index - 1)
+            + _chunk_boundary_penalty(hunk_sequence, end_index - 1, token_budget)
         )
     return cost
 
