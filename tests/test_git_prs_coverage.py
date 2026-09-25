@@ -166,12 +166,15 @@ class TestFetchForkBranch:
             fetch_fork_branch("user", "branch")
 
 
-class TestFetchForkPrNotFromFork:
+class TestFetchSameRepoPr:
+    @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.prs._run_gh")
-    def test_same_repo_pr_gets_specific_message(self, mock_gh: MagicMock) -> None:
+    def test_same_repo_pr_is_fetched_from_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
         pr_data = {
             "head": {
-                "ref": "feature",
+                "ref": "feat/1806-constant-node",
                 "repo": {
                     "fork": False,
                     "clone_url": "https://github.com/org/repo.git",
@@ -181,8 +184,17 @@ class TestFetchForkPrNotFromFork:
             "base": {"ref": "main"},
         }
         mock_gh.return_value = json.dumps(pr_data)
-        with pytest.raises(GitOperationError, match="PR #42 is not from a fork"):
-            fetch_fork_pr(42)
+        mock_git.side_effect = ["", "A <a@x>"]
+
+        info = fetch_fork_pr(1931)
+
+        assert mock_git.call_args_list[0].args == (
+            "fetch",
+            "origin",
+            "+refs/heads/feat/1806-constant-node:refs/pr-split/pr-1931",
+        )
+        assert info["local_ref"] == "refs/pr-split/pr-1931"
+        assert info["base_branch"] == "main"
 
 
 class TestFetchForkPrMalformedResponse:

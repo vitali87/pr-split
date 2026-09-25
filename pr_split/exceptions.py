@@ -38,9 +38,6 @@ class ErrorMsg(StrEnum):
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
     PR_NOT_FOUND = "PR #{number} not found"
     PR_RESPONSE_INVALID = "Unexpected response from GitHub for PR #{number}: {detail}"
-    PR_NOT_FROM_FORK = (
-        "PR #{number} is not from a fork; pass its head branch name instead of the PR number"
-    )
     PR_FETCH_FAILED = "Failed to fetch fork branch for PR #{number}: {detail}"
     FORK_FETCH_FAILED = "Failed to fetch {user}:{branch}: {detail}"
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"

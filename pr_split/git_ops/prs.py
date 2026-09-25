@@ -125,19 +125,23 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     if not isinstance(head_repo, dict):
         # head.repo is null when the fork was deleted
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
-    if not head_repo.get("fork"):
-        raise GitOperationError(ErrorMsg.PR_NOT_FROM_FORK(number=pr_number))
-
     clone_url = str(head_repo["clone_url"])
     head_ref = str(head["ref"])
     base_ref = str(base["ref"])
     fork_full_name = str(head_repo["full_name"])
 
     local_ref = f"{PR_REF_PREFIX}{pr_number}"
-    logger.info(logs.FETCHING_FORK_PR.format(number=pr_number, fork=fork_full_name))
+    if head_repo.get("fork"):
+        logger.info(logs.FETCHING_FORK_PR.format(number=pr_number, fork=fork_full_name))
+        source, refspec = clone_url, f"{head_ref}:{local_ref}"
+    else:
+        # A same-repo PR's head lives on origin; fetch it through the remote
+        # already configured (and authenticated) for this checkout.
+        logger.info(logs.FETCHING_SAME_REPO_PR.format(number=pr_number, branch=head_ref))
+        source, refspec = "origin", f"+refs/heads/{head_ref}:{local_ref}"
 
     try:
-        run_git("fetch", clone_url, f"{head_ref}:{local_ref}")
+        run_git("fetch", source, refspec)
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.PR_FETCH_FAILED(number=pr_number, detail=str(exc))

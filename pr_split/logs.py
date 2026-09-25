@@ -26,6 +26,7 @@ CLEAN_INCOMPLETE = (
     " so 'pr-split clean' can be re-run"
 )
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
+FETCHING_SAME_REPO_PR = "Fetching PR #{number} from origin branch {branch}"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
 COUNTING_TOKENS = "Counting input tokens ({model})"
