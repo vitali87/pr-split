@@ -502,10 +502,29 @@ def _build_group_title(group_index: int, units: list[PartitionUnit]) -> str:
     return f"chore(split): review-slice-{group_index}"
 
 
+def _describe_files(backend: str, file_paths: Iterable[str]) -> str:
+    paths = sorted(set(file_paths))
+    return f"{backend} partition over {len(paths)} file(s): {', '.join(paths)}"
+
+
 def _build_group_description(backend: PartitionStrategy, units: list[PartitionUnit]) -> str:
-    file_paths = sorted({unit.file_path for unit in units})
-    files = ", ".join(file_paths)
-    return f"{backend.value} partition over {len(file_paths)} file(s): {files}"
+    return _describe_files(backend.value, (unit.file_path for unit in units))
+
+
+def refresh_generated_description(group: Group) -> None:
+    """Re-list a group's files in its description if the backend wrote it.
+
+    A graph or cp_sat description names the group's files, so it goes stale
+    when the editor moves a hunk; it would then become the PR body. A
+    description written by the LLM or by hand is left alone.
+    """
+    backend, _, rest = group.description.partition(" partition over ")
+    count, _, files = rest.partition(" file(s): ")
+    if backend not in (PartitionStrategy.GRAPH, PartitionStrategy.CP_SAT) or not count.isdigit():
+        return
+    if len(files.split(", ") if files else []) != int(count):
+        return
+    group.description = _describe_files(backend, (a.file_path for a in group.assignments))
 
 
 def _build_groups_from_units(

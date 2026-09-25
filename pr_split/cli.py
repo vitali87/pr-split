@@ -73,6 +73,7 @@ from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
+from .planner.partitioning import refresh_generated_description
 from .planner.validator import validate_new_file_pieces
 from .schemas import (
     BranchRecord,
@@ -649,6 +650,8 @@ def _move_assignment(
             )
         )
 
+    refresh_generated_description(src)
+    refresh_generated_description(dst)
     console.print(f"[green]Moved {file_path}:{hunk_index} from {from_id} to {to_id}[/green]")
     return True
 
