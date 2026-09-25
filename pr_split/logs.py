@@ -87,6 +87,10 @@ CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups}
 LLM_OUTPUT_TRUNCATED = (
     "LLM output truncated (stop_reason: {stop_reason}), keys in partial output: {keys}"
 )
+LOCAL_SERVER_OFF_MACHINE = (
+    "PR_SPLIT_LOCAL_BASE_URL points at '{host}', which is not this machine;"
+    " the diff will be sent to that host"
+)
 LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
