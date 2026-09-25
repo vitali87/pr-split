@@ -29,6 +29,23 @@ class ErrorMsg(StrEnum):
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    LOCAL_MODEL_REQUIRED = (
+        "PR_SPLIT_MODEL must be set when provider is 'local'"
+        " (the model name your local server serves, e.g. 'qwen2.5-coder:14b')"
+    )
+    LOCAL_OUTPUT_EXCEEDS_CONTEXT = (
+        "PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS ({output}) must be less than"
+        " PR_SPLIT_LOCAL_CONTEXT_TOKENS ({context})"
+    )
+    NO_DIFF_BUDGET = (
+        "No room for the diff in a chunk: {budget} tokens left after the output budget"
+        " ({output}) and prompt overhead ({overhead}) in a {context}-token window; raise"
+        " PR_SPLIT_LOCAL_CONTEXT_TOKENS or lower PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS"
+    )
+    LOCAL_SERVER_UNREACHABLE = (
+        "Cannot reach the local LLM server at {url}: {detail};"
+        " start it (e.g. 'ollama serve') or set PR_SPLIT_LOCAL_BASE_URL"
+    )
     LLM_OUTPUT_TRUNCATED = (
         "LLM response was cut off before the plan was complete ({detail});"
         " the partial plan cannot be trusted"

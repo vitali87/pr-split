@@ -36,6 +36,9 @@ class PRState(StrEnum):
 class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    # Any OpenAI-compatible chat-completions server on this machine or network
+    # (Ollama, llama.cpp, vLLM, LM Studio); no API key and no cloud call.
+    LOCAL = "local"
 
 
 BRANCH_PREFIX = "pr-split/"
@@ -54,6 +57,9 @@ OPENAI_MODEL = "gpt-5.4"
 ANTHROPIC_MAX_CONTEXT_TOKENS = 1_000_000
 OPENAI_MAX_CONTEXT_TOKENS = 1_050_000
 MAX_OUTPUT_TOKENS = 128_000
+LOCAL_BASE_URL = "http://localhost:11434/v1"
+LOCAL_MAX_CONTEXT_TOKENS = 32_768
+LOCAL_MAX_OUTPUT_TOKENS = 8_192
 CHUNK_TARGET_RATIO = 2 / 3
 CHUNK_RETRY_LIMIT = 2
 DEFAULT_MAX_REFINEMENT_ITERATIONS = 0

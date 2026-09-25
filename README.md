@@ -46,7 +46,7 @@ uv tool install "pr-split[cp-sat]"
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
 - [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`) when using `--stack`
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend, unless you plan with a [local model](#local-models) (no key needed)
 
 ## Usage
 
@@ -188,10 +188,14 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider (`anthropic` or `openai`) |
+| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `local` (any OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM Studio; no API key) |
 | `ANTHROPIC_API_KEY` | (required for Anthropic) | Anthropic API key |
 | `OPENAI_API_KEY` | (required for OpenAI) | OpenAI API key |
-| `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider) |
+| `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider; required for `local`) |
+| `PR_SPLIT_LOCAL_BASE_URL` | `http://localhost:11434/v1` | Base URL of the local server (the default is Ollama) |
+| `PR_SPLIT_LOCAL_CONTEXT_TOKENS` | `32768` | Context window the local server was started with; larger diffs are chunked to fit |
+| `PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS` | `8192` | Tokens reserved for the plan in each local reply |
+| `PR_SPLIT_LOCAL_API_KEY` | (none) | Only for a local server started with an API key |
 | `PR_SPLIT_MIN_LOC` | unset | Minimum target diff lines per sub-PR |
 | `PR_SPLIT_MAX_LOC` | `400` | Default maximum target diff lines |
 | `PR_SPLIT_STRICT_LOC_BOUNDS` | `false` | Fail if the final plan violates configured LOC bounds |
@@ -263,6 +267,20 @@ jobs:
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
 The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
+
+### Local models
+
+The `llm` backend can run entirely on your machine. Any server exposing the OpenAI-compatible `/v1/chat/completions` endpoint with tool calling works, and no API key is needed. With the default `PR_SPLIT_LOCAL_BASE_URL` (localhost) the diff never leaves the machine. If you point it at another host, the diff is sent there, and `pr-split` warns once that it is:
+
+```bash
+ollama pull qwen2.5-coder:14b
+PR_SPLIT_PROVIDER=local PR_SPLIT_MODEL=qwen2.5-coder:14b \
+  pr-split split feature-branch --base main --partition-strategy llm --dry-run
+```
+
+For llama.cpp (`llama-server --jinja -c 32768`), vLLM or LM Studio, set `PR_SPLIT_LOCAL_BASE_URL` to the server's `/v1` URL. Set `PR_SPLIT_LOCAL_CONTEXT_TOKENS` to the context size the server was started with, because Ollama's own default window is small. Requests use temperature 0, so the same diff gives the same plan. A model that answers with the plan as JSON text instead of a tool call is accepted too.
+
+For no model at all, use `--partition-strategy graph` or `cp_sat`.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 
