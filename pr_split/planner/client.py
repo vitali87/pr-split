@@ -8,6 +8,7 @@ import openai
 import tiktoken
 from anthropic.types.beta import BetaToolUseBlock
 from loguru import logger
+from openai.types.chat import ChatCompletionFunctionToolParam
 
 from .. import logs
 from ..config import Settings
@@ -49,6 +50,15 @@ _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
     description="Propose a plan to split the diff into groups",
     input_schema=SPLIT_TOOL_SCHEMA,
+)
+
+_CHAT_TOOL_DEF = ChatCompletionFunctionToolParam(
+    type="function",
+    function={
+        "name": SPLIT_TOOL_NAME,
+        "description": "Propose a plan to split the diff into groups",
+        "parameters": SPLIT_TOOL_SCHEMA,
+    },
 )
 
 _OPENAI_TOOL_DEF = {
@@ -125,6 +135,10 @@ def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
             return _count_tokens_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _count_tokens_openai([system, user], model=settings.model)
+        case Provider.LOCAL:
+            # Local servers have no count endpoint and tokenizers differ per
+            # model; this estimate only decides whether to chunk.
+            return _count_tokens_openai([system, user], model="")
 
 
 def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOutput:
@@ -193,6 +207,86 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no function_call in response output"))
 
 
+_LOCAL_TIMEOUT_SECONDS = 1800
+
+
+def _json_from_text(text: str) -> dict[str, object] | None:
+    """Pull the plan object out of a text reply, fenced or bare.
+
+    Small local models often answer with the tool arguments as plain JSON
+    instead of a tool call, even when the call is forced.
+    """
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # Some models write the call itself: {"name": ..., "arguments": {...}}.
+    for key in ("arguments", "parameters"):
+        inner = parsed.get(key)
+        if "groups" not in parsed and isinstance(inner, dict):
+            return inner
+    return parsed
+
+
+def _call_local(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    """Plan through an OpenAI-compatible chat-completions server (Ollama, llama.cpp, vLLM).
+
+    Temperature 0 keeps the plan repeatable for the same diff.
+    """
+    client = openai.OpenAI(
+        base_url=settings.local_base_url,
+        api_key=settings.api_key,
+        timeout=_LOCAL_TIMEOUT_SECONDS,
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=[_CHAT_TOOL_DEF],
+            tool_choice={"type": "function", "function": {"name": SPLIT_TOOL_NAME}},
+            temperature=0,
+            max_tokens=settings.max_output_tokens,
+        )
+    except openai.APIConnectionError as exc:
+        raise LLMError(
+            ErrorMsg.LOCAL_SERVER_UNREACHABLE(url=settings.local_base_url, detail=exc)
+        ) from exc
+    except openai.APIError as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    if not response.choices:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no choices in response"))
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        logger.warning(
+            logs.LLM_OUTPUT_INCOMPLETE.format(status="incomplete", reason=choice.finish_reason)
+        )
+        raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail="finish_reason=length"))
+    message = choice.message
+    for call in message.tool_calls or []:
+        function = getattr(call, "function", None)
+        if function is None or function.name != SPLIT_TOOL_NAME:
+            continue
+        try:
+            parsed = json.loads(function.arguments)
+        except json.JSONDecodeError as exc:
+            raise LLMError(
+                ErrorMsg.LLM_PARSE_ERROR(detail=f"failed to parse tool arguments: {exc}")
+            ) from exc
+        return RawToolOutput(groups=_extract_raw_output(parsed))
+    parsed_text = _json_from_text(message.content or "")
+    if parsed_text is not None:
+        return RawToolOutput(groups=_extract_raw_output(parsed_text))
+    raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call or JSON plan in response"))
+
+
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
     system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
@@ -200,6 +294,8 @@ def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
             return _call_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _call_openai(system, user, settings=settings)
+        case Provider.LOCAL:
+            return _call_local(system, user, settings=settings)
 
 
 def _call_chunk_with_retry(
@@ -311,7 +407,7 @@ def _plan_split_chunked(
 ) -> list[Group]:
     overhead = _count_tokens(system, ".", settings=settings)
     chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
-    diff_budget = chunk_limit - overhead - MAX_OUTPUT_TOKENS
+    diff_budget = chunk_limit - overhead - settings.max_output_tokens
     diff_chars = len(parsed_diff.raw_diff)
     token_ratio = (full_token_count - overhead) / diff_chars if diff_chars > 0 else 0.25
 
@@ -492,7 +588,7 @@ def _plan_split_with_llm(
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
     token_count = _count_tokens(system, user, settings=settings)
-    effective_limit = settings.max_context_tokens - MAX_OUTPUT_TOKENS
+    effective_limit = settings.max_context_tokens - settings.max_output_tokens
     logger.info(logs.TOKEN_COUNT.format(tokens=token_count, limit=effective_limit))
 
     if token_count > effective_limit:
