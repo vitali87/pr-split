@@ -322,3 +322,20 @@ class TestOffMachineWarning:
             _warn_if_off_machine("http://gpu-box.lan:8000/v1")
         assert mock_logger.warning.call_count == 1
         assert "gpu-box.lan" in mock_logger.warning.call_args.args[0]
+
+
+def test_window_with_no_room_for_a_diff_is_a_clear_error(server: _FakeServer) -> None:
+    from pr_split.exceptions import PRSplitError
+
+    files = "".join(
+        f"diff --git a/f{i}.py b/f{i}.py\nnew file mode 100644\n--- /dev/null\n"
+        f"+++ b/f{i}.py\n@@ -0,0 +1,40 @@\n"
+        + "".join(f"+value_{i}_{n} = {n} * 12345678\n" for n in range(40))
+        for i in range(30)
+    )
+    settings = _local_settings(
+        server.url, local_context_tokens=16_384, local_max_output_tokens=12_000
+    )
+    with pytest.raises(PRSplitError, match="No room for the diff in a chunk"):
+        plan_split(parse_diff(files), settings)
+    assert server.requests == []
