@@ -50,6 +50,20 @@ class ErrorMsg(StrEnum):
         "LLM response was cut off before the plan was complete ({detail});"
         " the partial plan cannot be trusted"
     )
+    RESTACK_NOT_STACKED = "restack only applies to a plan split with --stack"
+    RESTACK_NO_BRANCHES = "No branches recorded for this plan; run 'pr-split execute' first"
+    RESTACK_CHECKED_OUT = (
+        "Cannot restack branches checked out in a worktree: {branches};"
+        " switch to another branch first"
+    )
+    RESTACK_DIVERGED = (
+        "Branch '{branch}' and '{remote}/{branch}' both have commits the other lacks;"
+        " reconcile them, then run 'pr-split restack' again"
+    )
+    RESTACK_CONFLICT = (
+        "Rebasing '{branch}' onto '{parent}' conflicts; nothing above it was changed."
+        " Rebase it by hand, push it, then run 'pr-split restack' again ({detail})"
+    )
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"

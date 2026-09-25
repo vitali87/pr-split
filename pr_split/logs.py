@@ -19,6 +19,12 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+RESTACKED_LAYER = "Rebased {branch} onto the current head of {parent}"
+RESTACK_FETCH_FAILED = "Could not fetch {branch} ({detail}); using the local branch"
+LAYER_BEHIND_PARENT = (
+    "{group} ({branch}) does not contain the current head of {parent};"
+    " run 'pr-split restack' to carry the parent's changes up"
+)
 BASE_FETCH_FAILED = (
     "Could not fetch '{base}' from '{remote}' ({detail}); splitting against its last fetched state"
 )
