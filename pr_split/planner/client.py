@@ -431,6 +431,17 @@ def _plan_split_chunked(
     overhead = _count_tokens(system, ".", settings=settings)
     chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
     diff_budget = chunk_limit - overhead - settings.max_output_tokens
+    if diff_budget <= 0:
+        # Otherwise the chunker reports the first hunk as too large, which
+        # hides that the configured window leaves no room for any diff.
+        raise PRSplitError(
+            ErrorMsg.NO_DIFF_BUDGET(
+                budget=diff_budget,
+                context=settings.max_context_tokens,
+                output=settings.max_output_tokens,
+                overhead=overhead,
+            )
+        )
     diff_chars = len(parsed_diff.raw_diff)
     token_ratio = (full_token_count - overhead) / diff_chars if diff_chars > 0 else 0.25
 
