@@ -1162,3 +1162,132 @@ class TestEditorEmptiedGroupEndToEnd:
         assert groups[0].assignments[0].hunk_indices == [0, 1]
         assert groups[0].estimated_loc == 3
         assert validate_plan(groups, parsed, PlanDAG(groups), max_loc=400) == []
+
+
+class TestEditorPlanCommands:
+    def _partial(self, file_path: str, indices: list[int]) -> GroupAssignment:
+        return GroupAssignment(
+            file_path=file_path,
+            assignment_type=AssignmentType.PARTIAL_HUNKS,
+            hunk_indices=indices,
+        )
+
+    def _two_groups(self) -> list[Group]:
+        g1 = _group("pr-1", "first")
+        g1.assignments = [self._partial("a.py", [0])]
+        g2 = _group("pr-2", "second")
+        g2.assignments = [self._partial("a.py", [1])]
+        return [g1, g2]
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_dep_title_desc_and_undep(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        mock_prompt.side_effect = [
+            "dep pr-2 pr-1",
+            "title pr-2 feat: add the second half",
+            "desc pr-2 Builds on pr-1.",
+            "done",
+        ]
+        groups = _interactive_edit(self._two_groups(), parsed)
+        assert groups[1].depends_on == ["pr-1"]
+        assert groups[1].title == "feat: add the second half"
+        assert groups[1].description == "Builds on pr-1."
+
+        mock_prompt.side_effect = ["undep pr-2 pr-1", "done"]
+        groups = _interactive_edit(groups, parsed)
+        assert groups[1].depends_on == []
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_dep_that_would_cycle_is_refused(self, mock_prompt: MagicMock) -> None:
+        groups = self._two_groups()
+        groups[1].depends_on = ["pr-1"]
+        mock_prompt.side_effect = ["dep pr-1 pr-2", "done"]
+        result = _interactive_edit(groups, parse_diff(TWO_HUNK_DIFF))
+        assert result[0].depends_on == []
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_movefile_moves_every_hunk_and_recomputes_loc(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        mock_prompt.side_effect = ["movefile a.py pr-1 pr-2", "done"]
+        groups = _interactive_edit(self._two_groups(), parsed)
+        assert groups[0].assignments == []
+        assert groups[1].assignments[0].assignment_type is AssignmentType.WHOLE_FILE
+        assert groups[1].assignments[0].hunk_indices == [0, 1]
+        assert groups[1].estimated_loc == 3
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_new_group_then_move_into_it(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        mock_prompt.side_effect = ["new pr-3", "move a.py:1 pr-2 pr-3", "done"]
+        groups = _interactive_edit(self._two_groups(), parsed)
+        assert [g.id for g in groups] == ["pr-1", "pr-2", "pr-3"]
+        assert groups[2].assignments[0].hunk_indices == [1]
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_merge_folds_hunks_parents_and_dependants(self, mock_prompt: MagicMock) -> None:
+        parsed = parse_diff(TWO_HUNK_DIFF)
+        groups = self._two_groups()
+        leaf = _group("pr-3", "leaf", depends_on=["pr-2"], files=["c.py"])
+        mock_prompt.side_effect = ["merge pr-1 pr-2", "done"]
+
+        result = _interactive_edit([*groups, leaf], parsed)
+
+        assert [g.id for g in result] == ["pr-1", "pr-3"]
+        assert result[0].assignments[0].assignment_type is AssignmentType.WHOLE_FILE
+        assert result[0].assignments[0].hunk_indices == [0, 1]
+        assert result[1].depends_on == ["pr-1"]
+        assert result[0].estimated_loc == 3
+
+    @patch("pr_split.cli.typer.prompt")
+    def test_merge_that_would_cycle_is_refused(self, mock_prompt: MagicMock) -> None:
+        # pr-3 sits between pr-1 and pr-2; folding pr-2 into pr-1 would make
+        # pr-1 depend on pr-3, which depends on pr-1.
+        groups = self._two_groups()
+        mid = _group("pr-3", "mid", depends_on=["pr-1"], files=["c.py"])
+        groups[1].depends_on = ["pr-3"]
+        mock_prompt.side_effect = ["merge pr-1 pr-2", "done"]
+        result = _interactive_edit([*groups, mid], parse_diff(TWO_HUNK_DIFF))
+        assert [g.id for g in result] == ["pr-1", "pr-2", "pr-3"]
+
+
+class TestExecuteYes:
+    @patch("pr_split.cli._create_branches_and_commits", side_effect=PRSplitError("stop here"))
+    @patch("pr_split.cli.typer.confirm")
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_yes_skips_the_confirmation_prompt(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_commit: MagicMock,
+        mock_parse: MagicMock,
+        mock_validate: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_plan_file.plan.stacked = False
+        mock_plan_file.plan.dev_branch_arg = "feature"
+        mock_plan_file.plan.dev_branch = "feature"
+        mock_plan_file.plan.base_branch = "main"
+        mock_plan_file.plan.groups = [_group("pr-1", "t", files=["a.py"])]
+        mock_load.return_value = mock_plan_file
+
+        result = runner.invoke(app, ["execute", "--yes"], input="")
+
+        mock_confirm.assert_not_called()
+        mock_create.assert_called_once()
+        assert "stop here" in result.output

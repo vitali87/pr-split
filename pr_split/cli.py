@@ -782,10 +782,166 @@ def _drop_empty_groups(
     return kept
 
 
+def _find_group(groups: list[Group], group_id: str) -> Group | None:
+    group = next((g for g in groups if g.id == group_id), None)
+    if group is None:
+        console.print(f"[red]Group '{group_id}' not found.[/red]")
+    return group
+
+
+def _creates_cycle(groups: list[Group]) -> bool:
+    try:
+        PlanDAG(groups).validate_acyclic()
+    except PlanValidationError:
+        return True
+    return False
+
+
+def _add_dependency(groups: list[Group], child_id: str, parent_id: str) -> bool:
+    child, parent = _find_group(groups, child_id), _find_group(groups, parent_id)
+    if child is None or parent is None:
+        return False
+    if child_id == parent_id:
+        console.print("[red]A group cannot depend on itself.[/red]")
+        return False
+    if parent_id in child.depends_on:
+        console.print(f"[yellow]{child_id} already depends on {parent_id}.[/yellow]")
+        return False
+    child.depends_on.append(parent_id)
+    if _creates_cycle(groups):
+        child.depends_on.remove(parent_id)
+        console.print(f"[red]{child_id} -> {parent_id} would create a dependency cycle.[/red]")
+        return False
+    console.print(f"[green]{child_id} now depends on {parent_id}[/green]")
+    return True
+
+
+def _remove_dependency(groups: list[Group], child_id: str, parent_id: str) -> bool:
+    child = _find_group(groups, child_id)
+    if child is None:
+        return False
+    if parent_id not in child.depends_on:
+        console.print(f"[yellow]{child_id} does not depend on {parent_id}.[/yellow]")
+        return False
+    child.depends_on.remove(parent_id)
+    console.print(f"[green]{child_id} no longer depends on {parent_id}[/green]")
+    return True
+
+
+def _move_file(
+    groups: list[Group], parsed_diff: ParsedDiff, file_path: str, from_id: str, to_id: str
+) -> bool:
+    """Move every hunk of ``file_path`` that ``from_id`` holds into ``to_id``."""
+    src, dst = _find_group(groups, from_id), _find_group(groups, to_id)
+    if src is None or dst is None:
+        return False
+    if from_id == to_id:
+        console.print("[yellow]Source and destination are the same. No move performed.[/yellow]")
+        return False
+    hunk_count = next((len(pf) for pf in parsed_diff.patch_set if pf.path == file_path), 0)
+    moving = sorted(
+        {
+            idx
+            for a in src.assignments
+            if a.file_path == file_path
+            for idx in a.covered_indices(hunk_count)
+        }
+    )
+    if not moving:
+        console.print(f"[red]{from_id} holds no hunks of {file_path}.[/red]")
+        return False
+    src.assignments = [a for a in src.assignments if a.file_path != file_path]
+    dst.assignments = _combine_assignments(
+        [
+            *dst.assignments,
+            GroupAssignment(
+                file_path=file_path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=moving,
+            ),
+        ],
+        {pf.path: len(pf) for pf in parsed_diff.patch_set},
+    )
+    console.print(
+        f"[green]Moved {len(moving)} hunk(s) of {file_path} from {from_id} to {to_id}[/green]"
+    )
+    return True
+
+
+def _new_group(groups: list[Group], group_id: str) -> bool:
+    if any(g.id == group_id for g in groups):
+        console.print(f"[red]Group '{group_id}' already exists.[/red]")
+        return False
+    groups.append(Group(id=group_id, title=group_id, description=""))
+    console.print(f"[green]Created empty group {group_id}[/green]")
+    return True
+
+
+def _combine_assignments(
+    assignments: list[GroupAssignment], hunk_counts: dict[str, int]
+) -> list[GroupAssignment]:
+    """One assignment per file covering the union of the given hunks."""
+    by_file: dict[str, set[int]] = {}
+    for a in assignments:
+        by_file.setdefault(a.file_path, set()).update(
+            a.covered_indices(hunk_counts.get(a.file_path, 0))
+        )
+    combined: list[GroupAssignment] = []
+    for path, indices in by_file.items():
+        whole = sorted(indices) == list(range(hunk_counts.get(path, 0)))
+        combined.append(
+            GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.WHOLE_FILE
+                if whole
+                else AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=sorted(indices),
+            )
+        )
+    return combined
+
+
+def _merge_groups(
+    groups: list[Group], parsed_diff: ParsedDiff, keep_id: str, absorb_id: str
+) -> bool:
+    """Fold ``absorb_id`` into ``keep_id``: its hunks, its parents and its dependants."""
+    keep, absorb = _find_group(groups, keep_id), _find_group(groups, absorb_id)
+    if keep is None or absorb is None:
+        return False
+    if keep_id == absorb_id:
+        console.print("[yellow]Cannot merge a group into itself.[/yellow]")
+        return False
+    merged: list[Group] = []
+    for g in groups:
+        if g.id == absorb_id:
+            continue
+        deps = [keep_id if d == absorb_id else d for d in g.depends_on]
+        if g.id == keep_id:
+            deps += absorb.depends_on
+        deps = [d for i, d in enumerate(deps) if d != g.id and d not in deps[:i]]
+        assignments = list(g.assignments)
+        if g.id == keep_id:
+            hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
+            assignments = _combine_assignments(assignments + absorb.assignments, hunk_counts)
+        merged.append(g.model_copy(update={"depends_on": deps, "assignments": assignments}))
+    if _creates_cycle(merged):
+        console.print(
+            f"[red]Merging {absorb_id} into {keep_id} would create a dependency cycle.[/red]"
+        )
+        return False
+    groups[:] = merged
+    console.print(f"[green]Merged {absorb_id} into {keep_id}[/green]")
+    return True
+
+
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
         "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
+        "  [bold]movefile[/bold] <file> <from_group> <to_group>\n"
+        "  [bold]dep[/bold] <child> <parent>  /  [bold]undep[/bold] <child> <parent>\n"
+        "  [bold]title[/bold] <group_id> <text>  /  [bold]desc[/bold] <group_id> <text>\n"
+        "  [bold]new[/bold] <group_id>  /  [bold]merge[/bold] <keep_id> <absorb_id>\n"
         "  [bold]show[/bold] <group_id>\n"
         "  [bold]plan[/bold]  — redisplay the plan table\n"
         "  [bold]done[/bold]  — proceed\n"
@@ -835,6 +991,43 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
                 # Keep per-group LOC in step with the new assignments so the
                 # plan table, strict LOC bounds, plan.json and PR bodies are
                 # accurate.
+                recompute_estimated_loc(groups, parsed_diff)
+        elif action in ("dep", "undep"):
+            if len(parts) != 3:
+                console.print(f"[red]Usage: {action} <child_group> <parent_group>[/red]")
+                continue
+            if action == "dep":
+                _add_dependency(groups, parts[1], parts[2])
+            else:
+                _remove_dependency(groups, parts[1], parts[2])
+        elif action in ("title", "desc"):
+            text_parts = cmd.strip().split(maxsplit=2)
+            if len(text_parts) != 3:
+                console.print(f"[red]Usage: {action} <group_id> <text>[/red]")
+                continue
+            group = _find_group(groups, text_parts[1])
+            if group is not None:
+                if action == "title":
+                    group.title = text_parts[2]
+                else:
+                    group.description = text_parts[2]
+                console.print(f"[green]Updated {action} of {group.id}[/green]")
+        elif action == "movefile":
+            if len(parts) != 4:
+                console.print("[red]Usage: movefile <file> <from_group> <to_group>[/red]")
+                continue
+            if _move_file(groups, parsed_diff, parts[1], parts[2], parts[3]):
+                recompute_estimated_loc(groups, parsed_diff)
+        elif action == "new":
+            if len(parts) != 2:
+                console.print("[red]Usage: new <group_id>[/red]")
+                continue
+            _new_group(groups, parts[1])
+        elif action == "merge":
+            if len(parts) != 3:
+                console.print("[red]Usage: merge <keep_group> <absorb_group>[/red]")
+                continue
+            if _merge_groups(groups, parsed_diff, parts[1], parts[2]):
                 recompute_estimated_loc(groups, parsed_diff)
         else:
             console.print(
@@ -1244,6 +1437,10 @@ def execute(
             help="Open every sub-PR as a draft even if the plan was not saved with --draft",
         ),
     ] = False,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Create the branches and PRs without asking to confirm"),
+    ] = False,
 ) -> None:
     if not plan_exists():
         console.print(ErrorMsg.NO_PLAN())
@@ -1309,7 +1506,8 @@ def execute(
         raise typer.Exit(1) from exc
 
     _present_plan(plan.groups)
-    typer.confirm("Proceed with creating branches and PRs?", abort=True)
+    if not yes:
+        typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
     try:
@@ -1343,7 +1541,6 @@ def execute(
     )
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
-    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 

@@ -137,7 +137,7 @@ pr-split merge --notify https://hooks.slack.com/...
 pr-split execute
 ```
 
-Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags.
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags. Pass `--yes` (`-y`) to skip the confirmation prompt, e.g. from a script or CI job.
 
 ### Interactive plan editing
 
@@ -146,6 +146,12 @@ After the plan is displayed, an interactive editor lets you adjust the plan befo
 ```
 edit> show pr-1          # inspect a group's assignments
 edit> move src/foo.py:2 pr-1 pr-2   # move a hunk between groups
+edit> movefile src/foo.py pr-1 pr-2 # move every hunk of a file
+edit> dep pr-3 pr-2      # make pr-3 depend on pr-2 (undep removes the edge)
+edit> title pr-3 feat: add the parser    # set the PR title
+edit> desc pr-3 Adds the parser and its tests.  # set the PR body text
+edit> new pr-9           # create an empty group to move hunks into
+edit> merge pr-1 pr-2    # fold pr-2 (hunks, parents, dependants) into pr-1
 edit> plan               # redisplay the plan table
 edit> done               # proceed (default — just press Enter)
 edit> abort              # cancel
