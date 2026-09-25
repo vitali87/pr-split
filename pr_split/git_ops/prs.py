@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import subprocess
 
 from loguru import logger
@@ -9,6 +11,7 @@ from .. import logs
 from ..constants import FORK_REF_PREFIX, PR_REF_PREFIX
 from ..exceptions import ErrorMsg, GitOperationError
 from ..types_defs import ForkPRInfo
+from .branches import run_git
 
 
 def _run_gh(*args: str) -> str:
@@ -22,9 +25,49 @@ def _run_gh(*args: str) -> str:
     return result.stdout.strip()
 
 
-def check_gh_auth() -> bool:
+# Matches the host of an https/ssh/git URL or an scp-like ``user@host:path``.
+# Local paths and file:// URLs deliberately do not match: they have no host
+# for gh to authenticate against. A dot is required only in the bare
+# ``host:path`` form, where it separates real hosts from Windows drives and
+# relative paths; scheme and ``user@`` forms accept single-label hosts
+# (``git@ghe:org/repo``), which gh itself supports.
+_REMOTE_HOST_RE = re.compile(
+    r"^(?:"
+    r"(?:https?|ssh|git|git\+ssh|ssh\+git)://(?:[^@/]+@)?(?P<scheme_host>[^.:/@][^:/@]*)"
+    r"|[^@/:]+@(?P<scp_host>[^.:/@][^:/@]*)"
+    r"|(?P<bare_host>[^.:/@][^:/@]*\.[^:/@]+)"
+    r")(?::\d+)?[:/]"
+)
+
+
+def gh_host() -> str:
+    """The GitHub host pr-split talks to, resolved the way gh does.
+
+    gh targets the host of the repository's remote and only treats GH_HOST
+    as an override, so an enterprise-only checkout must be checked against
+    its own host, not github.com.
+    """
+    override = os.environ.get("GH_HOST")
+    if override:
+        return override.lower()
     try:
-        _run_gh("auth", "status")
+        remote = run_git("remote", "get-url", "origin")
+    except GitOperationError:
+        return "github.com"
+    match = _REMOTE_HOST_RE.match(remote.strip())
+    if not match:
+        return "github.com"
+    host = match.group("scheme_host") or match.group("scp_host") or match.group("bare_host")
+    # gh lowercases hosts it parses from remotes; `--hostname` is case-sensitive.
+    return host.lower()
+
+
+def check_gh_auth() -> bool:
+    # Without --hostname, `gh auth status` exits 1 when *any* configured
+    # host is unauthenticated (a stale enterprise token), even though every
+    # call pr-split makes targets one host.
+    try:
+        _run_gh("auth", "status", "--hostname", gh_host())
     except GitOperationError:
         return False
     return True
