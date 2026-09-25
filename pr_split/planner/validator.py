@@ -95,6 +95,48 @@ def validate_no_conflicts(groups: list[Group], dag: PlanDAG, hunk_counts: dict[s
                     )
 
 
+def _piece_owners(groups: list[Group], path: str, pieces: int) -> list[str | None]:
+    owners: list[str | None] = [None] * pieces
+    for group in groups:
+        for assignment in group.assignments:
+            if assignment.file_path == path:
+                for idx in assignment.covered_indices(pieces):
+                    if 0 <= idx < pieces:
+                        owners[idx] = group.id
+    return owners
+
+
+def new_file_pieces_out_of_order(
+    groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG
+) -> list[tuple[str, int, str, str]]:
+    """(file, piece, group, parent) for each piece of a split new file whose
+    group neither holds nor builds on the group holding the piece before it.
+
+    A new file is rebuilt from the pieces a branch holds, and a stacked child
+    carries its ancestors' pieces; any other layout creates the file without
+    its beginning.
+    """
+    found: list[tuple[str, int, str, str]] = []
+    for path, pieces in sorted(parsed_diff.new_file_pieces.items()):
+        owners = _piece_owners(groups, path, pieces)
+        for piece in range(1, pieces):
+            parent, child = owners[piece - 1], owners[piece]
+            if parent is None or child is None or parent == child:
+                continue
+            if parent not in dag.ancestors(child):
+                found.append((path, piece, child, parent))
+    return found
+
+
+def validate_new_file_pieces(groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG) -> None:
+    for path, piece, child, parent in new_file_pieces_out_of_order(groups, parsed_diff, dag):
+        raise PlanValidationError(
+            ErrorMsg.NEW_FILE_PIECE_ORDER(
+                group=child, piece=piece + 1, file=path, parent=parent, previous=piece
+            )
+        )
+
+
 def detect_loc_bound_violations(
     groups: list[Group],
     max_loc: int,
@@ -161,6 +203,7 @@ def validate_plan(
     min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
+    validate_new_file_pieces(groups, parsed_diff, dag)
     validate_no_binary_files(parsed_diff)
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)

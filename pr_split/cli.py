@@ -72,6 +72,8 @@ from .graph import PlanDAG
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
+from .planner.new_file_pieces import link_new_file_pieces
+from .planner.validator import validate_new_file_pieces
 from .schemas import (
     BranchRecord,
     GitState,
@@ -981,7 +983,9 @@ def split(
             logger.info("Overwriting existing dry-run plan")
 
     raw_diff = extract_diff(dev_branch, base)
-    parsed_diff = parse_diff(raw_diff)
+    # Only a stacked child builds on the PR holding a file's earlier pieces.
+    split_new_files_over = max_loc if stack else None
+    parsed_diff = parse_diff(raw_diff, split_new_files_over=split_new_files_over)
     stats = parsed_diff.stats
     logger.info(
         logs.DIFF_STATS.format(
@@ -1013,6 +1017,7 @@ def split(
         raise typer.Exit(1) from exc
     try:
         groups = plan_split(parsed_diff, settings)
+        link_new_file_pieces(groups, parsed_diff)
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1041,6 +1046,7 @@ def split(
     if not groups:
         console.print("[red]Every group is empty after editing; nothing to split.[/red]")
         raise typer.Exit(1)
+    link_new_file_pieces(groups, parsed_diff)
     try:
         dag = PlanDAG(groups)
         warnings = validate_plan(
@@ -1065,6 +1071,7 @@ def split(
         max_loc=settings.max_loc,
         strict_loc_bounds=settings.strict_loc_bounds,
         stacked=stack,
+        split_new_files_over=split_new_files_over,
         draft=draft,
         priority=priority,
         groups=groups,
@@ -1295,7 +1302,7 @@ def execute(
     if plan.stacked:
         _require_gh_stack()
 
-    parsed_diff = parse_diff(plan.raw_diff)
+    parsed_diff = parse_diff(plan.raw_diff, split_new_files_over=plan.split_new_files_over)
 
     try:
         validate_no_binary_files(parsed_diff)
@@ -1304,6 +1311,7 @@ def execute(
         dag = PlanDAG(plan.groups)
         dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
+        validate_new_file_pieces(plan.groups, parsed_diff, dag)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc

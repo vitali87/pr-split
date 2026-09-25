@@ -1,5 +1,12 @@
 EXTRACTING_DIFF = "Extracting diff between {base} and {dev}"
 DIFF_STATS = "Diff: {files} files, +{added}/-{removed} lines ({loc} LOC)"
+NEW_FILE_SPLIT = (
+    "New file '{file}' ({loc} lines) is over --max-loc; split it into {pieces} pieces"
+    " at top-level boundaries, each stacked on the one before"
+)
+NEW_FILE_PIECE_LINKED = (
+    "Group '{child}' holds a later piece of new file '{file}'; it now depends on '{parent}'"
+)
 SENDING_TO_LLM = "Sending diff to LLM for analysis ({model})"
 LLM_RESPONSE_RECEIVED = "Received split plan with {count} groups"
 VALIDATING_PLAN = "Validating split plan"
