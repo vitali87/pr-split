@@ -77,7 +77,7 @@ left unassigned and no hunk may appear in multiple groups.
 No cycles are allowed.
 3. Each group should stay within approximately {max_loc} lines of code \
 (added + removed). Exceeding this is acceptable only when a logical unit cannot \
-be split further.
+be split further.{min_loc_rule}
 4. Use the propose_split_plan tool to return your plan.
 5. PR titles MUST follow conventional commits format: \
 type(optional-scope): description. Allowed types: feat, fix, refactor, test, \
@@ -228,9 +228,20 @@ _PRIORITY_MAP = {
 }
 
 
-def build_system_prompt(priority: Priority, max_loc: int) -> str:
+_MIN_LOC_RULE = (
+    " Groups should also not be smaller than about {min_loc} lines: merge "
+    "closely related small changes rather than creating tiny groups, unless "
+    "a change genuinely stands alone."
+)
+
+
+def build_system_prompt(priority: Priority, max_loc: int, min_loc: int | None = None) -> str:
+    # --min-loc was documented as applying to every backend, but the LLM only
+    # ever heard about it via the (off by default) refinement prompt.
+    min_loc_rule = _MIN_LOC_RULE.format(min_loc=min_loc) if min_loc else ""
     return _SYSTEM_PROMPT_TEMPLATE.format(
         max_loc=max_loc,
+        min_loc_rule=min_loc_rule,
         priority_instructions=_PRIORITY_MAP[priority],
     )
 

@@ -60,6 +60,17 @@ class TestBuildSystemPrompt:
         assert "LOGICAL" in result
         assert "200" in result
 
+    def test_min_loc_adds_a_size_floor_rule(self) -> None:
+        result = build_system_prompt(Priority.ORTHOGONAL, 400, min_loc=100)
+        assert "not be smaller than about 100 lines" in result
+        assert "within approximately 400 lines" in result
+
+    def test_no_min_loc_keeps_the_prompt_unchanged(self) -> None:
+        assert build_system_prompt(Priority.ORTHOGONAL, 400) == build_system_prompt(
+            Priority.ORTHOGONAL, 400, min_loc=None
+        )
+        assert "smaller than" not in build_system_prompt(Priority.ORTHOGONAL, 400)
+
 
 class TestBuildUserPrompt:
     def test_contains_file_summary(self) -> None:
