@@ -80,7 +80,7 @@ REFINEMENT_NO_IMPROVEMENT = (
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
 MERGE_NODE_NOT_STACKED = (
-    "Group '{group}' depends on multiple groups; native stacks are linear, so its"
+    "Group '{group}' depends on multiple groups; a PR can target only one branch, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
     " changes until those PRs merge"
 )
