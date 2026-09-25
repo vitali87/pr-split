@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import time
 import urllib.request
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
@@ -28,7 +28,6 @@ from .constants import (
     DEFAULT_MAX_LOC,
     DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
-    DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
     PLAN_DIR,
     PLAN_FILE,
@@ -869,6 +868,34 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             )
 
 
+def _split_settings(
+    partition_strategy: PartitionStrategy | None,
+    build: Callable[[PartitionStrategy], Settings],
+) -> Settings:
+    """Settings for split; with no strategy chosen, llm if usable, else graph.
+
+    A machine without an API key (and no keyless provider) can still split
+    with the graph backend, which needs no model at all. An explicit
+    --partition-strategy llm keeps failing loudly when its key is missing.
+    """
+    if partition_strategy is not None:
+        return build(partition_strategy)
+    try:
+        return build(PartitionStrategy.LLM)
+    except (ValidationError, ValueError) as llm_error:
+        try:
+            settings = build(PartitionStrategy.GRAPH)
+        except (ValidationError, ValueError):
+            raise llm_error from None
+        reason = (
+            llm_error.errors()[0]["msg"].removeprefix("Value error, ")
+            if isinstance(llm_error, ValidationError)
+            else str(llm_error)
+        )
+        logger.warning(logs.LLM_UNAVAILABLE_USING_GRAPH.format(reason=reason))
+        return settings
+
+
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
     cleaned = dev_branch.lstrip("#")
     if cleaned.isdigit():
@@ -928,13 +955,15 @@ def split(
         ),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy,
+        PartitionStrategy | None,
         typer.Option(
             "--partition-strategy",
             envvar="PR_SPLIT_PARTITION_STRATEGY",
-            help="Backend for hunk-to-PR partitioning",
+            help="Backend for hunk-to-PR partitioning"
+            " [default: llm when its provider is configured, else graph]",
+            show_default=False,
         ),
-    ] = DEFAULT_PARTITION_STRATEGY,
+    ] = None,
     cp_sat_timeout: Annotated[
         float,
         typer.Option(
@@ -1024,15 +1053,18 @@ def split(
     )
 
     try:
-        settings = Settings(
-            min_loc=min_loc,
-            max_loc=max_loc,
-            strict_loc_bounds=strict_loc_bounds,
-            max_refinement_iterations=max_refinement_iterations,
-            cp_sat_timeout=cp_sat_timeout,
-            priority=priority,
-            chunk_strategy=chunk_strategy,
-            partition_strategy=partition_strategy,
+        settings = _split_settings(
+            partition_strategy,
+            lambda strategy: Settings(
+                min_loc=min_loc,
+                max_loc=max_loc,
+                strict_loc_bounds=strict_loc_bounds,
+                max_refinement_iterations=max_refinement_iterations,
+                cp_sat_timeout=cp_sat_timeout,
+                priority=priority,
+                chunk_strategy=chunk_strategy,
+                partition_strategy=strategy,
+            ),
         )
     except (ValidationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")

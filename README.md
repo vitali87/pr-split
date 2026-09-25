@@ -46,7 +46,7 @@ uv tool install "pr-split[cp-sat]"
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
 - [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`) when using `--stack`
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend, unless you plan with a [local model](#local-models) (no key needed)
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend, unless you plan with a [local model](#local-models) (no key needed). With neither and no `--partition-strategy`, `split` uses the `graph` backend, which needs no model, and says so
 
 ## Usage
 
@@ -228,7 +228,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_MAX_REFINEMENT_ITERATIONS` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
-| `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_PARTITION_STRATEGY` | `llm` if its provider is configured, else `graph` | Hunk-to-PR partition backend |
 | `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
@@ -306,7 +306,7 @@ PR_SPLIT_PROVIDER=local PR_SPLIT_MODEL=qwen2.5-coder:14b \
 
 For llama.cpp (`llama-server --jinja -c 32768`), vLLM or LM Studio, set `PR_SPLIT_LOCAL_BASE_URL` to the server's `/v1` URL. Set `PR_SPLIT_LOCAL_CONTEXT_TOKENS` to the context size the server was started with, because Ollama's own default window is small. Requests use temperature 0, so the same diff gives the same plan. A model that answers with the plan as JSON text instead of a tool call is accepted too.
 
-For no model at all, use `--partition-strategy graph` or `cp_sat`.
+For no model at all, use `--partition-strategy graph` or `cp_sat`. Without an API key or a local provider, `split` picks `graph` on its own.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 
