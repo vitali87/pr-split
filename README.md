@@ -180,6 +180,18 @@ pr-split restack            # or: pr-split restack --dry-run
 
 After review feedback is fixed with a new commit on a lower layer's branch (locally or on GitHub), the layers above it lack the fix, and their diffs show it reversed. `restack` fetches the stack's branches, rebases each layer onto its parent's current head in plan order, and pushes the rewritten branches with `--force-with-lease`. It stops at the first conflicting layer, names it, and leaves that layer and everything above it unchanged. `pr-split status` warns about any layer that lacks its parent's head.
 
+### Per-PR release gates
+
+Some repositories require every PR to carry files unique to it, such as a version bump above its base and a release-notes file for that version. With `--stack` each layer's base is its parent's branch, so each layer needs its own. Configure a command in `.pr-split.toml` at the repository root:
+
+```toml
+[per_group]
+run = "scripts/bump-version.sh"
+commit_message = "chore: release notes for {title}"   # {id}, {title}, {index}
+```
+
+`execute`, and `split` without `--dry-run`, run it in each sub-PR's worktree after that group's commit and before anything is pushed, in stack order. Whatever it changes is committed to that layer, and children are cut from the layer after it ran. The command gets `PR_SPLIT_GROUP_ID`, `PR_SPLIT_GROUP_TITLE`, `PR_SPLIT_GROUP_INDEX`, `PR_SPLIT_PR_BASE` (the branch the PR targets) and `PR_SPLIT_PARENT_REF` (the commit the layer was cut from, e.g. `git show "$PR_SPLIT_PARENT_REF:Cargo.toml"`) as environment variables, never spliced into the command line. A failing command stops the run and names the group. `PR_SPLIT_PER_GROUP_RUN` and `PR_SPLIT_PER_GROUP_COMMIT_MESSAGE` override the file.
+
 ### Stale local base branch
 
 `--base` names the branch the sub-PRs are opened against. When it tracks a remote branch, `split` fetches it and diffs against the remote copy (for example `origin/main`), so commits that landed upstream after your local `main` was last updated are not split as branch work. A warning says when the local branch is behind or ahead of its upstream.

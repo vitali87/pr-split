@@ -19,6 +19,7 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+PER_GROUP_STEP_RUNNING = "Running per-group step for {group}: {command}"
 RESTACKED_LAYER = "Rebased {branch} onto the current head of {parent}"
 RESTACK_FETCH_FAILED = "Could not fetch {branch} ({detail}); using the local branch"
 LAYER_BEHIND_PARENT = (

@@ -70,6 +70,7 @@ from .git_ops import (
 from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
+from .per_group import PerGroupStep, load_per_group_step, run_per_group_step
 from .plan_store import load_plan, plan_exists, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
@@ -265,6 +266,7 @@ def _create_single_branch_and_commit(
     *,
     author: str | None = None,
     start_point: str | None = None,
+    per_group: tuple[PerGroupStep, int] | None = None,
 ) -> BranchRecord:
     branch_name = f"{BRANCH_PREFIX}{namespace}/{group.id}"
     worktree_path = str(worktree_base / group.id)
@@ -290,6 +292,20 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
+        if per_group is not None:
+            step, index = per_group
+            commit_sha = (
+                run_per_group_step(
+                    step,
+                    worktree_path,
+                    group,
+                    index=index,
+                    pr_base=base_branch,
+                    parent_ref=start_point or merge_base_ref,
+                    author=author,
+                )
+                or commit_sha
+            )
     except Exception:
         # add_worktree succeeded, so this run created branch_name (a
         # pre-existing branch of that name was already replaced). Delete it
@@ -366,6 +382,8 @@ def _create_branches_and_commits(
     stacked: bool = False,
 ) -> list[BranchRecord]:
     worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
+    step = load_per_group_step()
+    order = {gid: i for i, gid in enumerate(PlanDAG(groups).topological_order(), start=1)}
 
     if stacked:
         dag = PlanDAG(groups)
@@ -394,6 +412,7 @@ def _create_branches_and_commits(
                         worktree_base,
                         author=author,
                         start_point=start_point,
+                        per_group=(step, order[group.id]) if step else None,
                     ): group.id
                     for group, group_base, start_point in batch_args
                 }
