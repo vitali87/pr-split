@@ -37,6 +37,11 @@ class ErrorMsg(StrEnum):
         "PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS ({output}) must be less than"
         " PR_SPLIT_LOCAL_CONTEXT_TOKENS ({context})"
     )
+    NO_DIFF_BUDGET = (
+        "No room for the diff in a chunk: {budget} tokens left after the output budget"
+        " ({output}) and prompt overhead ({overhead}) in a {context}-token window; raise"
+        " PR_SPLIT_LOCAL_CONTEXT_TOKENS or lower PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS"
+    )
     LOCAL_SERVER_UNREACHABLE = (
         "Cannot reach the local LLM server at {url}: {detail};"
         " start it (e.g. 'ollama serve') or set PR_SPLIT_LOCAL_BASE_URL"
