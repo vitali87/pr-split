@@ -91,3 +91,4 @@ CP_SAT_NOT_OPTIMAL = (
     "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
+ADOPTED_REMOTE_BRANCH = "Created local branch {branch} from {remote_ref}"

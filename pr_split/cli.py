@@ -53,6 +53,7 @@ from .exceptions import (
 )
 from .git_ops import (
     add_worktree,
+    adopt_remote_branch,
     branch_exists,
     check_gh_auth,
     check_gh_stack,
@@ -939,6 +940,12 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
+
+    # A branch that exists only as origin/<name> (fresh clone or worktree)
+    # is adopted as a local branch, as `git checkout <name>` would.
+    for name in (dev_branch, base):
+        if not (name.lstrip("#").isdigit() or ":" in name):
+            adopt_remote_branch(name)
 
     if not branch_exists(dev_branch):
         if not check_gh_auth():
