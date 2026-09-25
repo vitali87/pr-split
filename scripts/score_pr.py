@@ -31,6 +31,42 @@ def _skip(reason: str) -> None:
     _set_output("should_split", "false")
 
 
+def _write_comment(lines: list[str]) -> None:
+    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
+    comment_path = Path(tmp_dir) / "pr-split-comment.md"
+    comment_path.write_text("\n".join(lines))
+    _set_output("comment_path", str(comment_path))
+
+
+def _oversized_without_plan(reason: str, total_loc: int, file_count: int, max_loc: int) -> None:
+    """Flag an oversized PR even though no usable split plan was produced.
+
+    The size verdict comes from ``total_loc`` alone; a failing or degenerate
+    planner must not make an oversized PR look acceptable.
+    """
+    print(f"PR has {total_loc} LOC, over the {max_loc} limit; {reason}")
+    _set_output("total_groups", "0")
+    _set_output("objective", "0")
+    _set_output("should_split", "true")
+    _write_comment(
+        [
+            "<!-- pr-split-score -->",
+            "## pr-split analysis",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Total LOC | {total_loc:,} |",
+            f"| Files changed | {file_count} |",
+            f"| Limit | {max_loc:,} LOC |",
+            "",
+            f"This PR has **{total_loc:,} LOC**, over the **{max_loc:,} LOC** limit, "
+            f"but no split plan could be generated: {reason}",
+            "",
+            "*Run `pr-split split` locally to plan the split.*",
+        ]
+    )
+
+
 def _md_escape(s: str) -> str:
     return s.replace("|", "\\|")
 
@@ -129,16 +165,24 @@ def main() -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, input="done\n")
     if result.returncode != 0:
         print(f"pr-split failed:\n{result.stderr}", file=sys.stderr)
-        _skip("pr-split failed to generate a plan.")
+        _oversized_without_plan("pr-split exited with an error.", total_loc, file_count, max_loc)
         return
 
     plan_path = ".pr-split/plan.json"
     if not os.path.exists(plan_path):
-        _skip("No plan file generated.")
+        _oversized_without_plan("pr-split wrote no plan file.", total_loc, file_count, max_loc)
         return
 
     groups = load_plan_groups(plan_path)
     total_groups = len(groups)
+    if total_groups < threshold:
+        _oversized_without_plan(
+            f"the plan has {total_groups} group(s), fewer than the {threshold} needed.",
+            total_loc,
+            file_count,
+            max_loc,
+        )
+        return
 
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
     overflow = sum(max(0, g["estimated_loc"] - max_loc) for g in groups)
@@ -149,15 +193,13 @@ def main() -> None:
     file_scatter = sum(max(0, len(gids) - 1) for gids in file_groups.values())
 
     objective = overflow * 1000 + file_scatter * 50 + total_groups
-    should_split = total_groups >= threshold
-
     _set_output("total_groups", str(total_groups))
     _set_output("objective", str(objective))
-    _set_output("should_split", str(should_split).lower())
+    _set_output("should_split", "true")
 
     print(f"PR: {total_loc} LOC across {file_count} files")
     print(f"Split plan: {total_groups} groups, objective={objective}")
-    print(f"Should split: {should_split}")
+    print("Should split: True")
 
     # Generate markdown comment
     lines = [
@@ -175,34 +217,27 @@ def main() -> None:
         "",
     ]
 
-    if should_split:
-        lines.append(
-            f"This PR has **{total_loc:,} LOC** and could be split into "
-            f"**{total_groups} smaller PRs**:"
-        )
-        lines.append("")
-        lines.append("| Group | Title | Diff | Depends On | Files |")
-        lines.append("|-------|-------|------|------------|-------|")
-        for g in groups:
-            files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
-            deps = ", ".join(g.get("depends_on", [])) or "—"
-            diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
-            title = _md_escape(g["title"])
-            gid = _md_escape(g["id"])
-            lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")
-        lines.append("")
-        lines.append(
-            "*Run `pr-split split` locally to create these sub-PRs, "
-            "or adjust `--max-loc` to change the target size.*"
-        )
-    else:
-        lines.append("This PR is within acceptable size limits.")
+    lines.append(
+        f"This PR has **{total_loc:,} LOC** and could be split into "
+        f"**{total_groups} smaller PRs**:"
+    )
+    lines.append("")
+    lines.append("| Group | Title | Diff | Depends On | Files |")
+    lines.append("|-------|-------|------|------------|-------|")
+    for g in groups:
+        files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
+        deps = ", ".join(g.get("depends_on", [])) or "—"
+        diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
+        title = _md_escape(g["title"])
+        gid = _md_escape(g["id"])
+        lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")
+    lines.append("")
+    lines.append(
+        "*Run `pr-split split` locally to create these sub-PRs, "
+        "or adjust `--max-loc` to change the target size.*"
+    )
 
-    comment = "\n".join(lines)
-    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
-    comment_path = Path(tmp_dir) / "pr-split-comment.md"
-    comment_path.write_text(comment)
-    _set_output("comment_path", str(comment_path))
+    _write_comment(lines)
 
 
 if __name__ == "__main__":
