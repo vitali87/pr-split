@@ -180,6 +180,14 @@ pr-split restack            # or: pr-split restack --dry-run
 
 After review feedback is fixed with a new commit on a lower layer's branch (locally or on GitHub), the layers above it lack the fix, and their diffs show it reversed. `restack` fetches the stack's branches, rebases each layer onto its parent's current head in plan order, and pushes the rewritten branches with `--force-with-lease`. It stops at the first conflicting layer, names it, and leaves that layer and everything above it unchanged. `pr-split status` warns about any layer that lacks its parent's head.
 
+### Move a hunk up an executed stack
+
+```bash
+pr-split move docs/flags.md:1 --from pr-1 --to pr-3
+```
+
+When review shows a change belongs in a higher layer, `move` takes it out of the source layer, carries that removal up through the layers in between, and applies it on the target layer, then restacks the layers above. Each step patches the layer's current content, so changes that arrived by other routes (a base merge, a review fix) are kept. Only changed branches are force-pushed, so every PR stays open with its threads, and the saved plan is updated. The hunk index is the one the plan editor's `show` prints.
+
 ### Per-PR release gates
 
 Some repositories require every PR to carry files unique to it, such as a version bump above its base and a release-notes file for that version. With `--stack` each layer's base is its parent's branch, so each layer needs its own. Configure a command in `.pr-split.toml` at the repository root:

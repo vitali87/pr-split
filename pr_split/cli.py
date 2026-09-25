@@ -87,6 +87,7 @@ from .schemas import (
     PRRecord,
     SplitPlan,
 )
+from .stack_move import move_hunk as move_stack_hunk
 from .types_defs import ForkPRInfo
 
 app = typer.Typer(
@@ -1659,6 +1660,39 @@ def restack(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     table = Table(title="Restack")
+    table.add_column("ID")
+    table.add_column("Branch")
+    table.add_column("Result")
+    for result in results:
+        table.add_row(result.group_id, result.branch, result.action)
+    console.print(table)
+
+
+@app.command(
+    name="move",
+    help="Move one hunk from a layer of an executed stack up to a layer above it, keeping"
+    " every PR open. HUNK is <file>:<index>, as the plan editor's 'show' prints it.",
+)
+def move_hunk_command(
+    hunk: Annotated[str, typer.Argument(help="<file>:<hunk index>")],
+    source: Annotated[str, typer.Option("--from", help="Group id that holds the hunk now")],
+    target: Annotated[str, typer.Option("--to", help="Group id to move it to")],
+) -> None:
+    path, _, index_text = hunk.rpartition(":")
+    if not path or not index_text.isdigit():
+        console.print(f"[red]Expected <file>:<hunk index>, got '{hunk}'[/red]")
+        raise typer.Exit(1)
+    if not plan_exists():
+        console.print(f"[red]{ErrorMsg.NO_PLAN()}[/red]")
+        raise typer.Exit(1)
+    plan_file = _load_plan_or_exit()
+    try:
+        results = move_stack_hunk(plan_file, path, int(index_text), source, target)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    save_plan(plan_file)
+    table = Table(title=f"Moved {hunk} from {source} to {target}")
     table.add_column("ID")
     table.add_column("Branch")
     table.add_column("Result")

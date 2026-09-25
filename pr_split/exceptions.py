@@ -71,6 +71,23 @@ class ErrorMsg(StrEnum):
     )
     PER_GROUP_STEP_FAILED = "Per-group step failed for group '{group}' (exit {code}): {output}"
     CONFIG_INVALID = "Cannot read '{path}': {detail}"
+    MOVE_NO_DIFF = "The saved plan has no diff; re-run 'pr-split split'"
+    MOVE_UNKNOWN_LAYER = "Group '{group}' is not an executed layer of this plan"
+    MOVE_NOT_UPWARD = (
+        "Group '{target}' does not build on '{source}'; a hunk can only move up the stack"
+    )
+    MOVE_NOT_A_CHAIN = (
+        "Group '{group}' has several parents, so the stack between the layers is not a chain"
+    )
+    MOVE_UNKNOWN_HUNK = "The plan's diff has no hunk {file}:{index}"
+    MOVE_UNSUPPORTED_FILE = (
+        "Moving a hunk of '{file}' is not supported: deleted files and pieces of a split"
+        " new file move with their whole file only"
+    )
+    MOVE_HUNK_NOT_IN_LAYER = "Group '{group}' does not hold hunk {file}:{index}"
+    MOVE_HUNK_DOES_NOT_APPLY = (
+        "The hunk no longer applies to '{branch}' ({detail}); nothing on that branch was changed"
+    )
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"

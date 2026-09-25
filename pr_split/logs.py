@@ -19,6 +19,8 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+MOVE_REVERTED = "Removed {file} hunk {index} from {branch}"
+MOVE_APPLIED = "Applied {file} hunk {index} to {branch}"
 LLM_UNAVAILABLE_USING_GRAPH = (
     "LLM planner unavailable ({reason}); planning with the graph backend, which needs no model."
     " Set the key, or PR_SPLIT_PROVIDER=local for a local model, to use the LLM planner"
