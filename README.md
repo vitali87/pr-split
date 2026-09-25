@@ -172,6 +172,10 @@ Create `.pr-split/template.md` to customize the body of each generated PR using 
 
 Available placeholders: `{description}`, `{files}`, `{added}`, `{removed}`, `{loc}`, `{dependencies}`, `{dag}`, `{id}`, `{title}`.
 
+### Stale local base branch
+
+`--base` names the branch the sub-PRs are opened against. When it tracks a remote branch, `split` fetches it and diffs against the remote copy (for example `origin/main`), so commits that landed upstream after your local `main` was last updated are not split as branch work. A warning says when the local branch is behind or ahead of its upstream.
+
 ### Re-split with different parameters
 
 Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten.

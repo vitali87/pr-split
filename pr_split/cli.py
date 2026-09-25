@@ -59,6 +59,7 @@ from .git_ops import (
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
+    diff_base_ref,
     fetch_fork_branch,
     fetch_fork_pr,
     is_worktree_clean,
@@ -985,7 +986,9 @@ def split(
         else:
             logger.info("Overwriting existing dry-run plan")
 
-    raw_diff = extract_diff(dev_branch, base)
+    # The sub-PRs target the remote's base, which a local base may lag behind.
+    diff_base = diff_base_ref(base)
+    raw_diff = extract_diff(dev_branch, diff_base)
     # Only a stacked child builds on the PR holding a file's earlier pieces.
     split_new_files_over = max_loc if stack else None
     parsed_diff = parse_diff(raw_diff, split_new_files_over=split_new_files_over)
@@ -1065,7 +1068,7 @@ def split(
         console.print(f"[red]Edited plan is invalid: {exc}[/red]")
         raise typer.Exit(1) from exc
 
-    merge_base_ref = merge_base(base, dev_branch)
+    merge_base_ref = merge_base(diff_base, dev_branch)
 
     split_plan = SplitPlan(
         dev_branch=dev_branch,
