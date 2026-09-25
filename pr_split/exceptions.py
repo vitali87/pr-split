@@ -69,6 +69,8 @@ class ErrorMsg(StrEnum):
         "Rebasing '{branch}' onto '{parent}' conflicts; nothing above it was changed."
         " Rebase it by hand, push it, then run 'pr-split restack' again ({detail})"
     )
+    PER_GROUP_STEP_FAILED = "Per-group step failed for group '{group}' (exit {code}): {output}"
+    CONFIG_INVALID = "Cannot read '{path}': {detail}"
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
