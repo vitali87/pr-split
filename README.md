@@ -217,6 +217,7 @@ on:
     branches: [main]
 
 permissions:
+  contents: read
   pull-requests: write
 
 jobs:
