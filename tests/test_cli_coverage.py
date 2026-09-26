@@ -1030,7 +1030,8 @@ class TestExecuteRetriesAfterFailedPush:
         )
         mock_load.return_value = plan_file
 
-        result = runner.invoke(app, ["execute"])
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
 
         assert result.exit_code == 0
         assert "Recreating them and retrying" in result.output.replace("\n", " ")
@@ -1104,7 +1105,8 @@ class TestExecuteRetriesAfterFailedPush:
         """A retry must not orphan branches the edited plan no longer contains."""
         mock_load.return_value = self._plan_with_stale_pr2()
 
-        result = runner.invoke(app, ["execute"])
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
 
         assert result.exit_code == 0
         mock_delete.assert_called_once_with("pr-split/feature-branch/pr-2")
@@ -1146,7 +1148,8 @@ class TestExecuteRetriesAfterFailedPush:
         mock_be.side_effect = lambda name: name != "pr-split/feature-branch/pr-2"
         mock_load.return_value = self._plan_with_stale_pr2()
 
-        result = runner.invoke(app, ["execute"])
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
 
         assert result.exit_code == 0
         mock_delete.assert_not_called()
