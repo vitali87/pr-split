@@ -34,6 +34,7 @@ class ErrorMsg(StrEnum):
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    CLAUDE_CLI_NOT_FOUND = "Provider 'claude-cli' needs the Claude Code CLI ('claude') on PATH"
     LOCAL_MODEL_REQUIRED = (
         "PR_SPLIT_MODEL must be set when provider is 'local'"
         " (the model name your local server serves, e.g. 'qwen2.5-coder:14b')"
