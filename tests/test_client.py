@@ -1357,3 +1357,76 @@ class TestMergeChunkGroupsSameFile:
         later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
         (merged,) = _merge_chunk_groups([first], [later])
         assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]
+
+
+class TestSurrogateSafePrompts:
+    @patch("pr_split.planner.client._call_anthropic")
+    def test_call_llm_replaces_surrogates_before_the_request(self, mock_call: MagicMock) -> None:
+        from pr_split.planner.client import _call_llm
+
+        user = b"diff caf\xe9".decode("utf-8", errors="surrogateescape")
+        _call_llm("sys", user, settings=_make_settings())
+        sent_user = mock_call.call_args.args[1]
+        assert "\udce9" not in sent_user
+        assert sent_user == "diff caf\ufffd"
+        sent_user.encode("utf-8")  # must be JSON-serialisable
+
+    @patch("pr_split.planner.client._count_tokens_anthropic", return_value=3)
+    def test_count_tokens_replaces_surrogates(self, mock_count: MagicMock) -> None:
+        from pr_split.planner.client import _count_tokens
+
+        user = b"caf\xe9".decode("utf-8", errors="surrogateescape")
+        assert _count_tokens("sys", user, settings=_make_settings()) == 3
+        mock_count.call_args.args[1].encode("utf-8")
+
+
+class TestClaudeCliProvider:
+    def _completed(self, returncode: int, stdout: str, stderr: str = "") -> object:
+        import subprocess
+
+        return subprocess.CompletedProcess(["claude"], returncode, stdout, stderr)
+
+    def test_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        settings = Settings(provider=Provider.CLAUDE_CLI, partition_strategy=PartitionStrategy.LLM)
+        assert settings.api_key == ""
+        assert settings.model == ""
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_structured_output_is_the_plan(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(
+            0, json.dumps({"result": "", "structured_output": {"groups": _SAMPLE_RAW_GROUPS}})
+        )
+        settings = _make_settings(Provider.CLAUDE_CLI)
+
+        result = _call_llm("the system prompt", "the diff", settings=settings)
+
+        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert cmd[cmd.index("--system-prompt") + 1] == "the system prompt"
+        assert "--json-schema" in cmd
+        assert "--model" not in cmd
+        assert mock_run.call_args.kwargs["input"] == "the diff"
+
+    @patch("pr_split.planner.client.subprocess.run", side_effect=FileNotFoundError())
+    def test_missing_cli_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        with pytest.raises(LLMError, match="Claude Code CLI"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_nonzero_exit_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(1, "", "Not logged in")
+        with pytest.raises(LLMError, match="Not logged in"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_missing_structured_output_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(0, json.dumps({"result": "I cannot do that"}))
+        with pytest.raises(LLMError, match="no structured output"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    def test_tokens_are_estimated_locally(self) -> None:
+        assert (
+            _count_tokens("system", "user text", settings=_make_settings(Provider.CLAUDE_CLI)) > 0
+        )
