@@ -38,14 +38,17 @@ def _write_comment(lines: list[str]) -> None:
     _set_output("comment_path", str(comment_path))
 
 
-def _oversized_without_plan(reason: str, total_loc: int, file_count: int, max_loc: int) -> None:
+def _oversized_without_plan(
+    reason: str, total_loc: int, file_count: int, max_loc: int, total_groups: int = 0
+) -> None:
     """Flag an oversized PR even though no usable split plan was produced.
 
     The size verdict comes from ``total_loc`` alone; a failing or degenerate
-    planner must not make an oversized PR look acceptable.
+    planner must not make an oversized PR look acceptable. ``reason`` finishes
+    the sentence "..., but ..." explaining why no split is suggested.
     """
     print(f"PR has {total_loc} LOC, over the {max_loc} limit; {reason}")
-    _set_output("total_groups", "0")
+    _set_output("total_groups", str(total_groups))
     _set_output("objective", "0")
     _set_output("should_split", "true")
     _write_comment(
@@ -59,8 +62,7 @@ def _oversized_without_plan(reason: str, total_loc: int, file_count: int, max_lo
             f"| Files changed | {file_count} |",
             f"| Limit | {max_loc:,} LOC |",
             "",
-            f"This PR has **{total_loc:,} LOC**, over the **{max_loc:,} LOC** limit, "
-            f"but no split plan could be generated: {reason}",
+            f"This PR has **{total_loc:,} LOC**, over the **{max_loc:,} LOC** limit, but {reason}",
             "",
             "*Run `pr-split split` locally to plan the split.*",
         ]
@@ -165,22 +167,34 @@ def main() -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, input="done\n")
     if result.returncode != 0:
         print(f"pr-split failed:\n{result.stderr}", file=sys.stderr)
-        _oversized_without_plan("pr-split exited with an error.", total_loc, file_count, max_loc)
+        _oversized_without_plan(
+            "no split plan could be generated: pr-split exited with an error.",
+            total_loc,
+            file_count,
+            max_loc,
+        )
         return
 
     plan_path = ".pr-split/plan.json"
     if not os.path.exists(plan_path):
-        _oversized_without_plan("pr-split wrote no plan file.", total_loc, file_count, max_loc)
+        _oversized_without_plan(
+            "no split plan could be generated: pr-split wrote no plan file.",
+            total_loc,
+            file_count,
+            max_loc,
+        )
         return
 
     groups = load_plan_groups(plan_path)
     total_groups = len(groups)
     if total_groups < threshold:
         _oversized_without_plan(
-            f"the plan has {total_groups} group(s), fewer than the {threshold} needed.",
+            f"the plan has {total_groups} group(s), below the {threshold} needed "
+            "to suggest a split.",
             total_loc,
             file_count,
             max_loc,
+            total_groups,
         )
         return
 

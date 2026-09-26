@@ -145,7 +145,43 @@ class TestOversizedVerdictDoesNotDependOnThePlanner:
             tmp_path, monkeypatch, returncode=0, plan={"plan": {"groups": [group]}}
         )
         assert outputs["should_split"] == "true"
-        assert "fewer than the 2 needed" in comment
+        # The plan exists; it is only below the threshold, so its count is kept.
+        assert outputs["total_groups"] == "1"
+        assert "plan has 1 group(s), below the 2 needed" in comment
+        assert "no split plan could be generated" not in comment
+
+    def test_a_plan_at_the_threshold_is_suggested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        groups = [
+            {
+                "id": "pr-1",
+                "title": "feat: core",
+                "estimated_loc": 500,
+                "estimated_added": 450,
+                "estimated_removed": 50,
+                "assignments": [{"file_path": "big.py"}],
+            },
+            {
+                "id": "pr-2",
+                "title": "feat: api",
+                "estimated_loc": 400,
+                "estimated_added": 150,
+                "estimated_removed": 250,
+                "depends_on": ["pr-1"],
+                "assignments": [{"file_path": "big.py"}],
+            },
+        ]
+        outputs, comment = self._run_main(
+            tmp_path, monkeypatch, returncode=0, plan={"plan": {"groups": groups}}
+        )
+        assert outputs["should_split"] == "true"
+        assert outputs["total_groups"] == "2"
+        # 100 LOC over the limit, and big.py is split across both groups.
+        assert outputs["objective"] == str(100 * 1000 + 1 * 50 + 2)
+        assert "could be split into **2 smaller PRs**" in comment
+        assert "| pr-1 | feat: core | +450/-50 | — | `big.py` |" in comment
+        assert "| pr-2 | feat: api | +150/-250 | pr-1 | `big.py` |" in comment
 
     def test_missing_plan_file_still_flags_an_oversized_pr(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
