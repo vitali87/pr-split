@@ -80,6 +80,36 @@ def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
         return {}
 
 
+PR_LIST_LIMIT = 1000
+
+
+def list_prs_with_head_prefix(prefix: str) -> list[dict[str, object]]:
+    """Every PR, in any state, opened from this repository's branches under ``prefix``."""
+    raw = _run_gh(
+        "pr",
+        "list",
+        # Narrow on the server, so the limit applies to the stack's PRs only.
+        "--search",
+        f"head:{prefix}",
+        "--state",
+        "all",
+        "--limit",
+        str(PR_LIST_LIMIT),
+        "--json",
+        "number,url,state,headRefName,baseRefName,title,body,isCrossRepository",
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitOperationError(f"gh pr list returned invalid JSON: {exc}") from exc
+    # A fork's branch of the same name is not one of the stack's branches.
+    return [
+        pr
+        for pr in prs
+        if str(pr.get("headRefName", "")).startswith(prefix) and not pr.get("isCrossRepository")
+    ]
+
+
 def merge_pr(pr_number: int, *, auto: bool = False) -> None:
     args = ["pr", "merge", str(pr_number), "--merge", "--delete-branch"]
     if auto:
