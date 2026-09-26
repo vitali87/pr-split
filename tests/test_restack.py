@@ -291,3 +291,79 @@ def test_cli_onto_base(repo: Path) -> None:
         result = CliRunner().invoke(app, ["restack", "--onto-base"])
     assert result.exit_code == 0, result.output
     assert _contains(repo, "origin/main", f"origin/{_branch('pr-3')}")
+
+
+def _local_heads(repo: Path) -> dict[str, str]:
+    return {gid: _git(repo, "rev-parse", _branch(gid)) for gid in LAYERS}
+
+
+def test_conflict_above_a_rebased_layer_leaves_every_branch_as_found(repo: Path) -> None:
+    # main moves: pr-1 rebases cleanly, then pr-2's file clashes with main's.
+    _advance_main(repo, "pr-2.txt", "from main\n")
+    before = _local_heads(repo)
+
+    with pytest.raises(PRSplitError, match=r"Rebasing 'pr-split/x/pr-2' onto"):
+        restack(_plan_file(), onto_base=True)
+
+    assert _local_heads(repo) == before
+    # A rerun meets the same conflict, not a "diverged" refusal on pr-1.
+    with pytest.raises(PRSplitError, match=r"Rebasing 'pr-split/x/pr-2' onto"):
+        restack(_plan_file(), onto_base=True)
+
+
+def test_conflict_undoes_a_fast_forward_to_the_remote(repo: Path, tmp_path: Path) -> None:
+    other = tmp_path / "other"
+    _git(tmp_path, "clone", "-q", str(tmp_path / "origin.git"), str(other))
+    _git(other, "checkout", "-q", _branch("pr-1"))
+    _commit(other, "pr-2.txt", "clashes with pr-2\n", "fix from the web")
+    _git(other, "push", "-q", "origin", _branch("pr-1"))
+    before = _local_heads(repo)
+
+    with pytest.raises(PRSplitError, match="conflicts"):
+        restack(_plan_file())
+
+    assert _local_heads(repo) == before
+
+
+def test_failed_push_keeps_what_was_pushed_and_can_be_rerun(repo: Path) -> None:
+    from pr_split.git_ops import push_branch as real_push
+
+    _fix_layer(repo, "pr-1")
+    calls: list[str] = []
+
+    def flaky_push(branch: str) -> None:
+        calls.append(branch)
+        if len(calls) == 2:
+            raise PRSplitError("remote: fatal error in commit_refs")
+        real_push(branch)
+
+    with (
+        patch("pr_split.restack.push_branch", side_effect=flaky_push),
+        pytest.raises(PRSplitError, match="commit_refs"),
+    ):
+        restack(_plan_file())
+
+    # pr-1 reached the remote and stays there; pr-2 was put back.
+    assert _git(repo, "rev-parse", _branch("pr-1")) == _git(
+        repo, "rev-parse", f"origin/{_branch('pr-1')}"
+    )
+    assert not _contains(repo, _branch("pr-1"), _branch("pr-2"))
+
+    results = restack(_plan_file())
+
+    assert {r.group_id: r.action for r in results} == {"pr-2": "restacked", "pr-3": "restacked"}
+    assert _contains(repo, _branch("pr-1"), f"origin/{_branch('pr-3')}")
+
+
+def test_onto_base_follows_the_base_branchs_configured_remote(repo: Path) -> None:
+    origin_url = _git(repo, "remote", "get-url", "origin")
+    _git(repo, "remote", "add", "upstream", origin_url)
+    _git(repo, "config", "branch.main.remote", "upstream")
+    _git(repo, "config", "branch.main.merge", "refs/heads/main")
+    _advance_main(repo, "release.txt", "0.2.0\n")
+
+    results = restack(_plan_file(), onto_base=True, dry_run=True)
+
+    assert results[0].action == "would restack onto upstream/main"
+    restack(_plan_file(), onto_base=True)
+    assert _contains(repo, "upstream/main", _branch("pr-1"))

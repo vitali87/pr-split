@@ -23,7 +23,7 @@ from .git_ops.branches import commit_exists, run_git, run_git_in_dir
 from .graph import PlanDAG
 
 if TYPE_CHECKING:
-    from .schemas import PlanFile
+    from .schemas import BranchRecord, PlanFile
 
 REMOTE = "origin"
 
@@ -138,15 +138,48 @@ def stale_layers(plan_file: PlanFile) -> list[tuple[str, str, str]]:
     return stale
 
 
-def _stack_order(plan_file: PlanFile, *, onto_base: bool) -> list[tuple[str, str, str, str]]:
+def _base_tracking(base: str) -> tuple[str, str]:
+    """(remote, branch on that remote) the base branch tracks; origin/<base> by default.
+
+    split diffs against the same upstream (git_ops.diff_base_ref), so a base
+    tracked on, say, upstream/main must be restacked onto upstream/main too.
+    """
+    values: list[str] = []
+    for key in ("remote", "merge"):
+        try:
+            values.append(run_git("config", "--get", f"branch.{base}.{key}"))
+        except GitOperationError:
+            values.append("")
+    remote, merge = values
+    if not remote or remote == "." or not merge.startswith("refs/heads/"):
+        return REMOTE, base
+    return remote, merge.removeprefix("refs/heads/")
+
+
+def _restore(originals: dict[str, str | None]) -> None:
+    """Put every local stack branch back where this run found it."""
+    for branch, sha in originals.items():
+        ref = f"refs/heads/{branch}"
+        if _rev(ref) == sha:
+            continue
+        with contextlib.suppress(GitOperationError):
+            if sha is None:
+                run_git("update-ref", "-d", ref)
+            else:
+                run_git("update-ref", ref, sha)
+
+
+def _stack_order(
+    plan_file: PlanFile, *, base_remote: str | None
+) -> list[tuple[str, str, str, str]]:
     """(group id, branch, parent name, parent ref) in plan order.
 
-    Single-parent layers stack on their parent's branch. With ``onto_base``,
-    the layers that target the base branch (roots, and merge nodes that are
-    rebuilt from it) are included too, with the base's remote copy as parent.
+    Single-parent layers stack on their parent's branch. With ``base_remote``
+    ((remote, branch) of the base), the layers that target the base branch
+    (roots, and merge nodes that are rebuilt from it) are included too, with
+    the base's remote-tracking ref as parent.
     """
     branches = {r.group_id: r.branch_name for r in plan_file.git_state.branches}
-    base = plan_file.plan.base_branch
     dag = PlanDAG(plan_file.plan.groups)
     order: list[tuple[str, str, str, str]] = []
     for gid in dag.topological_order():
@@ -156,8 +189,11 @@ def _stack_order(plan_file: PlanFile, *, onto_base: bool) -> list[tuple[str, str
         if len(parents) == 1 and parents[0] in branches:
             parent = branches[parents[0]]
             order.append((gid, branches[gid], parent, f"refs/heads/{parent}"))
-        elif onto_base and len(parents) != 1:
-            order.append((gid, branches[gid], f"{REMOTE}/{base}", _remote_ref(base)))
+        elif base_remote is not None and len(parents) != 1:
+            remote, branch = base_remote
+            order.append(
+                (gid, branches[gid], f"{remote}/{branch}", f"refs/remotes/{remote}/{branch}")
+            )
     return order
 
 
@@ -172,15 +208,43 @@ def restack(
     order = {g: i for i, g in enumerate(PlanDAG(plan_file.plan.groups).topological_order())}
     records = sorted(plan_file.git_state.branches, key=lambda r: order.get(r.group_id, 0))
     all_branches = [r.branch_name for r in records]
-    layers = _stack_order(plan_file, onto_base=onto_base)
+    base_remote = _base_tracking(plan_file.plan.base_branch) if onto_base else None
+    layers = _stack_order(plan_file, base_remote=base_remote)
 
     _fetch(all_branches)
-    if onto_base:
-        base = plan_file.plan.base_branch
+    if base_remote is not None:
+        remote, branch = base_remote
         try:
-            run_git("fetch", "--quiet", REMOTE, f"+refs/heads/{base}:{_remote_ref(base)}")
+            run_git(
+                "fetch", "--quiet", remote, f"+refs/heads/{branch}:refs/remotes/{remote}/{branch}"
+            )
         except GitOperationError as exc:
-            raise PRSplitError(ErrorMsg.RESTACK_BASE_FETCH_FAILED(base=base, detail=exc)) from exc
+            raise PRSplitError(
+                ErrorMsg.RESTACK_BASE_FETCH_FAILED(base=f"{remote}/{branch}", detail=exc)
+            ) from exc
+    if dry_run:
+        return _restack_layers(records, layers, dry_run=True, pushed=set())
+    # A run that stops part way (a conflict, a failed push) must leave no
+    # local branch moved: a lower layer rebased but never pushed would read
+    # as diverged from its remote on the next run.
+    # A branch already pushed stays as pushed, so the remote and local agree.
+    originals = {branch: _rev(f"refs/heads/{branch}") for branch in all_branches}
+    pushed: set[str] = set()
+    try:
+        return _restack_layers(records, layers, dry_run=False, pushed=pushed)
+    except (PRSplitError, GitOperationError):
+        _restore({b: sha for b, sha in originals.items() if b not in pushed})
+        raise
+
+
+def _restack_layers(
+    records: list[BranchRecord],
+    layers: list[tuple[str, str, str, str]],
+    *,
+    dry_run: bool,
+    pushed: set[str],
+) -> list[LayerResult]:
+    all_branches = [r.branch_name for r in records]
     if not dry_run:
         busy = _checked_out_branches() & {branch for _, branch, _, _ in layers}
         if busy:
@@ -222,6 +286,7 @@ def restack(
             if local is None or local == remote:
                 continue
             push_branch(branch)
+            pushed.add(branch)
             result = results.get(record.group_id)
             if result is None or result.action == "up to date":
                 results[record.group_id] = LayerResult(record.group_id, branch, "pushed")

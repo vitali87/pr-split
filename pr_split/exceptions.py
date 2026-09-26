@@ -67,7 +67,7 @@ class ErrorMsg(StrEnum):
     )
     RESTACK_BASE_FETCH_FAILED = "Cannot fetch base branch '{base}' to restack onto it ({detail})"
     RESTACK_CONFLICT = (
-        "Rebasing '{branch}' onto '{parent}' conflicts; nothing above it was changed."
+        "Rebasing '{branch}' onto '{parent}' conflicts; every local branch was left as it was."
         " Rebase it by hand, push it, then run 'pr-split restack' again ({detail})"
     )
     PER_GROUP_STEP_FAILED = "Per-group step failed for group '{group}' (exit {code}): {output}"
