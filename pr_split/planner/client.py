@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import subprocess
 from typing import TypedDict
 from urllib.parse import urlsplit
 
@@ -138,9 +139,10 @@ def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
             return _count_tokens_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _count_tokens_openai([system, user], model=settings.model)
-        case Provider.LOCAL:
-            # Local servers have no count endpoint and tokenizers differ per
-            # model; this estimate only decides whether to chunk.
+        case Provider.CLAUDE_CLI | Provider.LOCAL:
+            # Neither the CLI nor a local server has a count endpoint, and
+            # tokenizers differ per model; this estimate only decides whether
+            # to chunk.
             return _count_tokens_openai([system, user], model="")
 
 
@@ -208,6 +210,62 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
                 ) from exc
             return RawToolOutput(groups=_extract_raw_output(parsed))
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no function_call in response output"))
+
+
+_CLAUDE_CLI_TIMEOUT_SECONDS = 1800
+
+
+def _call_claude_cli(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    """Plan through `claude -p`, which uses the CLI's login instead of an API key.
+
+    The schema-validated result comes back under ``structured_output``; the
+    diff goes in on stdin because it can exceed the argument-length limit.
+    """
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(SPLIT_TOOL_SCHEMA),
+        "--system-prompt",
+        system,
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--allowedTools",
+        "",
+    ]
+    if settings.model:
+        cmd += ["--model", settings.model]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=user,
+            capture_output=True,
+            text=True,
+            timeout=_CLAUDE_CLI_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise LLMError(ErrorMsg.CLAUDE_CLI_NOT_FOUND()) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p timed out after {exc.timeout}s")
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[:500]
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p failed: {detail}"))
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p output: {exc}")) from exc
+    structured = data.get("structured_output") if isinstance(data, dict) else None
+    if not isinstance(structured, dict):
+        detail = str(data.get("result", ""))[:300] if isinstance(data, dict) else ""
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p returned no structured output {detail}")
+        )
+    return RawToolOutput(groups=_extract_raw_output(structured))
 
 
 _LOCAL_TIMEOUT_SECONDS = 1800
@@ -318,6 +376,8 @@ def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
             return _call_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _call_openai(system, user, settings=settings)
+        case Provider.CLAUDE_CLI:
+            return _call_claude_cli(system, user, settings=settings)
         case Provider.LOCAL:
             return _call_local(system, user, settings=settings)
 

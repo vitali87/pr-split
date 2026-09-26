@@ -29,7 +29,7 @@ from pr_split.cli import (
 )
 from pr_split.constants import AssignmentType, Priority
 from pr_split.diff_ops.parser import parse_diff
-from pr_split.exceptions import GitOperationError, PRSplitError
+from pr_split.exceptions import GitOperationError, PRCreationError, PRSplitError
 from pr_split.graph import PlanDAG
 from pr_split.schemas import (
     BranchRecord,
@@ -708,13 +708,14 @@ class TestExecuteCommand:
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
-    def test_execute_already_has_git_state(self, mock_pe: MagicMock, mock_load: MagicMock) -> None:
+    def test_execute_already_has_prs(self, mock_pe: MagicMock, mock_load: MagicMock) -> None:
         mock_plan_file = MagicMock()
         mock_plan_file.git_state.branches = [MagicMock()]
-        mock_plan_file.git_state.prs = []
+        mock_plan_file.git_state.prs = [MagicMock()]
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+        assert "already has PRs" in result.output
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
@@ -969,6 +970,307 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestExecuteRetriesAfterFailedPush:
+    """Branches without PRs mean a failed push; execute must retry, not refuse.
+
+    Forcing 'clean' + re-plan would delete the plan and require paying for
+    LLM planning again after a transient network failure.
+    """
+
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_branches_without_prs_is_retried(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, SplitPlan
+
+        plan_file = PlanFile(
+            plan=SplitPlan(
+                dev_branch="feature-branch",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                merge_base_sha="0123456789abcdef",
+                raw_diff="some diff",
+                groups=[_group("pr-1", "feat: auth", files=["a.py"])],
+            ),
+            git_state=GitState(
+                branches=[
+                    BranchRecord(
+                        group_id="pr-1",
+                        branch_name="pr-split/feature-branch/pr-1",
+                        base_branch="main",
+                        commit_sha="abc123",
+                    )
+                ]
+            ),
+        )
+        mock_load.return_value = plan_file
+
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0
+        assert "Recreating them and retrying" in result.output.replace("\n", " ")
+        mock_create.assert_called_once()
+        mock_push.assert_called_once()
+        mock_save.assert_called_once()
+
+    @staticmethod
+    def _plan_with_stale_pr2() -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, SplitPlan
+
+        return PlanFile(
+            plan=SplitPlan(
+                dev_branch="feature-branch",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                merge_base_sha="0123456789abcdef",
+                raw_diff="some diff",
+                groups=[_group("pr-1", "feat: auth", files=["a.py"])],
+            ),
+            git_state=GitState(
+                branches=[
+                    BranchRecord(
+                        group_id="pr-1",
+                        branch_name="pr-split/feature-branch/pr-1",
+                        base_branch="main",
+                        commit_sha="abc123",
+                    ),
+                    # pr-2 was merged into pr-1 by an edit between the runs.
+                    BranchRecord(
+                        group_id="pr-2",
+                        branch_name="pr-split/feature-branch/pr-2",
+                        base_branch="main",
+                        commit_sha="def456",
+                    ),
+                ]
+            ),
+        )
+
+    @patch("pr_split.cli.run_git")
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_branches_dropped_from_an_edited_plan_are_deleted(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+        mock_delete: MagicMock,
+        mock_rg: MagicMock,
+    ) -> None:
+        """A retry must not orphan branches the edited plan no longer contains."""
+        mock_load.return_value = self._plan_with_stale_pr2()
+
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0
+        mock_delete.assert_called_once_with("pr-split/feature-branch/pr-2")
+        mock_rg.assert_any_call(
+            "ls-remote", "--exit-code", "origin", "refs/heads/pr-split/feature-branch/pr-2"
+        )
+        mock_rg.assert_any_call("push", "origin", "--delete", "pr-split/feature-branch/pr-2")
+
+    @patch("pr_split.cli.run_git")
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_remote_only_stale_branch_is_still_deleted_on_origin(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+        mock_delete: MagicMock,
+        mock_rg: MagicMock,
+    ) -> None:
+        """A stale branch pruned locally must still be removed from origin."""
+        mock_be.side_effect = lambda name: name != "pr-split/feature-branch/pr-2"
+        mock_load.return_value = self._plan_with_stale_pr2()
+
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0
+        mock_delete.assert_not_called()
+        mock_rg.assert_any_call("push", "origin", "--delete", "pr-split/feature-branch/pr-2")
+
+
+class TestPRCreationErrorIsACleanMessage:
+    """A failed push/PR creation must end with a red message, not a traceback."""
+
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs")
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_push_failure_exits_cleanly(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.schemas import GitState, PlanFile, SplitPlan
+
+        plan_file = PlanFile(
+            plan=SplitPlan(
+                dev_branch="feature-branch",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                merge_base_sha="0123456789abcdef",
+                raw_diff="some diff",
+                groups=[_group("pr-1", "feat: auth", files=["a.py"])],
+            ),
+            git_state=GitState(branches=[]),
+        )
+        mock_load.return_value = plan_file
+        # git stderr can contain rich-markup-like text; it must be escaped,
+        # not interpreted (a stray closing tag would raise MarkupError).
+        mock_push.side_effect = PRCreationError(
+            "2 PR(s) failed:\n- pr-1: fatal: remote said [/bold] nonsense", []
+        )
+
+        with patch("pr_split.cli.validate_coverage"):
+            result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "2 PR(s) failed" in result.output
+        assert "[/bold] nonsense" in result.output
+        assert "saved to the plan file" in result.output
+        mock_save.assert_called_once()
+
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs")
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._interactive_edit")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_split_push_failure_exits_cleanly(
+        self,
+        mock_plan_exists: MagicMock,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_interactive_edit: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 10,
+            "total_removed": 5,
+            "total_loc": 15,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        group = _group("pr-1", "feat: auth", files=["a.py"])
+        mock_plan_split.return_value = [group]
+        mock_interactive_edit.return_value = [group]
+        mock_push.side_effect = PRCreationError("1 PR(s) failed:\n- pr-1: boom", [])
+
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "1 PR(s) failed" in result.output
+        assert "saved to the plan file" in result.output
+        mock_save.assert_called_once()
 
 
 TWO_HUNK_DIFF = """\
