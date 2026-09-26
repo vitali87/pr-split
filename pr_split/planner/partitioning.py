@@ -370,7 +370,9 @@ def _group_units_cp_sat(
         raise PRSplitError(
             "CP-SAT partitioning requires the optional 'ortools' package; "
             "install it with "
-            "`uv tool install 'pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split'`"
+            "`uv tool install 'pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split'` "
+            "for uv, or "
+            "`pip install 'pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split'` for pip"
         ) from exc
 
     if not units:
