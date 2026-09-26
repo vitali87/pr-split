@@ -108,7 +108,7 @@ def _choose_plan(
     ] = None,
 ) -> None:
     # Plans are saved per dev branch; without --branch the only saved plan is used.
-    select_plan(derive_split_namespace(branch) if branch else None)
+    select_plan(branch)
 
 
 def _render_dag(groups: list[Group]) -> str:
@@ -1010,7 +1010,7 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
-    select_plan(derive_split_namespace(dev_branch_arg))
+    select_plan(dev_branch_arg)
 
     if not branch_exists(dev_branch):
         if not check_gh_auth():
@@ -1745,7 +1745,7 @@ def recover(
     force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
 ) -> None:
     # The recovered plan is this dev branch's; other branches' plans are left alone.
-    select_plan(derive_split_namespace(dev_branch))
+    select_plan(dev_branch)
     if plan_exists() and not force:
         console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
         raise typer.Exit(1)

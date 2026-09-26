@@ -1,6 +1,7 @@
 import json
 import os
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from loguru import logger
 from pydantic import ValidationError
@@ -8,7 +9,7 @@ from pydantic import ValidationError
 from . import logs
 from .constants import PLAN_DIR, PLAN_FILE
 from .exceptions import ErrorMsg, GitOperationError, PRSplitError
-from .git_ops.branches import derive_split_namespace, run_git
+from .git_ops.branches import run_git
 from .schemas import PlanFile
 
 
@@ -25,15 +26,21 @@ def repo_root() -> Path:
         return Path.cwd()
 
 
-# The plan the current command works on, keyed by dev-branch slug. Set by
-# `split` (its own branch) or the global --branch option; otherwise the only
+# The plan the current command works on, keyed by its plan file's stem. Set
+# by `split` (its own branch) or the global --branch option; otherwise the only
 # saved plan is used. None with several plans saved means "ambiguous".
 _selected: str | None = None
 
 
-def select_plan(branch_slug: str | None) -> None:
+def plan_key(dev_branch: str) -> str:
+    """The plan file stem for a dev branch: the name percent-encoded, so it is
+    reversible and `feature/x` and `feature-x` do not share a file."""
+    return quote(dev_branch, safe="")
+
+
+def select_plan(dev_branch: str | None) -> None:
     global _selected
-    _selected = branch_slug
+    _selected = plan_key(dev_branch) if dev_branch else None
 
 
 def plan_dir() -> Path:
@@ -44,47 +51,58 @@ def _plans_dir() -> Path:
     return plan_dir() / "plans"
 
 
-def saved_plan_slugs() -> list[str]:
+def _saved_plan_keys() -> list[str]:
     folder = _plans_dir()
     return sorted(p.stem for p in folder.glob("*.json")) if folder.is_dir() else []
 
 
-def _migrate_legacy_plan() -> None:
+def saved_plan_branches() -> list[str]:
+    """The dev branches that have a saved plan."""
+    return [unquote(key) for key in _saved_plan_keys()]
+
+
+def _migrate_legacy_plan() -> bool:
     """Move a pre-per-branch .pr-split/plan.json to plans/<its branch>.json.
 
     A plan that cannot be read stays where it is, so loading it still
-    reports the problem instead of silently ignoring it.
+    reports the problem instead of silently ignoring it. Returns True only
+    when such an unreadable legacy plan is left behind.
     """
     legacy = repo_root() / PLAN_FILE
     if not legacy.exists():
-        return
+        return False
     try:
         plan = json.loads(legacy.read_text()).get("plan", {})
         branch = plan.get("dev_branch_arg") or plan["dev_branch"]
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
-        return
-    target = _plans_dir() / f"{derive_split_namespace(str(branch))}.json"
+        return True
+    target = _plans_dir() / f"{plan_key(str(branch))}.json"
     if target.exists():
-        return
+        # That branch already has a per-branch plan; the legacy file is left
+        # alone and never used in its place.
+        return False
     target.parent.mkdir(parents=True, exist_ok=True)
+    _exclude_plan_dir()
     os.replace(legacy, target)
+    return False
 
 
 def plan_path() -> Path:
     """Where the selected plan lives: per branch, or the legacy single file."""
-    _migrate_legacy_plan()
+    legacy_unreadable = _migrate_legacy_plan()
     legacy = repo_root() / PLAN_FILE
     if _selected is not None:
         selected = _plans_dir() / f"{_selected}.json"
         # An unreadable legacy plan could not be migrated; keep using it so
-        # its error surfaces rather than being bypassed.
-        return legacy if not selected.exists() and legacy.exists() else selected
-    slugs = saved_plan_slugs()
-    if len(slugs) == 1:
-        return _plans_dir() / f"{slugs[0]}.json"
-    if len(slugs) > 1:
-        raise PRSplitError(ErrorMsg.PLAN_AMBIGUOUS(branches=", ".join(slugs)))
-    return repo_root() / PLAN_FILE
+        # its error surfaces rather than being bypassed. A readable one belongs
+        # to one branch and must not stand in for another's.
+        return legacy if legacy_unreadable and not selected.exists() else selected
+    keys = _saved_plan_keys()
+    if len(keys) == 1:
+        return _plans_dir() / f"{keys[0]}.json"
+    if len(keys) > 1:
+        raise PRSplitError(ErrorMsg.PLAN_AMBIGUOUS(branches=", ".join(saved_plan_branches())))
+    return legacy
 
 
 def _exclude_plan_dir() -> None:
@@ -98,7 +116,8 @@ def _exclude_plan_dir() -> None:
     except GitOperationError:
         return
     if not common.is_absolute():
-        common = repo_root() / common
+        # rev-parse prints a relative path relative to the cwd, not the top level.
+        common = (Path.cwd() / common).resolve()
     exclude = common / "info" / "exclude"
     entry = f"/{PLAN_DIR}/"
     try:
@@ -125,7 +144,7 @@ def save_plan(plan_file: PlanFile) -> None:
     if _selected is None:
         # No branch chosen for this command: file the plan under its own branch.
         branch = plan_file.plan.dev_branch_arg or plan_file.plan.dev_branch
-        target = _plans_dir() / f"{derive_split_namespace(branch)}.json"
+        target = _plans_dir() / f"{plan_key(branch)}.json"
     else:
         target = plan_path()
     target.parent.mkdir(parents=True, exist_ok=True)

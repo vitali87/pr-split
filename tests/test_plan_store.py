@@ -165,9 +165,12 @@ class TestPlanPathsResolveAgainstTheRepoRoot:
         repo = self._repo(tmp_path)
         monkeypatch.chdir(repo / "src")
         save_plan(_make_plan_file())
-        assert (repo / ".pr-split" / "plans" / "feat-big.json").exists()
+        assert (repo / ".pr-split" / "plans" / "feat%2Fbig.json").exists()
         assert not (repo / "src" / ".pr-split").exists()
-        assert plan_path() == (repo / ".pr-split" / "plans" / "feat-big.json").resolve()
+        assert plan_path() == (repo / ".pr-split" / "plans" / "feat%2Fbig.json").resolve()
+        # rev-parse gives the git dir relative to src/; the exclude must land in repo/.git.
+        exclude = (repo / ".git" / "info" / "exclude").read_text().splitlines()
+        assert "/.pr-split/" in exclude
 
         monkeypatch.chdir(repo)
         assert plan_exists()
@@ -243,14 +246,14 @@ class TestPerBranchPlans:
         select_plan(None)
 
     def test_two_splits_keep_separate_plans(self, tmp_path: Path) -> None:
-        from pr_split.plan_store import saved_plan_slugs, select_plan
+        from pr_split.plan_store import saved_plan_branches, select_plan
 
         select_plan("feat-a")
         save_plan(_make_plan_file())
         select_plan("feat-b")
         save_plan(_make_plan_file())
 
-        assert saved_plan_slugs() == ["feat-a", "feat-b"]
+        assert saved_plan_branches() == ["feat-a", "feat-b"]
         select_plan(None)
         with pytest.raises(
             PRSplitError, match=r"Several split plans are saved \(feat-a, feat-b\)"
@@ -305,16 +308,56 @@ class TestLegacyPlanMigration:
         select_plan(None)
 
     def test_legacy_plan_moves_to_its_branch_file(self, tmp_path: Path) -> None:
-        from pr_split.plan_store import saved_plan_slugs, select_plan
+        from pr_split.plan_store import saved_plan_branches, select_plan
 
         legacy = tmp_path / ".pr-split" / "plan.json"
         legacy.parent.mkdir()
         legacy.write_text(_make_plan_file().model_dump_json())
 
-        select_plan("feat-big")
+        select_plan("feat/big")
         assert load_plan().plan.dev_branch == "feat/big"
         assert not legacy.exists()
-        assert saved_plan_slugs() == ["feat-big"]
+        assert saved_plan_branches() == ["feat/big"]
+        # A plan moved without being saved is still kept out of git.
+        exclude = (tmp_path / ".git" / "info" / "exclude").read_text().splitlines()
+        assert "/.pr-split/" in exclude
+
+    def test_a_readable_legacy_plan_never_stands_in_for_another_branch(
+        self, tmp_path: Path
+    ) -> None:
+        from pr_split.plan_store import plan_path, select_plan
+
+        select_plan("feat/big")
+        save_plan(_make_plan_file())
+        # A legacy plan of the same branch cannot move: that branch has a file.
+        legacy = tmp_path / ".pr-split" / "plan.json"
+        legacy.write_text(_make_plan_file().model_dump_json())
+
+        select_plan("feat/other")
+        assert plan_path().name == "feat%2Fother.json"
+        assert not plan_exists()
+        assert legacy.exists()
+
+    def test_an_unreadable_legacy_plan_still_reports_its_error(self, tmp_path: Path) -> None:
+        from pr_split.plan_store import select_plan
+
+        legacy = tmp_path / ".pr-split" / "plan.json"
+        legacy.parent.mkdir()
+        legacy.write_text("{not json")
+
+        select_plan("feat/big")
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
+    def test_branch_names_that_differ_only_in_slashes_keep_separate_plans(self) -> None:
+        from pr_split.plan_store import saved_plan_branches, select_plan
+
+        select_plan("feature/x")
+        save_plan(_make_plan_file())
+        select_plan("feature-x")
+        save_plan(_make_plan_file())
+
+        assert sorted(saved_plan_branches()) == ["feature-x", "feature/x"]
 
 
 class TestPlanStoreSurrogates:

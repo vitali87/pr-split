@@ -89,7 +89,7 @@ pr-split split feature-branch --base main --dry-run
 | `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
 | `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
 | `--draft` | `false` | Open every sub-PR as a draft |
-| `--dry-run` | `false` | Preview plan and save to `.pr-split/plans/<dev-branch>.json` without creating branches or PRs |
+| `--dry-run` | `false` | Preview plan and save to `.pr-split/plans/<dev-branch>.json` (the branch name percent-encoded, so `feat/big` is `feat%2Fbig.json`) without creating branches or PRs |
 
 ### Stack dependent PRs
 
@@ -141,7 +141,7 @@ Each split's plan is saved per dev branch under `.pr-split/plans/`, so splitting
 pr-split --branch feat/big status
 ```
 
-`.pr-split/` is added to the repository's `.git/info/exclude`, so the plan (which holds the whole diff) never shows up in `git status` or gets committed. A plan saved by an older version at `.pr-split/plan.json` is moved to its branch's file the first time it is used.
+`.pr-split/` is added to the repository's `.git/info/exclude`, so a new plan (which holds the whole diff) stays out of `git status` and `git add -A`. The exclude does not apply to a plan file git already tracks; remove it from the index with `git rm --cached` once. A plan saved by an older version at `.pr-split/plan.json` is moved to its branch's file the first time it is used.
 
 ### Execute a saved dry-run plan
 
