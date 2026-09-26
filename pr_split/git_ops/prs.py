@@ -30,6 +30,20 @@ def check_gh_auth() -> bool:
     return True
 
 
+GH_STACK_EXTENSION = "github/gh-stack"
+
+
+def check_gh_stack() -> bool:
+    """Return whether the gh-stack extension is installed.
+
+    Raises GitOperationError if ``gh extension list`` itself fails, so an
+    operational problem (gh missing, auth rejected) is not mistaken for a
+    missing extension.
+    """
+    installed = _run_gh("extension", "list")
+    return any(GH_STACK_EXTENSION in line.split() for line in installed.splitlines())
+
+
 def create_pr(
     head: str, base: str, title: str, body: str, *, draft: bool = False
 ) -> tuple[int, str]:
@@ -66,6 +80,36 @@ def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
         return {}
 
 
+PR_LIST_LIMIT = 1000
+
+
+def list_prs_with_head_prefix(prefix: str) -> list[dict[str, object]]:
+    """Every PR, in any state, opened from this repository's branches under ``prefix``."""
+    raw = _run_gh(
+        "pr",
+        "list",
+        # Narrow on the server, so the limit applies to the stack's PRs only.
+        "--search",
+        f"head:{prefix}",
+        "--state",
+        "all",
+        "--limit",
+        str(PR_LIST_LIMIT),
+        "--json",
+        "number,url,state,headRefName,baseRefName,title,body,isCrossRepository",
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitOperationError(f"gh pr list returned invalid JSON: {exc}") from exc
+    # A fork's branch of the same name is not one of the stack's branches.
+    return [
+        pr
+        for pr in prs
+        if str(pr.get("headRefName", "")).startswith(prefix) and not pr.get("isCrossRepository")
+    ]
+
+
 def merge_pr(pr_number: int, *, auto: bool = False) -> None:
     args = ["pr", "merge", str(pr_number), "--merge", "--delete-branch"]
     if auto:
@@ -83,8 +127,7 @@ def link_stack(pr_numbers: list[int]) -> None:
     try:
         _run_gh("stack", "link", *[str(n) for n in pr_numbers])
     except GitOperationError as exc:
-        logger.warning(logs.STACK_LINK_FAILED.format(prs=pr_numbers, detail=exc))
-        return
+        raise GitOperationError(ErrorMsg.STACK_LINK_FAILED(prs=pr_numbers, detail=exc)) from exc
     logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
 
 
@@ -96,16 +139,24 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number)) from exc
 
-    pr_data: dict[str, object] = json.loads(raw)
-    head = pr_data["head"]
-    base = pr_data["base"]
+    try:
+        pr_data = json.loads(raw)
+        head = pr_data["head"]
+        base = pr_data["base"]
+    except (json.JSONDecodeError, KeyError, TypeError) as exc:
+        raise GitOperationError(
+            ErrorMsg.PR_RESPONSE_INVALID(number=pr_number, detail=str(exc))
+        ) from exc
 
     if not isinstance(head, dict) or not isinstance(base, dict):
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
 
     head_repo = head.get("repo")
-    if not isinstance(head_repo, dict) or not head_repo.get("fork"):
+    if not isinstance(head_repo, dict):
+        # head.repo is null when the fork was deleted
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
+    if not head_repo.get("fork"):
+        raise GitOperationError(ErrorMsg.PR_NOT_FROM_FORK(number=pr_number))
 
     clone_url = str(head_repo["clone_url"])
     head_ref = str(head["ref"])
