@@ -502,7 +502,17 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
     )
     if group.depends_on:
         dep_list = ", ".join(f"`{d}`" for d in group.depends_on)
-        sections.append(f"## Dependencies\n\nThis PR depends on: {dep_list}")
+        dependencies = f"## Dependencies\n\nThis PR depends on: {dep_list}"
+        if len(set(group.depends_on)) > 1:
+            # A merge node targets the base branch, so its diff also shows
+            # every ancestor's changes beyond the files listed above.
+            ancestors = sorted(PlanDAG(all_groups).ancestors(group.id))
+            carried = ", ".join(f"`{a}`" for a in ancestors)
+            dependencies += (
+                f"\n\nIt targets the base branch, so its diff also includes the changes of: "
+                f"{carried}."
+            )
+        sections.append(dependencies)
     sections.append(_render_dag_markdown(all_groups, group.id))
     return "\n\n".join(sections)
 
