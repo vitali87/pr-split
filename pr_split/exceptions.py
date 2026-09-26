@@ -89,6 +89,14 @@ class ErrorMsg(StrEnum):
     MOVE_HUNK_DOES_NOT_APPLY = (
         "The hunk no longer applies to '{branch}' ({detail}); nothing on that branch was changed"
     )
+    RECOVER_PLAN_EXISTS = "A split plan already exists at '{path}'; pass --force to replace it"
+    RECOVER_NOTHING_FOUND = (
+        "No branch or PR under '{prefix}' was found; pass the dev branch the stack was split from"
+    )
+    RECOVER_BASE_UNKNOWN = (
+        "Cannot tell which base branch the stack under '{prefix}' targets ({bases}); pass --base"
+    )
+    RECOVER_PR_LIST_FAILED = "Cannot list PRs to rebuild the plan ({detail})"
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"

@@ -80,6 +80,28 @@ def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
         return {}
 
 
+PR_LIST_LIMIT = 1000
+
+
+def list_prs_with_head_prefix(prefix: str) -> list[dict[str, object]]:
+    """Every PR, in any state, whose head branch starts with ``prefix``."""
+    raw = _run_gh(
+        "pr",
+        "list",
+        "--state",
+        "all",
+        "--limit",
+        str(PR_LIST_LIMIT),
+        "--json",
+        "number,url,state,headRefName,baseRefName,title,body",
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitOperationError(f"gh pr list returned invalid JSON: {exc}") from exc
+    return [pr for pr in prs if str(pr.get("headRefName", "")).startswith(prefix)]
+
+
 def merge_pr(pr_number: int, *, auto: bool = False) -> None:
     args = ["pr", "merge", str(pr_number), "--merge", "--delete-branch"]
     if auto:
