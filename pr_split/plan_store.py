@@ -131,8 +131,12 @@ def save_plan(plan_file: PlanFile) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     _exclude_plan_dir()
     tmp = target.with_name(target.name + ".tmp")
+    # The raw diff may carry surrogate-escaped bytes from non-UTF-8 files;
+    # json.dumps escapes those as \udcXX and loads them back losslessly,
+    # which pydantic's own JSON writer refuses to do.
+    payload = json.dumps(plan_file.model_dump(mode="json"), indent=2, ensure_ascii=True)
     try:
-        tmp.write_text(plan_file.model_dump_json(indent=2))
+        tmp.write_text(payload, encoding="utf-8")
         os.replace(tmp, target)
     finally:
         tmp.unlink(missing_ok=True)
@@ -144,8 +148,8 @@ def load_plan() -> PlanFile:
     if not target.exists():
         raise PRSplitError(ErrorMsg.NO_PLAN())
     try:
-        plan_file = PlanFile.model_validate_json(target.read_text())
-    except (OSError, UnicodeDecodeError, ValidationError) as exc:
+        plan_file = PlanFile.model_validate(json.loads(target.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
         raise PRSplitError(ErrorMsg.PLAN_LOAD_FAILED(path=target, detail=exc)) from exc
     logger.info(logs.PLAN_LOADED.format(count=len(plan_file.plan.groups), path=target))
     return plan_file

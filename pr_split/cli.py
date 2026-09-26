@@ -5,7 +5,7 @@ import shutil
 import tempfile
 import time
 import urllib.request
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock, Semaphore
@@ -28,7 +28,6 @@ from .constants import (
     DEFAULT_MAX_LOC,
     DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
-    DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
     AssignmentType,
     ChunkStrategy,
@@ -42,14 +41,22 @@ from .diff_ops import (
     merge_chain_assignments,
     parse_diff,
 )
-from .exceptions import ErrorMsg, PlanValidationError, PRCreationError, PRSplitError
+from .exceptions import (
+    ErrorMsg,
+    GitOperationError,
+    PlanValidationError,
+    PRCreationError,
+    PRSplitError,
+)
 from .git_ops import (
     add_worktree,
     branch_exists,
     check_gh_auth,
+    check_gh_stack,
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
+    diff_base_ref,
     fetch_fork_branch,
     fetch_fork_pr,
     is_worktree_clean,
@@ -57,11 +64,19 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import run_git
+from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import close_pr, create_pr, get_pr_state, link_stack, merge_pr
 from .graph import PlanDAG
+from .per_group import PerGroupStep, load_per_group_step, run_per_group_step
 from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan, select_plan
-from .planner import plan_split, validate_coverage, validate_plan
+from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
+from .planner.chunker import recompute_estimated_loc
+from .planner.new_file_pieces import link_new_file_pieces
+from .planner.partitioning import refresh_generated_description
+from .planner.validator import validate_new_file_pieces
+from .recover import recover_plan
+from .restack import restack as restack_layers
+from .restack import stale_layers
 from .schemas import (
     BranchRecord,
     GitState,
@@ -71,6 +86,7 @@ from .schemas import (
     PRRecord,
     SplitPlan,
 )
+from .stack_move import move_hunk as move_stack_hunk
 from .types_defs import ForkPRInfo
 
 app = typer.Typer(
@@ -138,19 +154,65 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
-def _validate_inputs(dev_branch: str, base: str, *, dry_run: bool = False) -> None:
+def _require_local_branch(base: str) -> None:
+    """Exit unless ``base`` names a local branch head.
+
+    A remote-tracking ref such as origin/main (or a tag or SHA) resolves
+    locally, so the split would run to completion -- branches created and
+    pushed -- and only fail when GitHub is asked to open PRs against a
+    branch it does not have.
+    """
+    if branch_exists(f"refs/heads/{base}"):
+        return
+    remote_prefix = "refs/remotes/" if base.startswith("refs/remotes/") else ""
+    stripped = base.removeprefix(remote_prefix)
+    suggestion = ""
+    if remote_prefix or "/" in stripped:
+        remote, _, name = stripped.partition("/")
+        if name and remote in _remote_names():
+            suggestion = f" (for example '{name}')"
+    console.print(
+        f"[red]{ErrorMsg.BASE_NOT_A_LOCAL_BRANCH(base=base, suggestion=suggestion)}[/red]"
+    )
+    raise typer.Exit(1)
+
+
+def _remote_names() -> set[str]:
+    try:
+        return set(run_git("remote").split())
+    except PRSplitError:
+        return set()
+
+
+def _require_gh_stack() -> None:
+    try:
+        installed = check_gh_stack()
+    except GitOperationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if not installed:
+        console.print(f"[red]{ErrorMsg.GH_STACK_MISSING()}[/red]")
+        raise typer.Exit(1)
+
+
+def _validate_inputs(
+    dev_branch: str, base: str, *, dry_run: bool = False, stacked: bool = False
+) -> None:
     if not branch_exists(dev_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
         raise typer.Exit(1)
     if not branch_exists(base):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=base)}[/red]")
         raise typer.Exit(1)
+    _require_local_branch(base)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if not dry_run and stacked:
+        _require_gh_stack()
 
 
 def _load_plan_or_exit() -> PlanFile:
@@ -201,6 +263,13 @@ _WORKTREE_MAX_WORKERS = 4
 _worktree_ref_lock = Lock()
 
 
+def _discard_worktree(worktree_path: str) -> None:
+    try:
+        remove_worktree(worktree_path)
+    except PRSplitError as exc:
+        logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+
+
 def _create_single_branch_and_commit(
     group: Group,
     parsed_diff: ParsedDiff,
@@ -211,6 +280,7 @@ def _create_single_branch_and_commit(
     *,
     author: str | None = None,
     start_point: str | None = None,
+    per_group: tuple[PerGroupStep, int] | None = None,
 ) -> BranchRecord:
     branch_name = f"{BRANCH_PREFIX}{namespace}/{group.id}"
     worktree_path = str(worktree_base / group.id)
@@ -224,7 +294,8 @@ def _create_single_branch_and_commit(
             p = Path(worktree_path) / file_path
             if content is not None:
                 p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content, encoding="utf-8")
+                # newline="" keeps CRLF from the reconstructed content intact.
+                p.write_text(content, encoding="utf-8", errors="surrogateescape", newline="")
             elif p.exists():
                 p.unlink()
 
@@ -235,11 +306,32 @@ def _create_single_branch_and_commit(
             group.title,
             author=author,
         )
-    finally:
+        if per_group is not None:
+            step, index = per_group
+            commit_sha = (
+                run_per_group_step(
+                    step,
+                    worktree_path,
+                    group,
+                    index=index,
+                    pr_base=base_branch,
+                    parent_ref=start_point or merge_base_ref,
+                    author=author,
+                )
+                or commit_sha
+            )
+    except Exception:
+        # add_worktree succeeded, so this run created branch_name (a
+        # pre-existing branch of that name was already replaced). Delete it
+        # here, where that is known for certain: if add_worktree itself had
+        # failed it restores the previous branch and never reaches this path.
+        _discard_worktree(worktree_path)
         try:
-            remove_worktree(worktree_path)
+            delete_branch(branch_name)
         except PRSplitError as exc:
-            logger.warning(f"Failed to remove worktree {worktree_path}: {exc}")
+            logger.warning(f"Could not clean up branch {branch_name}: {exc}")
+        raise
+    _discard_worktree(worktree_path)
 
     return BranchRecord(
         group_id=group.id,
@@ -257,14 +349,20 @@ def _stacked_batch_args(
     merge_base_ref: str,
     hunk_counts: dict[str, int],
 ) -> Generator[list[tuple[Group, str, str]], None, None]:
-    effective: dict[str, Group] = {}
     for batch in dag.iter_ready():
         batch_args: list[tuple[Group, str, str]] = []
         for gid in batch:
             group = groups_by_id[gid]
             parents = dag.parents(gid)
             if len(parents) == 1:
-                merged = merge_chain_assignments(group, [effective[parents[0]]], hunk_counts)
+                # Files are rebuilt from the merge base, so a child must carry
+                # every ancestor's hunks for the files it touches - not only
+                # its direct parent's - or it silently reverts them.
+                merged = merge_chain_assignments(
+                    group,
+                    [groups_by_id[a] for a in sorted(dag.ancestors(gid))],
+                    hunk_counts,
+                )
                 start_point = branch_names[parents[0]]
                 group_base = branch_names[parents[0]]
             elif len(parents) > 1:
@@ -283,7 +381,6 @@ def _stacked_batch_args(
                 merged = group
                 start_point = merge_base_ref
                 group_base = base_branch
-            effective[gid] = merged
             batch_args.append((merged, group_base, start_point))
         yield batch_args
 
@@ -299,6 +396,8 @@ def _create_branches_and_commits(
     stacked: bool = False,
 ) -> list[BranchRecord]:
     worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
+    step = load_per_group_step()
+    order = {gid: i for i, gid in enumerate(PlanDAG(groups).topological_order(), start=1)}
 
     if stacked:
         dag = PlanDAG(groups)
@@ -327,6 +426,7 @@ def _create_branches_and_commits(
                         worktree_base,
                         author=author,
                         start_point=start_point,
+                        per_group=(step, order[group.id]) if step else None,
                     ): group.id
                     for group, group_base, start_point in batch_args
                 }
@@ -341,6 +441,8 @@ def _create_branches_and_commits(
                 break
 
         if errors:
+            # Failed groups already removed their own branch inside the
+            # worker; only the successful ones remain to roll back.
             for record in results.values():
                 try:
                     delete_branch(record.branch_name)
@@ -584,6 +686,8 @@ def _move_assignment(
             )
         )
 
+    refresh_generated_description(src)
+    refresh_generated_description(dst)
     console.print(f"[green]Moved {file_path}:{hunk_index} from {from_id} to {to_id}[/green]")
     return True
 
@@ -608,6 +712,115 @@ def _show_group_detail(groups: list[Group], group_id: str) -> None:
             hunks_str = ", ".join(str(i) for i in a.hunk_indices)
         console.print(f"  {a.file_path} [{a.assignment_type}] hunks: [{hunks_str}]")
     console.print()
+
+
+def _held_hunks(
+    groups: list[Group], hunk_counts: dict[str, int]
+) -> dict[str, set[tuple[str, int]]]:
+    """Map each group id to the (file, hunk index) pairs its assignments cover."""
+    return {
+        g.id: {
+            (a.file_path, idx)
+            for a in g.assignments
+            for idx in a.covered_indices(hunk_counts.get(a.file_path, 0))
+        }
+        for g in groups
+    }
+
+
+def _drop_empty_groups(
+    groups: list[Group],
+    held_before: dict[str, set[tuple[str, int]]],
+    hunk_counts: dict[str, int],
+) -> list[Group]:
+    """Remove groups the user emptied in the editor and unlink them from the DAG.
+
+    Moving every hunk out of a group is a legitimate way to dissolve it;
+    aborting the session there would throw away all the other edits. A
+    dropped group's dependants inherit its own dependencies and every kept
+    group that now holds one of its former hunks (``held_before`` is the
+    coverage snapshot taken before editing), so a stacked dependant still
+    builds on the code it was planned against. A move that cannot keep that
+    guarantee (the hunk went to a group that itself builds on the dependant)
+    is refused, since the dependant's stacked branch would lose the hunk.
+    """
+    dropped = {g.id: list(g.depends_on) for g in groups if not g.assignments}
+    if not dropped:
+        return groups
+
+    held_now = _held_hunks(groups, hunk_counts)
+    recipients = {
+        gid: [
+            g.id
+            for g in groups
+            if g.id not in dropped and held_before.get(gid, set()) & held_now[g.id]
+        ]
+        for gid in dropped
+    }
+
+    def _surviving(dep: str, seen: set[str]) -> tuple[list[str], list[tuple[str, str]]]:
+        # Walk through chains of dropped groups to the nearest kept ancestors,
+        # collecting the kept groups that took over the dropped groups' hunks.
+        if dep not in dropped:
+            return [dep], []
+        ancestors: list[str] = []
+        taken_over = [(recipient, dep) for recipient in recipients[dep]]
+        for parent in dropped[dep]:
+            if parent not in seen:
+                seen.add(parent)
+                more_ancestors, more_taken = _surviving(parent, seen)
+                ancestors.extend(more_ancestors)
+                taken_over.extend(more_taken)
+        return ancestors, taken_over
+
+    # Inherited ancestors first: they are transitive ancestors in the original
+    # acyclic plan, so rewiring to them cannot create a cycle.
+    deps: dict[str, list[str]] = {}
+    wanted: dict[str, list[tuple[str, str]]] = {}
+    for group in groups:
+        if group.id in dropped:
+            continue
+        deps[group.id] = []
+        wanted[group.id] = []
+        for dep in group.depends_on:
+            ancestors, taken_over = _surviving(dep, set())
+            for candidate in ancestors:
+                if candidate not in deps[group.id] and candidate != group.id:
+                    deps[group.id].append(candidate)
+            wanted[group.id].extend(taken_over)
+
+    def _depends_on(start: str, target: str) -> bool:
+        stack, seen = [start], set()
+        while stack:
+            node = stack.pop()
+            if node == target:
+                return True
+            if node not in seen:
+                seen.add(node)
+                stack.extend(deps.get(node, []))
+        return False
+
+    # Then the groups that took over dropped hunks. One that already builds on
+    # the dependant cannot become its parent without a cycle, and leaving it out
+    # would build the dependant's branch without the moved hunk: refuse.
+    for gid, candidates in wanted.items():
+        for candidate, source in candidates:
+            # Already reachable through an inherited ancestor: a direct edge
+            # would only turn a linear stack into a multi-parent node.
+            if candidate == gid or _depends_on(gid, candidate):
+                continue
+            if _depends_on(candidate, gid):
+                console.print(
+                    f"[red]Cannot drop emptied group '{source}': its hunks moved to"
+                    f" '{candidate}', which builds on '{gid}', so '{gid}' would lose code"
+                    " it was planned on. Move them to a group it can depend on.[/red]"
+                )
+                raise typer.Exit(1)
+            deps[gid].append(candidate)
+
+    kept = [g.model_copy(update={"depends_on": deps[g.id]}) for g in groups if g.id not in dropped]
+    console.print(f"[yellow]Dropped empty group(s) after editing: {', '.join(dropped)}[/yellow]")
+    return kept
 
 
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
@@ -659,11 +872,43 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             if hunk_index < 0:
                 console.print("[red]Hunk index must be non-negative.[/red]")
                 continue
-            _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id)
+            if _move_assignment(groups, parsed_diff, file_path, hunk_index, from_id, to_id):
+                # Keep per-group LOC in step with the new assignments so the
+                # plan table, strict LOC bounds, plan.json and PR bodies are
+                # accurate.
+                recompute_estimated_loc(groups, parsed_diff)
         else:
             console.print(
                 "[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]"
             )
+
+
+def _split_settings(
+    partition_strategy: PartitionStrategy | None,
+    build: Callable[[PartitionStrategy], Settings],
+) -> Settings:
+    """Settings for split; with no strategy chosen, llm if usable, else graph.
+
+    A machine without an API key (and no keyless provider) can still split
+    with the graph backend, which needs no model at all. An explicit
+    --partition-strategy llm keeps failing loudly when its key is missing.
+    """
+    if partition_strategy is not None:
+        return build(partition_strategy)
+    try:
+        return build(PartitionStrategy.LLM)
+    except (ValidationError, ValueError) as llm_error:
+        try:
+            settings = build(PartitionStrategy.GRAPH)
+        except (ValidationError, ValueError):
+            raise llm_error from None
+        reason = (
+            llm_error.errors()[0]["msg"].removeprefix("Value error, ")
+            if isinstance(llm_error, ValidationError)
+            else str(llm_error)
+        )
+        logger.warning(logs.LLM_UNAVAILABLE_USING_GRAPH.format(reason=reason))
+        return settings
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
@@ -712,15 +957,35 @@ def split(
             help="Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled)",
         ),
     ] = DEFAULT_MAX_REFINEMENT_ITERATIONS,
-    priority: Annotated[Priority, typer.Option(help="Grouping priority")] = Priority.ORTHOGONAL,
+    priority: Annotated[
+        Priority,
+        typer.Option("--priority", envvar="PR_SPLIT_PRIORITY", help="Grouping priority"),
+    ] = Priority.ORTHOGONAL,
     chunk_strategy: Annotated[
-        ChunkStrategy, typer.Option(help="Chunking strategy for large diffs")
+        ChunkStrategy,
+        typer.Option(
+            "--chunk-strategy",
+            envvar="PR_SPLIT_CHUNK_STRATEGY",
+            help="Chunking strategy for large diffs",
+        ),
     ] = DEFAULT_CHUNK_STRATEGY,
     partition_strategy: Annotated[
-        PartitionStrategy, typer.Option(help="Backend for hunk-to-PR partitioning")
-    ] = DEFAULT_PARTITION_STRATEGY,
+        PartitionStrategy | None,
+        typer.Option(
+            "--partition-strategy",
+            envvar="PR_SPLIT_PARTITION_STRATEGY",
+            help="Backend for hunk-to-PR partitioning"
+            " [default: llm when its provider is configured, else graph]",
+            show_default=False,
+        ),
+    ] = None,
     cp_sat_timeout: Annotated[
-        float, typer.Option(help="Maximum seconds to spend in the CP-SAT solver")
+        float,
+        typer.Option(
+            "--cp-sat-timeout",
+            envvar="PR_SPLIT_CP_SAT_TIMEOUT",
+            help="Maximum seconds to spend in the CP-SAT solver",
+        ),
     ] = DEFAULT_CP_SAT_TIMEOUT_SECONDS,
     stack: Annotated[
         bool,
@@ -754,7 +1019,11 @@ def split(
         if not is_worktree_clean():
             console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
             raise typer.Exit(1)
-        fork_info = _resolve_fork_ref(dev_branch)
+        try:
+            fork_info = _resolve_fork_ref(dev_branch)
+        except PRSplitError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(1) from exc
         if not fork_info:
             console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
             raise typer.Exit(1)
@@ -762,7 +1031,7 @@ def split(
         base = fork_info["base_branch"]
         author = fork_info["author"]
 
-    _validate_inputs(dev_branch, base, dry_run=dry_run)
+    _validate_inputs(dev_branch, base, dry_run=dry_run, stacked=stack)
 
     if plan_exists():
         existing = _load_plan_or_exit()
@@ -783,8 +1052,12 @@ def split(
         else:
             logger.info("Overwriting existing dry-run plan")
 
-    raw_diff = extract_diff(dev_branch, base)
-    parsed_diff = parse_diff(raw_diff)
+    # The sub-PRs target the remote's base, which a local base may lag behind.
+    diff_base = diff_base_ref(base)
+    raw_diff = extract_diff(dev_branch, diff_base)
+    # Only a stacked child builds on the PR holding a file's earlier pieces.
+    split_new_files_over = max_loc if stack else None
+    parsed_diff = parse_diff(raw_diff, split_new_files_over=split_new_files_over)
     stats = parsed_diff.stats
     logger.info(
         logs.DIFF_STATS.format(
@@ -796,38 +1069,59 @@ def split(
     )
 
     try:
-        settings = Settings(
-            min_loc=min_loc,
-            max_loc=max_loc,
-            strict_loc_bounds=strict_loc_bounds,
-            max_refinement_iterations=max_refinement_iterations,
-            cp_sat_timeout=cp_sat_timeout,
-            priority=priority,
-            chunk_strategy=chunk_strategy,
-            partition_strategy=partition_strategy,
+        settings = _split_settings(
+            partition_strategy,
+            lambda strategy: Settings(
+                min_loc=min_loc,
+                max_loc=max_loc,
+                strict_loc_bounds=strict_loc_bounds,
+                max_refinement_iterations=max_refinement_iterations,
+                cp_sat_timeout=cp_sat_timeout,
+                priority=priority,
+                chunk_strategy=chunk_strategy,
+                partition_strategy=strategy,
+            ),
         )
     except (ValidationError, ValueError) as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    groups = plan_split(parsed_diff, settings)
+    try:
+        validate_no_binary_files(parsed_diff)
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    try:
+        groups = plan_split(parsed_diff, settings)
+        link_new_file_pieces(groups, parsed_diff)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     logger.info(logs.VALIDATING_PLAN)
-    dag = PlanDAG(groups)
-    warnings = validate_plan(groups, parsed_diff, dag, settings.max_loc, min_loc=settings.min_loc)
+    try:
+        dag = PlanDAG(groups)
+        warnings = validate_plan(
+            groups, parsed_diff, dag, settings.max_loc, min_loc=settings.min_loc
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
     logger.success(logs.VALIDATION_PASSED)
 
     logger.info(logs.PRESENTING_PLAN)
     _present_plan(groups)
 
+    hunk_counts = {pf.path: len(pf) for pf in parsed_diff.patch_set}
+    held_before = _held_hunks(groups, hunk_counts)
     groups = _interactive_edit(groups, parsed_diff)
 
     # Re-validate after user edits
-    empty_groups = [g for g in groups if not g.assignments]
-    if empty_groups:
-        empty_ids = [g.id for g in empty_groups]
-        console.print(f"[red]Groups {empty_ids} are empty after editing.[/red]")
+    groups = _drop_empty_groups(groups, held_before, hunk_counts)
+    if not groups:
+        console.print("[red]Every group is empty after editing; nothing to split.[/red]")
         raise typer.Exit(1)
+    link_new_file_pieces(groups, parsed_diff)
     try:
         dag = PlanDAG(groups)
         warnings = validate_plan(
@@ -843,7 +1137,7 @@ def split(
         console.print(f"[red]Edited plan is invalid: {exc}[/red]")
         raise typer.Exit(1) from exc
 
-    merge_base_ref = merge_base(base, dev_branch)
+    merge_base_ref = merge_base(diff_base, dev_branch)
 
     split_plan = SplitPlan(
         dev_branch=dev_branch,
@@ -852,6 +1146,7 @@ def split(
         max_loc=settings.max_loc,
         strict_loc_bounds=settings.strict_loc_bounds,
         stacked=stack,
+        split_new_files_over=split_new_files_over,
         draft=draft,
         priority=priority,
         groups=groups,
@@ -869,9 +1164,13 @@ def split(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(dev_branch_arg)
-    branch_records = _create_branches_and_commits(
-        groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            groups, parsed_diff, base, merge_base_ref, namespace, author=author, stacked=stack
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(groups, branch_records, draft=draft)
     except PRCreationError as exc:
@@ -882,15 +1181,14 @@ def split(
             )
         )
         raise
-    if stack:
-        _link_stacks(dag, pr_records)
-
     save_plan(
         PlanFile(
             plan=split_plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if stack:
+        _link_stacks(dag, pr_records)
     logger.success(f"Split complete: {len(groups)} PRs created")
 
 
@@ -927,6 +1225,7 @@ def status() -> None:
     table.add_column("State")
     table.add_column("Review")
 
+    unverified: list[int] = []
     for group in plan.groups:
         branch_name = branch_map.get(group.id, "")
         pr_record = pr_map.get(group.id)
@@ -934,22 +1233,46 @@ def status() -> None:
         pr_state = ""
         review = ""
         if pr_record:
-            live = live_states.get(pr_record.pr_number, {})
-            pr_state = live.get("state", pr_record.state.value).upper()
-            review = (live.get("reviewDecision") or "").replace("_", " ").title()
+            live = live_states.get(pr_record.pr_number) or {}
+            if live:
+                pr_state = str(live.get("state") or "").upper()
+                review = str(live.get("reviewDecision") or "").replace("_", " ").title()
+            else:
+                # The recorded state is never written back after merge/close,
+                # so showing it would claim OPEN for a PR that may be gone.
+                pr_state = "UNKNOWN"
+                unverified.append(pr_record.pr_number)
         table.add_row(group.id, group.title, branch_name, pr_info, pr_state, review)
 
     console.print(table)
+    for gid, branch, parent in stale_layers(plan_file):
+        behind = logs.LAYER_BEHIND_PARENT.format(group=gid, branch=branch, parent=parent)
+        console.print(f"[yellow]{behind}[/yellow]")
+    if unverified:
+        console.print(
+            f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
+            f"{', '.join(f'#{n}' for n in unverified)}. Check 'gh auth status'.[/yellow]"
+        )
 
 
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
+        # gh refuses to close a merged PR and silently succeeds on a closed
+        # one; neither needs a warning nor should count as newly closed, but
+        # both are "done" for the purpose of removing the plan.
+        state = str(get_pr_state(pr_record.pr_number).get("state") or "").upper()
+        if state in ("MERGED", "CLOSED"):
+            logger.info(
+                logs.PR_ALREADY_DONE.format(number=pr_record.pr_number, state=state.lower())
+            )
+            closed_prs += 1
+            continue
         try:
             close_pr(pr_record.pr_number)
             closed_prs += 1
-        except PRSplitError:
-            logger.warning(f"Could not close PR #{pr_record.pr_number}")
+        except PRSplitError as exc:
+            logger.warning(f"Could not close PR #{pr_record.pr_number}: {exc}")
 
     logger.info(logs.CLEANING_BRANCHES)
     deleted_branches = 0
@@ -960,8 +1283,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
         except PRSplitError:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
+    complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
     saved_plan = plan_path()
-    if saved_plan.exists():
+    if complete and saved_plan.exists():
         saved_plan.unlink()
 
     return closed_prs, deleted_branches
@@ -979,6 +1303,9 @@ def clean() -> None:
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
+    if closed_prs < len(git_state.prs) or deleted_branches < len(git_state.branches):
+        console.print(f"[yellow]{logs.CLEAN_INCOMPLETE}[/yellow]")
+        raise typer.Exit(1)
     logger.success(logs.CLEAN_COMPLETE.format(branches=deleted_branches, prs=closed_prs))
 
 
@@ -1031,21 +1358,38 @@ def execute(
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
         raise typer.Exit(1)
+    if not commit_exists(plan.merge_base_sha):
+        console.print(
+            f"[red]Plan's merge base {plan.merge_base_sha} is not in this repository "
+            "(plan copied from another checkout, or history rewritten). "
+            "Fetch it or re-run 'pr-split split --dry-run' to regenerate.[/red]"
+        )
+        raise typer.Exit(1)
 
     if not branch_exists(plan.base_branch):
         console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=plan.base_branch)}[/red]")
         raise typer.Exit(1)
+    # A plan saved by an older version may record a remote-tracking base.
+    _require_local_branch(plan.base_branch)
     if not is_worktree_clean():
         console.print(f"[red]{ErrorMsg.DIRTY_WORKTREE()}[/red]")
         raise typer.Exit(1)
     if not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if plan.stacked:
+        _require_gh_stack()
 
-    parsed_diff = parse_diff(plan.raw_diff)
+    parsed_diff = parse_diff(plan.raw_diff, split_new_files_over=plan.split_new_files_over)
 
     try:
+        validate_no_binary_files(parsed_diff)
+        # Building the DAG rejects unknown dependency ids; do it here so a
+        # malformed saved plan fails before any branch is created.
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
         validate_coverage(plan.groups, parsed_diff)
+        validate_new_file_pieces(plan.groups, parsed_diff, dag)
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1054,15 +1398,19 @@ def execute(
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
     namespace = derive_split_namespace(plan.dev_branch_arg or plan.dev_branch)
-    branch_records = _create_branches_and_commits(
-        plan.groups,
-        parsed_diff,
-        plan.base_branch,
-        plan.merge_base_sha,
-        namespace,
-        author=plan.author,
-        stacked=plan.stacked,
-    )
+    try:
+        branch_records = _create_branches_and_commits(
+            plan.groups,
+            parsed_diff,
+            plan.base_branch,
+            plan.merge_base_sha,
+            namespace,
+            author=plan.author,
+            stacked=plan.stacked,
+        )
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     try:
         pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
     except PRCreationError as exc:
@@ -1073,15 +1421,15 @@ def execute(
             )
         )
         raise
-    if plan.stacked:
-        _link_stacks(PlanDAG(plan.groups), pr_records)
-
     save_plan(
         PlanFile(
             plan=plan,
             git_state=GitState(branches=branch_records, prs=pr_records),
         )
     )
+    if plan.stacked:
+        _link_stacks(PlanDAG(plan.groups), pr_records)
+    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
@@ -1132,7 +1480,14 @@ def _send_webhook(url: str, payload: dict[str, object]) -> None:
 )
 def merge_all(
     auto: Annotated[
-        bool, typer.Option("--auto", help="Queue merges to run after CI checks pass")
+        bool,
+        typer.Option(
+            "--auto",
+            help=(
+                "Queue merges to run after CI checks pass, waiting up to 10 minutes per "
+                "batch for them to land before merging dependent PRs"
+            ),
+        ),
     ] = False,
     notify: Annotated[
         str | None,
@@ -1156,10 +1511,18 @@ def merge_all(
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
 
-    dag = PlanDAG(plan.groups)
+    # A hand-edited plan.json can carry unknown or cyclic dependencies;
+    # report that instead of a traceback from the DAG walk.
+    try:
+        dag = PlanDAG(plan.groups)
+        dag.validate_acyclic()
+    except PlanValidationError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     merged: list[str] = []
     skipped: list[str] = []
     skipped_ids: set[str] = set()
+    blocked: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -1186,6 +1549,18 @@ def merge_all(
             if state == "MERGED":
                 logger.info(f"PR #{pr_record.pr_number} ({group_id}) already merged")
                 merged.append(group_id)
+                continue
+
+            # Checked after the live state so a PR that already merged on GitHub
+            # (e.g. into a still-open parent branch) counts as merged rather
+            # than being reported as blocked.
+            unmerged_parents = [dep for dep in dag.parents(group_id) if dep not in merged]
+            if unmerged_parents:
+                deps = ", ".join(unmerged_parents)
+                logger.warning(f"{group_id} depends on unmerged {deps}, skipping")
+                skipped_ids.add(group_id)
+                blocked.append(group_id)
+                skipped.append(f"{group_id} (dependency {deps} not merged)")
                 continue
 
             if state != "OPEN":
@@ -1249,9 +1624,20 @@ def merge_all(
         console.print(f"[yellow]Skipped ({len(skipped)}): {', '.join(skipped)}[/yellow]")
     if failed:
         console.print(f"[red]Failed ({len(failed)}): {', '.join(failed)}[/red]")
+    if blocked:
+        console.print(
+            f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
+            f"{', '.join(blocked)}. Re-run once those PRs are merged.[/yellow]"
+        )
     if notify:
         exit_reason = (
-            "merge_error" if stopped else "incomplete_batch" if exited_early else "success"
+            "merge_error"
+            if stopped
+            else "incomplete_batch"
+            if exited_early
+            else "unmerged_dependency"
+            if blocked
+            else "success"
         )
         skipped_structured = [{"id": s.split(" (")[0], "reason": s} for s in skipped]
         _send_webhook(
@@ -1261,11 +1647,133 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early),
+                "success": not (failed or stopped or exited_early or blocked),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early:
+    if failed or stopped or exited_early or blocked:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
+
+
+@app.command(
+    help="Rebase every stacked layer onto its parent's current head and push it, so a fix on"
+    " a lower layer reaches the layers above it."
+)
+def restack(
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Report the layers that need restacking only")
+    ] = False,
+    onto_base: Annotated[
+        bool,
+        typer.Option(
+            "--onto-base",
+            help="Also rebase the layers that target the base branch onto its current head,"
+            " so the whole stack catches up after the base moves",
+        ),
+    ] = False,
+) -> None:
+    if not plan_exists():
+        console.print(f"[red]{ErrorMsg.NO_PLAN()}[/red]")
+        raise typer.Exit(1)
+    try:
+        results = restack_layers(_load_plan_or_exit(), dry_run=dry_run, onto_base=onto_base)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    table = Table(title="Restack")
+    table.add_column("ID")
+    table.add_column("Branch")
+    table.add_column("Result")
+    for result in results:
+        table.add_row(result.group_id, result.branch, result.action)
+    console.print(table)
+
+
+@app.command(
+    name="move",
+    help="Move one hunk from a layer of an executed stack up to a layer above it, keeping"
+    " every PR open. HUNK is <file>:<index>, as the plan editor's 'show' prints it.",
+)
+def move_hunk_command(
+    hunk: Annotated[str, typer.Argument(help="<file>:<hunk index>")],
+    source: Annotated[str, typer.Option("--from", help="Group id that holds the hunk now")],
+    target: Annotated[str, typer.Option("--to", help="Group id to move it to")],
+) -> None:
+    path, _, index_text = hunk.rpartition(":")
+    if not path or not index_text.isdigit():
+        console.print(f"[red]Expected <file>:<hunk index>, got '{hunk}'[/red]")
+        raise typer.Exit(1)
+    if not plan_exists():
+        console.print(f"[red]{ErrorMsg.NO_PLAN()}[/red]")
+        raise typer.Exit(1)
+    plan_file = _load_plan_or_exit()
+    try:
+        results = move_stack_hunk(plan_file, path, int(index_text), source, target)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    save_plan(plan_file)
+    table = Table(title=f"Moved {hunk} from {source} to {target}")
+    table.add_column("ID")
+    table.add_column("Branch")
+    table.add_column("Result")
+    for result in results:
+        table.add_row(result.group_id, result.branch, result.action)
+    console.print(table)
+
+
+@app.command(
+    help="Rebuild a lost plan from the branches and PRs of a stack that still exists, so"
+    " status, merge, restack and clean work again. DEV_BRANCH is the branch the stack was"
+    " split from."
+)
+def recover(
+    dev_branch: Annotated[str, typer.Argument(help="Branch (or PR) the stack was split from")],
+    base: Annotated[
+        str | None,
+        typer.Option("--base", help="Base branch of the stack; read from its PRs by default"),
+    ] = None,
+    stack: Annotated[
+        bool,
+        typer.Option(
+            "--stack",
+            help="Mark the plan stacked even when no PR targets another layer any more",
+        ),
+    ] = False,
+    force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
+) -> None:
+    # The recovered plan is this dev branch's; other branches' plans are left alone.
+    select_plan(derive_split_namespace(dev_branch))
+    if plan_exists() and not force:
+        console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
+        raise typer.Exit(1)
+    try:
+        plan_file = recover_plan(dev_branch, base=base, stacked=stack)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    save_plan(plan_file)
+    git_state = plan_file.git_state
+    table = Table(title=f"Recovered plan for {dev_branch} onto {plan_file.plan.base_branch}")
+    table.add_column("ID")
+    table.add_column("Depends on")
+    table.add_column("Branch")
+    table.add_column("PR")
+    prs = {r.group_id: r for r in git_state.prs}
+    branches = {r.group_id: r.branch_name for r in git_state.branches}
+    for group in plan_file.plan.groups:
+        pr = prs.get(group.id)
+        table.add_row(
+            group.id,
+            ", ".join(group.depends_on),
+            branches.get(group.id, ""),
+            f"#{pr.pr_number} ({pr.state})" if pr else "",
+        )
+    console.print(table)
+    logger.success(
+        logs.RECOVERED_PLAN.format(
+            branches=len(git_state.branches), prs=len(git_state.prs), path=plan_path()
+        )
+    )
