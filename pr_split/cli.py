@@ -1503,7 +1503,6 @@ def execute(
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
-    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
 _AUTO_MERGE_POLL_INTERVAL = 10
