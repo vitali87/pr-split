@@ -170,7 +170,7 @@ def _restore(originals: dict[str, str | None]) -> None:
 
 
 def _stack_order(
-    plan_file: PlanFile, *, base_remote: str | None
+    plan_file: PlanFile, *, base_remote: tuple[str, str] | None
 ) -> list[tuple[str, str, str, str]]:
     """(group id, branch, parent name, parent ref) in plan order.
 
