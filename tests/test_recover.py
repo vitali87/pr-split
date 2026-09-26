@@ -106,12 +106,19 @@ def test_nothing_found() -> None:
 
 
 @patch("pr_split.git_ops.prs._run_gh")
-def test_pr_listing_keeps_only_the_stack(mock_gh: MagicMock) -> None:
+def test_pr_listing_keeps_only_the_stack_in_this_repository(mock_gh: MagicMock) -> None:
     mock_gh.return_value = json.dumps(
-        [{"number": 1, "headRefName": P + "pr-1"}, {"number": 2, "headRefName": "fix/x"}]
+        [
+            {"number": 1, "headRefName": P + "pr-1", "isCrossRepository": False},
+            {"number": 2, "headRefName": "fix/x", "isCrossRepository": False},
+            {"number": 3, "headRefName": P + "pr-2", "isCrossRepository": True},
+        ]
     )
     assert [pr["number"] for pr in list_prs_with_head_prefix(P)] == [1]
-    assert "--state" in mock_gh.call_args.args and "all" in mock_gh.call_args.args
+    args = mock_gh.call_args.args
+    # The prefix narrows the search before the limit applies.
+    assert args[args.index("--search") + 1] == f"head:{P}"
+    assert args[args.index("--state") + 1] == "all"
 
 
 def _gh_prs(plan_file: PlanFile) -> list[dict[str, object]]:
