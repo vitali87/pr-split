@@ -232,7 +232,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, or `local` (any OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM Studio; no API key) |
+| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `claude-cli` (the local Claude Code CLI, `claude -p`, using its own login; no API key needed), or `local` (any OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM Studio; no API key) |
 | `ANTHROPIC_API_KEY` | (required for Anthropic) | Anthropic API key |
 | `OPENAI_API_KEY` | (required for OpenAI) | OpenAI API key |
 | `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider; required for `local`) |

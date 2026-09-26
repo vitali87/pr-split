@@ -36,6 +36,9 @@ class PRState(StrEnum):
 class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    # The locally installed Claude Code CLI (`claude -p`), which uses its own
+    # login instead of an API key.
+    CLAUDE_CLI = "claude-cli"
     # Any OpenAI-compatible chat-completions server on this machine or network
     # (Ollama, llama.cpp, vLLM, LM Studio); no API key and no cloud call.
     LOCAL = "local"
