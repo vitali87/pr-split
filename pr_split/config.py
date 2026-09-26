@@ -12,6 +12,10 @@ from .constants import (
     DEFAULT_MODEL,
     DEFAULT_PARTITION_STRATEGY,
     DEFAULT_STRICT_LOC_BOUNDS,
+    LOCAL_BASE_URL,
+    LOCAL_MAX_CONTEXT_TOKENS,
+    LOCAL_MAX_OUTPUT_TOKENS,
+    MAX_OUTPUT_TOKENS,
     OPENAI_MAX_CONTEXT_TOKENS,
     OPENAI_MODEL,
     ChunkStrategy,
@@ -34,6 +38,10 @@ class Settings(BaseSettings):
         validation_alias="OPENAI_API_KEY",
     )
     provider: Provider = Provider.ANTHROPIC
+    local_base_url: str = LOCAL_BASE_URL
+    local_api_key: str = ""
+    local_context_tokens: int = Field(default=LOCAL_MAX_CONTEXT_TOKENS, gt=0)
+    local_max_output_tokens: int = Field(default=LOCAL_MAX_OUTPUT_TOKENS, gt=0)
     model: str = ""
     min_loc: int | None = Field(default=DEFAULT_MIN_LOC, ge=1)
     max_loc: int = Field(default=DEFAULT_MAX_LOC, gt=0)
@@ -54,6 +62,8 @@ class Settings(BaseSettings):
                     self.model = OPENAI_MODEL
                 case Provider.CLAUDE_CLI:
                     pass  # the CLI's own configured default model
+                case Provider.LOCAL:
+                    pass  # no sensible default; checked when the llm backend runs
                 case _:
                     raise NotImplementedError(f"No default model for provider '{self.provider}'")
         return self
@@ -87,6 +97,16 @@ class Settings(BaseSettings):
                     raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
             case Provider.CLAUDE_CLI:
                 pass  # authenticated through the CLI's own login
+            case Provider.LOCAL:
+                if not self.model:
+                    raise ValueError(ErrorMsg.LOCAL_MODEL_REQUIRED())
+                if self.local_max_output_tokens >= self.local_context_tokens:
+                    raise ValueError(
+                        ErrorMsg.LOCAL_OUTPUT_EXCEEDS_CONTEXT(
+                            output=self.local_max_output_tokens,
+                            context=self.local_context_tokens,
+                        )
+                    )
             case _:
                 raise NotImplementedError(
                     f"API key check not implemented for provider '{self.provider}'"
@@ -102,6 +122,10 @@ class Settings(BaseSettings):
                 return self.openai_api_key
             case Provider.CLAUDE_CLI:
                 return ""
+            case Provider.LOCAL:
+                # The OpenAI client refuses an empty key; local servers ignore it
+                # unless they were started with one.
+                return self.local_api_key or "local"
             case _:
                 raise NotImplementedError(f"Provider '{self.provider}' is not supported")
 
@@ -112,5 +136,15 @@ class Settings(BaseSettings):
                 return ANTHROPIC_MAX_CONTEXT_TOKENS
             case Provider.OPENAI:
                 return OPENAI_MAX_CONTEXT_TOKENS
+            case Provider.LOCAL:
+                return self.local_context_tokens
             case _:
                 raise NotImplementedError(f"Provider '{self.provider}' is not supported")
+
+    @property
+    def max_output_tokens(self) -> int:
+        match self.provider:
+            case Provider.LOCAL:
+                return self.local_max_output_tokens
+            case _:
+                return MAX_OUTPUT_TOKENS
