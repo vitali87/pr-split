@@ -190,6 +190,14 @@ pr-split move docs/flags.md:1 --from pr-1 --to pr-3
 
 When review shows a change belongs in a higher layer, `move` takes it out of the source layer, carries that removal up through the layers in between, and applies it on the target layer, then restacks the layers above. Each step patches the layer's current content, so changes that arrived by other routes (a base merge, a review fix) are kept. Only changed branches are force-pushed, so every PR stays open with its threads, and the saved plan is updated. The hunk index is the one the plan editor's `show` prints.
 
+### Recover a lost plan
+
+```bash
+pr-split recover feat/x          # --base main if its PRs target more than one branch
+```
+
+The plan lives in `.pr-split/plan.json` of the checkout where `split` ran. If that checkout is gone (a removed worktree, a fresh clone), `recover` rebuilds the plan from the stack itself: it lists the PRs whose head branch is `pr-split/<dev branch>/…` and fetches those branches. Each layer depends on the layer its PR targets, or on the groups its PR body's "depends on" line names once a merged parent has been retargeted. `status`, `merge`, `restack` and `clean` then work as before. A recovered plan holds no diff, so `execute` and `move` cannot use it. `recover` refuses to replace an existing plan unless you pass `--force`.
+
 ### Per-PR release gates
 
 Some repositories require every PR to carry files unique to it, such as a version bump above its base and a release-notes file for that version. With `--stack` each layer's base is its parent's branch, so each layer needs its own. Configure a command in `.pr-split.toml` at the repository root:

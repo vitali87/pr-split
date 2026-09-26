@@ -76,6 +76,7 @@ from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
 from .planner.partitioning import refresh_generated_description
 from .planner.validator import validate_new_file_pieces
+from .recover import recover_plan
 from .restack import restack as restack_layers
 from .restack import stale_layers
 from .schemas import (
@@ -1707,3 +1708,56 @@ def move_hunk_command(
     for result in results:
         table.add_row(result.group_id, result.branch, result.action)
     console.print(table)
+
+
+@app.command(
+    help="Rebuild a lost plan from the branches and PRs of a stack that still exists, so"
+    " status, merge, restack and clean work again. DEV_BRANCH is the branch the stack was"
+    " split from."
+)
+def recover(
+    dev_branch: Annotated[str, typer.Argument(help="Branch (or PR) the stack was split from")],
+    base: Annotated[
+        str | None,
+        typer.Option("--base", help="Base branch of the stack; read from its PRs by default"),
+    ] = None,
+    stack: Annotated[
+        bool,
+        typer.Option(
+            "--stack",
+            help="Mark the plan stacked even when no PR targets another layer any more",
+        ),
+    ] = False,
+    force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
+) -> None:
+    if plan_exists() and not force:
+        console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=PLAN_FILE)}[/red]")
+        raise typer.Exit(1)
+    try:
+        plan_file = recover_plan(dev_branch, base=base, stacked=stack)
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    save_plan(plan_file)
+    git_state = plan_file.git_state
+    table = Table(title=f"Recovered plan for {dev_branch} onto {plan_file.plan.base_branch}")
+    table.add_column("ID")
+    table.add_column("Depends on")
+    table.add_column("Branch")
+    table.add_column("PR")
+    prs = {r.group_id: r for r in git_state.prs}
+    branches = {r.group_id: r.branch_name for r in git_state.branches}
+    for group in plan_file.plan.groups:
+        pr = prs.get(group.id)
+        table.add_row(
+            group.id,
+            ", ".join(group.depends_on),
+            branches.get(group.id, ""),
+            f"#{pr.pr_number} ({pr.state})" if pr else "",
+        )
+    console.print(table)
+    logger.success(
+        logs.RECOVERED_PLAN.format(
+            branches=len(git_state.branches), prs=len(git_state.prs), path=PLAN_FILE
+        )
+    )
