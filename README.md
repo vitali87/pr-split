@@ -58,7 +58,7 @@ pr-split split feature-branch --base main
 
 ### Split a PR by number
 
-Works for same-repo and fork PRs: the PR's head is fetched (from `origin`, or from the fork) and its base branch is used.
+Works for same-repo and fork PRs: the PR's head (`refs/pull/<N>/head`) is fetched from the repository `gh` resolves, through `origin` when that is the same repository, and its base branch is used.
 
 ```bash
 pr-split split '#42' --base main

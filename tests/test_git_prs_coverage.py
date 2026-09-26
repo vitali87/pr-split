@@ -166,35 +166,90 @@ class TestFetchForkBranch:
             fetch_fork_branch("user", "branch")
 
 
-class TestFetchSameRepoPr:
+def _pr_data(head_repo: str, base_repo: str, *, fork: bool) -> str:
+    def repo(full_name: str, *, is_fork: bool) -> dict[str, object]:
+        return {
+            "fork": is_fork,
+            "clone_url": f"https://github.com/{full_name}.git",
+            "full_name": full_name,
+        }
+
+    return json.dumps(
+        {
+            "head": {"ref": "feat/1806-constant-node", "repo": repo(head_repo, is_fork=fork)},
+            "base": {"ref": "main", "repo": repo(base_repo, is_fork=fork)},
+        }
+    )
+
+
+class TestFetchPrHead:
+    """A PR's head is fetched as refs/pull/N/head from the repository gh resolved."""
+
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/org/repo.git",
+            "git@github.com:Org/Repo.git",
+            "ssh://git@github.com/org/repo",
+        ],
+    )
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.prs._run_gh")
     def test_same_repo_pr_is_fetched_from_origin(
-        self, mock_gh: MagicMock, mock_git: MagicMock
+        self, mock_gh: MagicMock, mock_git: MagicMock, origin_url: str
     ) -> None:
-        pr_data = {
-            "head": {
-                "ref": "feat/1806-constant-node",
-                "repo": {
-                    "fork": False,
-                    "clone_url": "https://github.com/org/repo.git",
-                    "full_name": "org/repo",
-                },
-            },
-            "base": {"ref": "main"},
-        }
-        mock_gh.return_value = json.dumps(pr_data)
-        mock_git.side_effect = ["", "A <a@x>"]
+        mock_gh.return_value = _pr_data("org/repo", "org/repo", fork=False)
+        mock_git.side_effect = [origin_url, "", "A <a@x>"]
 
         info = fetch_fork_pr(1931)
 
-        assert mock_git.call_args_list[0].args == (
+        assert mock_git.call_args_list[1].args == (
             "fetch",
             "origin",
-            "+refs/heads/feat/1806-constant-node:refs/pr-split/pr-1931",
+            "+refs/pull/1931/head:refs/pr-split/pr-1931",
         )
         assert info["local_ref"] == "refs/pr-split/pr-1931"
         assert info["base_branch"] == "main"
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_internal_pr_of_a_forked_repo_uses_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        # The repository is itself a fork, so head.repo.fork is true for an internal PR.
+        mock_gh.return_value = _pr_data("me/repo", "me/repo", fork=True)
+        mock_git.side_effect = ["git@github.com:me/repo.git", "", "A <a@x>"]
+
+        fetch_fork_pr(7)
+
+        assert mock_git.call_args_list[1].args[1] == "origin"
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_pr_of_another_repo_is_not_fetched_from_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        # gh resolved upstream while origin is the user's fork: a same-named
+        # branch on origin must not stand in for the PR's head.
+        mock_gh.return_value = _pr_data("up/repo", "up/repo", fork=False)
+        mock_git.side_effect = ["git@github.com:me/repo.git", "", "A <a@x>"]
+
+        fetch_fork_pr(7)
+
+        assert mock_git.call_args_list[1].args == (
+            "fetch",
+            "https://github.com/up/repo.git",
+            "+refs/pull/7/head:refs/pr-split/pr-7",
+        )
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_fetch_failure_names_the_source(self, mock_gh: MagicMock, mock_git: MagicMock) -> None:
+        mock_gh.return_value = _pr_data("org/repo", "org/repo", fork=False)
+        mock_git.side_effect = ["https://github.com/org/repo", GitOperationError("no ref")]
+
+        with pytest.raises(GitOperationError, match="head of PR #7 from origin: no ref"):
+            fetch_fork_pr(7)
 
 
 class TestFetchForkPrMalformedResponse:
