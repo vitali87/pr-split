@@ -106,3 +106,72 @@ class TestPlanStoreJson:
         assert raw["plan"]["priority"] == "logical"
         assert raw["plan"]["min_loc"] == 25
         assert raw["plan"]["strict_loc_bounds"] is True
+
+
+class TestPlanStoreCorruptFiles:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("{not json", id="not-json"),
+            pytest.param('{"plan": {"dev_branch": "x"}}', id="missing-fields"),
+            pytest.param('{"plan": {"groups": []}, "git_state": {}}', id="old-schema"),
+        ],
+    )
+    def test_unreadable_plan_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".pr-split"
+        plan_dir.mkdir()
+        (plan_dir / "plan.json").write_text(content)
+        with pytest.raises(PRSplitError, match="Cannot load split plan") as excinfo:
+            load_plan()
+        assert "pr-split split" in str(excinfo.value)
+
+    def test_invalid_utf8_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").write_bytes(b'{"plan": "\xff\xfe"}')
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
+    def test_read_error_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").mkdir()
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
+
+class TestPlanStoreSurrogates:
+    def test_raw_diff_with_undecodable_bytes_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.plan_store import load_plan, save_plan
+        from pr_split.schemas import PlanFile, SplitPlan
+
+        monkeypatch.chdir(tmp_path)
+        raw = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9\n+caf\xe9!\n".decode(
+            "utf-8", errors="surrogateescape"
+        )
+        plan = SplitPlan(
+            dev_branch="dev",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            raw_diff=raw,
+        )
+        save_plan(PlanFile(plan=plan))
+
+        loaded = load_plan()
+
+        assert loaded.plan.raw_diff == raw
+        assert loaded.plan.raw_diff.encode("utf-8", errors="surrogateescape").endswith(
+            b"+caf\xe9!\n"
+        )
