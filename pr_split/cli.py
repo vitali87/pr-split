@@ -1384,9 +1384,8 @@ def execute(
         plan = plan.model_copy(update={"draft": True})
 
     existing_prs = {r.group_id: r for r in plan_file.git_state.prs}
-    kept_branches = {
-        r.group_id: r for r in plan_file.git_state.branches if r.group_id in existing_prs
-    }
+    recorded = {r.group_id: r for r in plan_file.git_state.branches}
+    kept_branches = {gid: recorded[gid] for gid in existing_prs if gid in recorded}
     group_ids = {g.id for g in plan.groups}
     if existing_prs and (
         set(existing_prs) >= group_ids
@@ -1460,6 +1459,15 @@ def execute(
     except PlanValidationError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+
+    if plan.stacked:
+        # A kept layer's branch sits on its ancestors' current commits; rebuilding
+        # an ancestor would rewrite the base under the kept layer's open PR, which
+        # would then show the ancestor's changes again. Their PRs are still opened.
+        for gid in list(kept_branches):
+            for ancestor in dag.ancestors(gid):
+                if ancestor in recorded:
+                    kept_branches.setdefault(ancestor, recorded[ancestor])
 
     _present_plan(plan.groups)
     typer.confirm("Proceed with creating branches and PRs?", abort=True)

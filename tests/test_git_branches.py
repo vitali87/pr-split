@@ -121,6 +121,56 @@ class TestPushBranchRetries:
         assert mock_git.call_count == 3
 
 
+class TestPushThatLandedDespiteAnError:
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_stale_lease_after_a_landed_push_is_success(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        def git(*args: str) -> str:
+            if args[0] == "push":
+                if git.pushes == 0:
+                    git.pushes += 1
+                    raise GitOperationError("fatal: the remote end hung up unexpectedly")
+                raise GitOperationError("! [rejected] pr-split/pr-5 (stale info)")
+            if args[0] == "ls-remote":
+                return "abc123\trefs/heads/pr-split/pr-5"
+            return "abc123"  # rev-parse
+
+        git.pushes = 0  # type: ignore[attr-defined]
+        mock_git.side_effect = git
+        push_branch("pr-split/pr-5")
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_stale_lease_is_still_an_error_when_the_remote_differs(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        def git(*args: str) -> str:
+            if args[0] == "push":
+                if git.pushes == 0:
+                    git.pushes += 1
+                    raise GitOperationError("fatal: the remote end hung up unexpectedly")
+                raise GitOperationError("! [rejected] pr-split/pr-5 (stale info)")
+            if args[0] == "ls-remote":
+                return "fff999\trefs/heads/pr-split/pr-5"
+            return "abc123"
+
+        git.pushes = 0  # type: ignore[attr-defined]
+        mock_git.side_effect = git
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/pr-5")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_a_first_attempt_rejection_does_not_consult_the_remote(
+        self, mock_git: MagicMock
+    ) -> None:
+        mock_git.side_effect = GitOperationError("! [rejected] (stale info)")
+        with pytest.raises(GitOperationError):
+            push_branch("pr-split/pr-5")
+        assert [c.args[0] for c in mock_git.call_args_list] == ["push"]
+
+
 class TestDeleteBranch:
     @patch("pr_split.git_ops.branches.run_git")
     def test_local_only(self, mock_git: MagicMock) -> None:
