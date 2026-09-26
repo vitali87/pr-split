@@ -1650,12 +1650,20 @@ def restack(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="Report the layers that need restacking only")
     ] = False,
+    onto_base: Annotated[
+        bool,
+        typer.Option(
+            "--onto-base",
+            help="Also rebase the layers that target the base branch onto its current head,"
+            " so the whole stack catches up after the base moves",
+        ),
+    ] = False,
 ) -> None:
     if not plan_exists():
         console.print(f"[red]{ErrorMsg.NO_PLAN()}[/red]")
         raise typer.Exit(1)
     try:
-        results = restack_layers(_load_plan_or_exit(), dry_run=dry_run)
+        results = restack_layers(_load_plan_or_exit(), dry_run=dry_run, onto_base=onto_base)
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
