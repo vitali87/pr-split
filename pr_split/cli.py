@@ -15,6 +15,7 @@ import typer
 from loguru import logger
 from pydantic import ValidationError
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.tree import Tree
@@ -1166,7 +1167,9 @@ def split(
                 git_state=GitState(branches=branch_records, prs=exc.pr_records),
             )
         )
-        raise
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print("[yellow]Created branches and PRs were saved to the plan file.[/yellow]")
+        raise typer.Exit(1) from exc
     save_plan(
         PlanFile(
             plan=split_plan,
@@ -1406,7 +1409,9 @@ def execute(
                 git_state=GitState(branches=branch_records, prs=exc.pr_records),
             )
         )
-        raise
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print("[yellow]Created branches and PRs were saved to the plan file.[/yellow]")
+        raise typer.Exit(1) from exc
     save_plan(
         PlanFile(
             plan=plan,
@@ -1415,7 +1420,6 @@ def execute(
     )
     if plan.stacked:
         _link_stacks(PlanDAG(plan.groups), pr_records)
-    logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
     logger.success(f"Execute complete: {len(plan.groups)} PRs created from saved plan")
 
 
