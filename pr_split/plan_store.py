@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from loguru import logger
@@ -34,7 +35,11 @@ def plan_path() -> Path:
 def save_plan(plan_file: PlanFile) -> None:
     plan_dir().mkdir(parents=True, exist_ok=True)
     target = plan_path()
-    target.write_text(plan_file.model_dump_json(indent=2))
+    # The raw diff may carry surrogate-escaped bytes from non-UTF-8 files;
+    # json.dumps escapes those as \udcXX and loads them back losslessly,
+    # which pydantic's own JSON writer refuses to do.
+    payload = json.dumps(plan_file.model_dump(mode="json"), indent=2, ensure_ascii=True)
+    target.write_text(payload, encoding="utf-8")
     logger.info(logs.SAVING_PLAN.format(path=target))
 
 
@@ -43,8 +48,8 @@ def load_plan() -> PlanFile:
     if not target.exists():
         raise PRSplitError(ErrorMsg.NO_PLAN())
     try:
-        plan_file = PlanFile.model_validate_json(target.read_text())
-    except (OSError, UnicodeDecodeError, ValidationError) as exc:
+        plan_file = PlanFile.model_validate(json.loads(target.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValidationError) as exc:
         raise PRSplitError(ErrorMsg.PLAN_LOAD_FAILED(path=target, detail=exc)) from exc
     logger.info(logs.PLAN_LOADED.format(count=len(plan_file.plan.groups), path=target))
     return plan_file

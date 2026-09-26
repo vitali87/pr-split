@@ -12,6 +12,18 @@ class GroupAssignment(BaseModel):
     assignment_type: AssignmentType
     hunk_indices: list[int] = Field(default_factory=list)
 
+    def covered_indices(self, hunk_count: int) -> list[int]:
+        """Hunk indices this assignment claims for a file with ``hunk_count`` hunks.
+
+        A WHOLE_FILE assignment covers every hunk of the parsed file, no more
+        and no less, whatever ``hunk_indices`` says (it may be empty, partial,
+        or carry a stale index that no longer exists); PARTIAL_HUNKS covers
+        exactly what it lists.
+        """
+        if self.assignment_type is AssignmentType.WHOLE_FILE:
+            return list(range(hunk_count))
+        return list(self.hunk_indices)
+
 
 class Group(BaseModel):
     id: str
@@ -42,6 +54,9 @@ class SplitPlan(BaseModel):
     max_loc: int
     strict_loc_bounds: bool = False
     stacked: bool = False
+    # --max-loc when the split cut oversized new files into pieces (stacked
+    # splits only); raw_diff must be re-parsed with it to match the hunk indices.
+    split_new_files_over: int | None = None
     draft: bool = False
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
