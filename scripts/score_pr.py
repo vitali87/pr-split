@@ -165,15 +165,18 @@ def main() -> None:
         )
         return
 
-    # Create local branch refs for pr-split
+    # Create local branch refs for pr-split. `split` needs the base as a local
+    # branch, but the head is passed as the fetched ref: materialising it as
+    # a branch named after head_branch is unsafe, since a fork PR opened from
+    # the fork's "main" has head_branch == base_branch and would clobber the
+    # base ref, leaving an empty diff.
     _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
-    _run(["git", "branch", "-f", head_branch, local_head])
 
     # Run pr-split in dry-run mode
     cmd = [
         "pr-split",
         "split",
-        head_branch,
+        local_head,
         "--base",
         base_branch,
         "--partition-strategy",
