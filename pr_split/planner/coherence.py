@@ -123,9 +123,15 @@ def _hunk_lines(parsed_diff: ParsedDiff, path: str) -> list[str]:
     return []
 
 
-def _module_files(module: str) -> tuple[str, str]:
+# Where absolute imports resolve from: the repository root, or a src/ layout.
+_SOURCE_ROOTS = ("", "src/")
+
+
+def _module_files(module: str) -> tuple[str, ...]:
     base = module.replace(".", "/")
-    return f"{base}.py", f"{base}/__init__.py"
+    return tuple(
+        f"{root}{base}{suffix}" for root in _SOURCE_ROOTS for suffix in (".py", "/__init__.py")
+    )
 
 
 def _resolve_relative(path: str, module: str) -> str:
@@ -829,6 +835,7 @@ def _peel_tests(groups: list[Group], keep_declared_deps: bool) -> list[Group]:
     """
     numbered = all(re.fullmatch(r"pr-\d+", g.id) for g in groups)
     next_number = max((int(g.id[3:]) for g in groups), default=0) + 1 if numbered else 0
+    taken = {g.id for g in groups}
     peeled: list[Group] = []
     for group in groups:
         tests = [a for a in group.assignments if is_test_path(a.file_path)]
@@ -841,6 +848,11 @@ def _peel_tests(groups: list[Group], keep_declared_deps: bool) -> list[Group]:
             next_number += 1
         else:
             test_id = f"{group.id}-tests"
+            suffix = 2
+            while test_id in taken:  # a planner may already use that id
+                test_id = f"{group.id}-tests-{suffix}"
+                suffix += 1
+        taken.add(test_id)
         test_group = group.model_copy(
             update={
                 "id": test_id,

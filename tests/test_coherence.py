@@ -86,6 +86,15 @@ class TestNeeds:
         needs = find_needs(groups, parse_diff(diff), _reader(head))
         assert [(n.user, n.provider) for n in needs] == [("pr-2", "pr-1")]
 
+    def test_imports_resolve_in_a_src_layout(self) -> None:
+        # No shared name: only resolving the import to src/ links the two.
+        diff = _new_file("src/pkg/engine.py", ["x = 1"]) + _new_file(
+            "tests/test_widgets.py", ["import pkg.engine"]
+        )
+        groups = [_group("pr-1", "src/pkg/engine.py"), _group("pr-2", "tests/test_widgets.py")]
+        needs = find_needs(groups, parse_diff(diff))
+        assert [(n.user, n.provider) for n in needs] == [("pr-2", "pr-1")]
+
     def test_tests_need_the_conftest_above_them(self) -> None:
         diff = _new_file("tests/conftest.py", ["import pytest"]) + _new_file(
             "tests/unit/test_a.py", ["def test_a():", "    pass"]
@@ -332,6 +341,21 @@ diff --git a/tests/test_engine.py b/tests/test_engine.py
         groups = [_group("pr-1", "pkg/a.py"), _group("pr-2", "pkg/b.py", deps=["pr-1"])]
         kept = make_groups_standalone(groups, parse_diff(diff))
         assert [g.depends_on for g in kept] == [[], ["pr-1"]]
+
+    def test_a_peeled_test_group_never_reuses_an_existing_id(self) -> None:
+        diff = (
+            _new_file("pkg/core.py", ["CORE_VALUE = 1"])
+            + _new_file("tests/test_core.py", ["from pkg.core import CORE_VALUE"])
+            + _new_file("docs/core.md", ["# Core"])
+        )
+        groups = [
+            _group("core", "pkg/core.py", "tests/test_core.py"),
+            _group("core-tests", "docs/core.md"),
+        ]
+        kept = make_groups_standalone(groups, parse_diff(diff), max_loc=1)
+        ids = [g.id for g in kept]
+        assert len(ids) == len(set(ids))
+        assert "core-tests-2" in ids
 
     def test_a_single_group_is_returned_as_is(self) -> None:
         diff = _new_file("pkg/a.py", ["A = 1"])
