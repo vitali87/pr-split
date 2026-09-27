@@ -69,6 +69,7 @@ class TestNonPullRequestEvents:
         monkeypatch.setenv("HEAD_BRANCH", "feature")
         monkeypatch.setenv("PR_NUMBER", "7")
         monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
         module = _load_script()
 
         with patch.object(module, "_run") as mock_run:

@@ -24,11 +24,26 @@ def _set_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
-def _skip(reason: str) -> None:
+def _skip(reason: str, *, within_limits: bool = False) -> None:
     print(reason)
     _set_output("total_groups", "1")
     _set_output("objective", "0")
     _set_output("should_split", "false")
+    if within_limits:
+        # Emit a comment body so an earlier "please split" comment on this
+        # PR is refreshed once it shrinks under the threshold (the action
+        # only updates an existing marker comment when should_split is
+        # false; it never creates one).
+        _write_comment(
+            [
+                "<!-- pr-split-score -->",
+                "## pr-split analysis",
+                "",
+                reason,
+                "",
+                "This PR is within acceptable size limits.",
+            ]
+        )
 
 
 def _write_comment(lines: list[str]) -> None:
@@ -144,7 +159,10 @@ def main() -> None:
     _set_output("total_loc", str(total_loc))
 
     if total_loc <= max_loc:
-        _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
+        _skip(
+            f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.",
+            within_limits=True,
+        )
         return
 
     # Create local branch refs for pr-split
