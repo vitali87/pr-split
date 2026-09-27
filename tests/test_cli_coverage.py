@@ -7,6 +7,7 @@ _show_group_detail, _move_assignment, and split command argument validation.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -344,7 +345,7 @@ class TestBuildPrBodyOsError:
 # _send_webhook
 # ---------------------------------------------------------------------------
 class TestSendWebhook:
-    @patch("pr_split.cli.urllib.request.urlopen")
+    @patch("pr_split.cli._webhook_opener.open")
     def test_successful_webhook(self, mock_urlopen: MagicMock) -> None:
         mock_resp = MagicMock()
         mock_resp.read.return_value = b""
@@ -355,7 +356,7 @@ class TestSendWebhook:
         _send_webhook("https://example.com/hook", {"event": "test"})
         mock_urlopen.assert_called_once()
 
-    @patch("pr_split.cli.urllib.request.urlopen", side_effect=Exception("timeout"))
+    @patch("pr_split.cli._webhook_opener.open", side_effect=Exception("timeout"))
     def test_failed_webhook_logs_warning(self, mock_urlopen: MagicMock) -> None:
         # Should not raise
         _send_webhook("https://example.com/hook", {"event": "test"})
@@ -2302,3 +2303,114 @@ class TestDryRunWithClosedStdin:
         assert result.exit_code == 0
         assert "accepting the plan as-is" in result.output.replace("\n", " ")
         mock_save_plan.assert_called_once()
+
+
+def _flat(output: str) -> str:
+    # Rich draws the error in a box that wraps text (and, on CI, colours it
+    # with ANSI codes); strip both and collapse whitespace so a phrase can be
+    # matched regardless of wrapping.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+
+
+class TestNotifyUrlValidation:
+    @pytest.mark.parametrize("bad", ["file:///tmp/wh.txt", "not-a-url", "ftp://x/y", "https://"])
+    def test_non_http_urls_are_rejected_before_anything_runs(self, bad: str) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge", "--notify", bad])
+        assert result.exit_code == 2
+        assert "must be an http(s) URL" in _flat(result.output)
+        mock_pe.assert_not_called()
+
+    def test_env_var_is_validated_too(self) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge"], env={"PR_SPLIT_WEBHOOK_URL": "file:///x"})
+        assert result.exit_code == 2
+        mock_pe.assert_not_called()
+
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_http_urls_pass(self, mock_pe: MagicMock) -> None:
+        result = runner.invoke(app, ["merge", "--notify", "https://hooks.example/abc"])
+        assert result.exit_code == 0
+        mock_pe.assert_called_once()
+
+
+class TestWebhookRedirects:
+    def _serve(self, handler_cls: type) -> tuple[object, int]:
+        import threading
+        from http.server import HTTPServer
+
+        server = HTTPServer(("127.0.0.1", 0), handler_cls)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def test_redirect_is_reported_instead_of_a_body_less_get(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        from pr_split.cli import _send_webhook
+
+        received: list[tuple[str, int]] = []
+
+        class Target(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                received.append(("GET", int(self.headers.get("Content-Length") or 0)))
+                self.send_response(200)
+                self.end_headers()
+
+            def do_POST(self) -> None:
+                received.append(("POST", int(self.headers.get("Content-Length") or 0)))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        target, target_port = self._serve(Target)
+
+        class Mover(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.send_response(301)
+                self.send_header("Location", f"http://127.0.0.1:{target_port}/hook")
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        mover, mover_port = self._serve(Mover)
+        try:
+            with patch("pr_split.cli.logger") as mock_logger:
+                _send_webhook(f"http://127.0.0.1:{mover_port}/old", {"event": "merge_complete"})
+        finally:
+            mover.shutdown()  # type: ignore[attr-defined]
+            target.shutdown()  # type: ignore[attr-defined]
+
+        assert received == []
+        warning = str(mock_logger.warning.call_args)
+        assert "redirected to" in warning and f"127.0.0.1:{target_port}/hook" in warning
+        mock_logger.info.assert_not_called()
+
+    def test_direct_post_still_delivers_the_payload(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        from pr_split.cli import _send_webhook
+
+        bodies: list[bytes] = []
+
+        class Sink(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        sink, port = self._serve(Sink)
+        try:
+            with patch("pr_split.cli.logger") as mock_logger:
+                _send_webhook(f"http://127.0.0.1:{port}/hook", {"event": "merge_complete"})
+        finally:
+            sink.shutdown()  # type: ignore[attr-defined]
+
+        assert bodies == [b'{"event": "merge_complete"}']
+        mock_logger.warning.assert_not_called()

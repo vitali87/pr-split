@@ -226,3 +226,30 @@ class TestCheckGhAuthHost:
         from pr_split.git_ops.prs import check_gh_auth
 
         assert check_gh_auth() is False
+
+
+class TestRetargetPr:
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_edits_the_base(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        assert retarget_pr(7, "main") is True
+        mock_gh.assert_called_once_with("pr", "edit", "7", "--base", "main")
+
+    @patch(
+        "pr_split.git_ops.prs._run_gh",
+        side_effect=GitOperationError(
+            "Cannot change the base branch because the pull request is part of a stack"
+        ),
+    )
+    def test_native_stack_refusal_is_tolerated(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        assert retarget_pr(7, "main") is False
+
+    @patch("pr_split.git_ops.prs._run_gh", side_effect=GitOperationError("rate limited"))
+    def test_other_failures_raise(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        with pytest.raises(GitOperationError, match="rate limited"):
+            retarget_pr(7, "main")

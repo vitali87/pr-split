@@ -5,6 +5,8 @@ import shutil
 import sys
 import tempfile
 import time
+import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -80,6 +82,7 @@ from .git_ops.prs import (
     get_pr_state,
     link_stack,
     merge_pr,
+    retarget_pr,
     set_pr_base,
     stack_numbers_for,
     unstack,
@@ -2095,7 +2098,12 @@ _AUTO_MERGE_POLL_INTERVAL = 10
 _AUTO_MERGE_POLL_TIMEOUT = 600
 
 
-def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[str]:
+def _poll_for_merged(
+    group_ids: list[str],
+    pr_map: dict[str, PRRecord],
+    fetch_errors: list[str] | None = None,
+    closed: list[str] | None = None,
+) -> set[str]:
     pending = set(group_ids)
     actually_merged: set[str] = set()
     deadline = time.monotonic() + _AUTO_MERGE_POLL_TIMEOUT
@@ -2114,6 +2122,10 @@ def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[s
                 logger.warning(
                     f"PR #{pr_record.pr_number} ({gid}) {reason} while polling, aborting wait"
                 )
+                if state == "" and fetch_errors is not None:
+                    fetch_errors.append(gid)
+                if state == "CLOSED" and closed is not None:
+                    closed.append(gid)
                 pending.discard(gid)
     if pending:
         remaining = ", ".join(pending)
@@ -2121,11 +2133,44 @@ def _poll_for_merged(group_ids: list[str], pr_map: dict[str, PRRecord]) -> set[s
     return actually_merged
 
 
+def _validate_webhook_url(value: str | None) -> str | None:
+    """Accept only http(s) webhook URLs.
+
+    urllib happily opens file:// (and reports "Webhook notification sent"),
+    and a bare hostname fails only after the merges with an obscure
+    "unknown url type" warning.
+    """
+    if value is None:
+        return None
+    parts = urllib.parse.urlsplit(value)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise typer.BadParameter(f"must be an http(s) URL, got '{value}'")
+    return value
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects.
+
+    urllib re-issues a redirected POST as a body-less GET, so a moved
+    webhook URL would receive an empty request while the tool reports the
+    notification as sent. Surface the redirect instead so the user can
+    update the URL.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirected to {newurl}; update the webhook URL", headers, fp
+        )
+
+
+_webhook_opener = urllib.request.build_opener(_NoRedirect)
+
+
 def _send_webhook(url: str, payload: dict[str, object]) -> None:
     try:
         data = json_mod.dumps(payload).encode("utf-8")
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with _webhook_opener.open(req, timeout=10) as resp:
             resp.read()
         logger.info(f"Webhook notification sent to {url}")
     except Exception as exc:
@@ -2151,8 +2196,9 @@ def merge_all(
         str | None,
         typer.Option(
             "--notify",
-            help="Webhook URL to POST merge results to",
+            help="Webhook URL (http/https) to POST merge results to",
             envvar="PR_SPLIT_WEBHOOK_URL",
+            callback=_validate_webhook_url,
         ),
     ] = None,
 ) -> None:
@@ -2164,6 +2210,10 @@ def merge_all(
     plan = plan_file.plan
     git_state = plan_file.git_state
     pr_map = {r.group_id: r for r in git_state.prs}
+    # Stacked children were opened against their parent's split branch.
+    stacked_children = {
+        r.group_id for r in git_state.branches if r.base_branch != plan.base_branch
+    }
 
     if not pr_map:
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
@@ -2187,6 +2237,8 @@ def merge_all(
     skipped: list[str] = []
     skipped_ids: set[str] = set()
     blocked: list[str] = []
+    fetch_errors: list[str] = []
+    closed_while_waiting: list[str] = []
     failed: list[str] = []
 
     stopped = False
@@ -2205,6 +2257,7 @@ def merge_all(
                     f"PR #{pr_record.pr_number} ({group_id}) state could not be fetched, skipping"
                 )
                 skipped_ids.add(group_id)
+                fetch_errors.append(group_id)
                 skipped.append(f"{group_id} (fetch error)")
                 continue
 
@@ -2251,6 +2304,13 @@ def merge_all(
                 continue
 
             try:
+                if group_id in stacked_children:
+                    # Its parent has merged by now (iter_ready + the guard
+                    # above), but the PR still targets the parent's branch.
+                    # Merging there -- which `--auto` does silently, since gh
+                    # skips deleting the head branch in auto mode -- would
+                    # never reach the base branch.
+                    retarget_pr(pr_record.pr_number, plan.base_branch)
                 merge_pr(pr_record.pr_number, auto=auto)
                 if not auto:
                     merged.append(group_id)
@@ -2264,8 +2324,21 @@ def merge_all(
             queued = [gid for gid in batch if gid not in merged and gid not in skipped_ids]
             if queued:
                 logger.info(f"Waiting for auto-merge to complete: {', '.join(queued)}")
-                actually_merged = _poll_for_merged(queued, pr_map)
+                poll_fetch_errors: list[str] = []
+                poll_closed: list[str] = []
+                actually_merged = _poll_for_merged(queued, pr_map, poll_fetch_errors, poll_closed)
                 merged.extend(actually_merged)
+                for gid in poll_fetch_errors:
+                    fetch_errors.append(gid)
+                    skipped_ids.add(gid)
+                    skipped.append(f"{gid} (fetch error)")
+                for gid in poll_closed:
+                    # Closed while we waited: name it like a closed PR found up
+                    # front, but keep it a failure -- we queued it for merging
+                    # and it never merged.
+                    closed_while_waiting.append(gid)
+                    skipped_ids.add(gid)
+                    skipped.append(f"{gid} (CLOSED)")
 
         if stopped or any(gid not in merged and gid not in skipped_ids for gid in batch):
             if not stopped:
@@ -2293,12 +2366,26 @@ def merge_all(
             f"[yellow]Blocked by unmerged dependencies ({len(blocked)}): "
             f"{escape(', '.join(blocked))}. Re-run once those PRs are merged.[/yellow]"
         )
+    if fetch_errors:
+        console.print(
+            f"[red]Could not fetch PR state for ({len(fetch_errors)}): "
+            f"{', '.join(fetch_errors)}. Check 'gh auth status' and re-run.[/red]"
+        )
+    if closed_while_waiting:
+        console.print(
+            f"[red]Closed before auto-merge completed ({len(closed_while_waiting)}): "
+            f"{', '.join(closed_while_waiting)}. Reopen or recreate them and re-run.[/red]"
+        )
     if notify:
         exit_reason = (
             "merge_error"
             if stopped
             else "incomplete_batch"
             if exited_early
+            else "fetch_error"
+            if fetch_errors
+            else "pr_closed"
+            if closed_while_waiting
             else "unmerged_dependency"
             if blocked
             else "success"
@@ -2311,12 +2398,19 @@ def merge_all(
                 "merged": merged,
                 "skipped": skipped_structured,
                 "failed": failed,
-                "success": not (failed or stopped or exited_early or blocked),
+                "success": not (
+                    failed
+                    or stopped
+                    or exited_early
+                    or blocked
+                    or fetch_errors
+                    or closed_while_waiting
+                ),
                 "exit_reason": exit_reason,
             },
         )
 
-    if failed or stopped or exited_early or blocked:
+    if failed or stopped or exited_early or blocked or fetch_errors or closed_while_waiting:
         raise typer.Exit(1)
     logger.success(f"Merge complete: {len(merged)} PRs merged")
 

@@ -101,7 +101,7 @@ pr-split split feature-branch --base main --dry-run
 pr-split split feature-branch --base main --stack
 ```
 
-A group with a single parent has its branch cut from the parent group's branch, carries the parent's hunks for shared files, and targets the parent's branch, with or without `--stack`. Its PR shows only its own diff, compiles standalone, and GitHub retargets it automatically as the parent merges. A group with several parents is cut from the merge base, carries every ancestor's changes, and targets the base branch, so its diff also includes those ancestors' changes (its PR description lists them). Groups with no dependencies are cut from the merge base and target the base branch. `--stack` additionally registers the chains as native GitHub stacks.
+A group with a single parent has its branch cut from the parent group's branch, carries the parent's hunks for shared files, and targets the parent's branch, with or without `--stack`. Its PR shows only its own diff and compiles standalone. When `pr-split merge` reaches such a child it retargets the PR at the base branch (`gh pr edit --base`) right before merging it, since GitHub only does that itself for native stacks or when the parent's head branch is deleted (which `gh pr merge --auto` skips). A group with several parents is cut from the merge base, carries every ancestor's changes, and targets the base branch, so its diff also includes those ancestors' changes (its PR description lists them). Groups with no dependencies are cut from the merge base and target the base branch. `--stack` additionally registers the chains as native GitHub stacks.
 
 A new file larger than `--max-loc` cannot fit in any one sub-PR. With `--stack` it is cut into pieces between top-level definitions: Python files at top-level statements, and other languages at unindented lines after a blank line, outside brackets, strings and comments. Each piece is appended by a PR stacked on the one holding the piece before it. Every layer holds a valid prefix of the file, and the top of the chain holds the whole file. Without `--stack` a new file is never cut.
 
@@ -121,7 +121,7 @@ Shows a table with each sub-PR's ID, title, branch, PR number, live state (OPEN/
 pr-split merge
 ```
 
-Walks the dependency DAG and merges each PR in topological order. Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed or any PR was left blocked, so re-run once the blocking PRs are ready.
+Walks the dependency DAG and merges each PR in topological order. Each child PR that targets its parent's branch is retargeted at the base branch right before it is merged (native-stack PRs are left to GitHub). Skips already-merged, closed, draft, review-required, or changes-requested PRs, and every PR whose dependency was not merged in this run (independent subtrees still proceed). Stops if a merge fails. Exits 1 whenever a merge failed, any PR was left blocked, or a PR's state could not be fetched from GitHub (check `gh auth status`), so re-run once the cause is resolved.
 
 Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 
@@ -129,9 +129,9 @@ Use `--auto` to queue merges behind CI checks (uses `gh pr merge --auto`):
 pr-split merge --auto
 ```
 
-`--auto` is not fire-and-forget: after queueing a batch, `merge` waits for every PR in it to reach `MERGED` before moving on to the dependent batch, polling GitHub every 10 seconds for up to 10 minutes per batch. If a PR is still unmerged when the timeout expires, or gets closed while waiting, the command stops before the dependent batch and exits 1 (webhook `exit_reason: incomplete_batch`); re-run `pr-split merge --auto` once CI has caught up to continue from where it left off.
+`--auto` is not fire-and-forget: after queueing a batch, `merge` waits for every PR in it to reach `MERGED` before moving on to the dependent batch, polling GitHub every 10 seconds for up to 10 minutes per batch. If a PR is still unmerged when the timeout expires, the command stops before the dependent batch and exits 1 (webhook `exit_reason: incomplete_batch`). A PR closed while waiting is listed as `<id> (CLOSED)` among the skipped PRs, its dependants are skipped as blocked, and the run exits 1 (webhook `exit_reason: pr_closed`). Either way, re-run `pr-split merge --auto` once CI has caught up to continue from where it left off.
 
-Use `--notify` to POST merge results to a webhook URL (e.g. Slack, Discord):
+Use `--notify` to POST merge results to an http(s) webhook URL (e.g. Slack, Discord); other schemes are rejected up front, and a delivery failure (timeout, non-2xx) is logged as a warning without changing the exit code:
 
 ```bash
 pr-split merge --notify https://hooks.slack.com/...

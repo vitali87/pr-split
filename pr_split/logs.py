@@ -167,3 +167,7 @@ PRUNE_FAILED = (
     "Could not prune origin's tracking refs before pushing ({error}); "
     "a reused branch name may be rejected as stale"
 )
+PR_RETARGETED = "Retargeted PR #{number} at {base} before merging"
+PR_RETARGET_NATIVE_STACK = (
+    "PR #{number} is in a native stack; GitHub retargets it when its parent merges"
+)

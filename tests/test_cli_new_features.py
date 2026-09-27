@@ -865,6 +865,260 @@ class TestMergeBlockedDependencies:
         assert result.exit_code == 0
 
 
+class TestMergeFetchErrors:
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unfetchable_pr_state_fails_the_run(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "ok", files=["a.py"]),
+            _group("pr-2", "unfetchable", files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = lambda n: (
+            {"state": "OPEN", "isDraft": False, "reviewDecision": None} if n == 1 else {}
+        )
+
+        result = runner.invoke(app, ["merge", "--notify", "https://example.invalid/hook"])
+
+        mock_merge.assert_called_once_with(1, auto=False)
+        assert result.exit_code == 1
+        assert "Could not fetch PR state" in result.output
+        assert "Merge complete" not in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["success"] is False
+        assert payload["exit_reason"] == "fetch_error"
+
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_fetch_error_on_parent_is_reported_as_root_cause(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "unfetchable", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = lambda n: (
+            {} if n == 1 else {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        )
+
+        result = runner.invoke(app, ["merge", "--notify", "https://example.invalid/hook"])
+
+        assert result.exit_code == 1
+        assert mock_webhook.call_args[0][1]["exit_reason"] == "fetch_error"
+
+    @patch("pr_split.cli.time.sleep")
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_fetch_error_while_polling_auto_merge_is_reported(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        groups = [_group("pr-1", "only", files=["a.py"])]
+        mock_load.return_value = _plan_with_prs(groups)
+        mock_state.side_effect = [{"state": "OPEN", "isDraft": False, "reviewDecision": None}, {}]
+
+        result = runner.invoke(
+            app, ["merge", "--auto", "--notify", "https://example.invalid/hook"]
+        )
+
+        assert result.exit_code == 1
+        assert "Could not fetch PR state" in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["exit_reason"] == "fetch_error"
+        assert [s["id"] for s in payload["skipped"]] == ["pr-1"]
+
+
+class TestMergeClosedWhilePolling:
+    @patch("pr_split.cli.time.sleep")
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_closed_during_auto_wait_is_listed_as_skipped(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        groups = [
+            _group("pr-1", "closed later", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        mock_load.return_value = _plan_with_prs(groups)
+        open_state = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        mock_state.side_effect = [open_state, {"state": "CLOSED"}, open_state]
+
+        result = runner.invoke(
+            app, ["merge", "--auto", "--notify", "https://example.invalid/hook"]
+        )
+
+        assert result.exit_code == 1
+        assert "pr-1 (CLOSED)" in result.output
+        assert "pr-2 (dependency pr-1 not merged)" in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert [s["id"] for s in payload["skipped"]] == ["pr-1", "pr-2"]
+        assert payload["exit_reason"] == "pr_closed"
+        assert payload["success"] is False
+
+    @patch("pr_split.cli.time.sleep")
+    @patch("pr_split.cli._send_webhook")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_closed_leaf_during_auto_wait_exits_nonzero(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_webhook: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        groups = [_group("pr-1", "closed later", files=["a.py"])]
+        mock_load.return_value = _plan_with_prs(groups)
+        open_state = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        mock_state.side_effect = [open_state, {"state": "CLOSED"}]
+
+        result = runner.invoke(
+            app, ["merge", "--auto", "--notify", "https://example.invalid/hook"]
+        )
+
+        assert result.exit_code == 1
+        assert "pr-1 (CLOSED)" in result.output
+        assert "Closed before auto-merge completed (1): pr-1" in result.output
+        assert "Merge complete" not in result.output
+        payload = mock_webhook.call_args[0][1]
+        assert payload["exit_reason"] == "pr_closed"
+        assert payload["success"] is False
+        assert payload["merged"] == []
+
+
+class TestStackedMergeRetargetsBase:
+    def _stacked_plan(self) -> MagicMock:
+        groups = [
+            _group("pr-1", "root", files=["a.py"]),
+            _group("pr-2", "child", depends_on=["pr-1"], files=["b.py"]),
+        ]
+        plan_file = _plan_with_prs(groups)
+        plan_file.plan.base_branch = "main"
+        plan_file.git_state.branches = [
+            BranchRecord(group_id="pr-1", branch_name="pr-split/ns/pr-1", base_branch="main"),
+            BranchRecord(
+                group_id="pr-2", branch_name="pr-split/ns/pr-2", base_branch="pr-split/ns/pr-1"
+            ),
+        ]
+        return plan_file
+
+    @patch("pr_split.cli.retarget_pr")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_child_is_retargeted_at_the_plan_base_before_merging(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_retarget: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._stacked_plan()
+        mock_state.return_value = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        calls: list[str] = []
+        mock_retarget.side_effect = lambda n, base: calls.append(f"retarget {n} -> {base}")
+        mock_merge.side_effect = lambda n, *, auto=False: calls.append(f"merge {n}")
+
+        result = runner.invoke(app, ["merge"])
+
+        assert result.exit_code == 0, result.output
+        assert calls == ["merge 1", "retarget 2 -> main", "merge 2"]
+
+    @patch("pr_split.cli.retarget_pr")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unstacked_prs_are_not_retargeted(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_retarget: MagicMock,
+    ) -> None:
+        plan_file = self._stacked_plan()
+        plan_file.git_state.branches[1] = BranchRecord(
+            group_id="pr-2", branch_name="pr-split/ns/pr-2", base_branch="main"
+        )
+        mock_load.return_value = plan_file
+        mock_state.return_value = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+
+        result = runner.invoke(app, ["merge"])
+
+        assert result.exit_code == 0, result.output
+        mock_retarget.assert_not_called()
+        assert mock_merge.call_count == 2
+
+    @patch("pr_split.cli.time.sleep")
+    @patch("pr_split.cli.retarget_pr")
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_auto_mode_retargets_before_queueing(
+        self,
+        mock_exists: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+        mock_retarget: MagicMock,
+        mock_sleep: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._stacked_plan()
+        open_state = {"state": "OPEN", "isDraft": False, "reviewDecision": None}
+        mock_state.side_effect = [open_state, {"state": "MERGED"}, open_state, {"state": "MERGED"}]
+        calls: list[str] = []
+        mock_retarget.side_effect = lambda n, base: calls.append(f"retarget {n}")
+        mock_merge.side_effect = lambda n, *, auto=False: calls.append(f"queue {n}")
+
+        result = runner.invoke(app, ["merge", "--auto"])
+
+        assert result.exit_code == 0, result.output
+        assert calls == ["queue 1", "retarget 2", "queue 2"]
+
+
 class TestMergeRejectsMalformedSavedPlan:
     def _plan_file(self, groups: list[Group]) -> PlanFile:
         from pr_split.constants import Priority
