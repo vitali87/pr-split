@@ -22,6 +22,11 @@ class PartitionStrategy(StrEnum):
     CP_SAT = "cp_sat"
 
 
+# Recorded as a plan's partition strategy when the diff fit within --max-loc
+# and was kept as one group without running any backend.
+NO_BACKEND_STRATEGY = "none"
+
+
 class LocViolationType(StrEnum):
     BELOW_MIN = "below_min"
     ABOVE_MAX = "above_max"
