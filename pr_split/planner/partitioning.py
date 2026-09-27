@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from dataclasses import dataclass
+from graphlib import CycleError, TopologicalSorter
 from itertools import pairwise
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
@@ -11,11 +13,16 @@ from loguru import logger
 from .. import logs
 from ..constants import AssignmentType, PartitionStrategy, Priority
 from ..exceptions import ErrorMsg, PRSplitError
+from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
+from .symbols import names_in, symbol_dependencies
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
     from ortools.sat.python.cp_model import IntVar
+    from unidiff import PatchedFile
 
     from ..config import Settings
     from ..diff_ops import ParsedDiff
@@ -26,6 +33,8 @@ _AFFINITY_SHARED_DIR_MULTIPLIER = 25
 _AFFINITY_SAME_SUFFIX = 10
 _AFFINITY_ORTHOGONAL_PENALTY = 20
 _AFFINITY_LOGICAL_SHARED_DIR_BONUS = 10
+# One unit uses a name the other defines: the strongest cross-file signal.
+_AFFINITY_SHARED_SYMBOL = 120
 _GRAPH_ORTHOGONAL_FILE_PENALTY = 25.0
 _CP_SAT_OVERFLOW_WEIGHT = 1_000
 _CP_SAT_UNDERFLOW_WEIGHT = 1_000
@@ -44,6 +53,26 @@ class PartitionUnit:
     hunk_indices: tuple[int, ...]
     loc: int
     position: int
+    # Names the unit's added lines define, and names they use; a unit that
+    # uses what another defines belongs with (or after) it.
+    defines: frozenset[str] = frozenset()
+    uses: frozenset[str] = frozenset()
+
+
+def _unit(patch_file: PatchedFile, indices: list[int], loc: int, position: int) -> PartitionUnit:
+    added = [
+        line.value.rstrip("\n") for idx in indices for line in patch_file[idx] if line.is_added
+    ]
+    defines, uses = names_in(added)
+    return PartitionUnit(
+        id=f"{patch_file.path}:{indices[0]}-{indices[-1]}",
+        file_path=patch_file.path,
+        hunk_indices=tuple(indices),
+        loc=loc,
+        position=position,
+        defines=defines,
+        uses=uses,
+    )
 
 
 def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[PartitionUnit]:
@@ -56,15 +85,7 @@ def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[Partiti
         for hunk_index, hunk in enumerate(patch_file):
             hunk_loc = hunk.added + hunk.removed
             if current_indices and current_loc + hunk_loc > max_loc:
-                units.append(
-                    PartitionUnit(
-                        id=f"{patch_file.path}:{current_indices[0]}-{current_indices[-1]}",
-                        file_path=patch_file.path,
-                        hunk_indices=tuple(current_indices),
-                        loc=current_loc,
-                        position=position,
-                    )
-                )
+                units.append(_unit(patch_file, current_indices, current_loc, position))
                 position += 1
                 current_indices = []
                 current_loc = 0
@@ -73,15 +94,7 @@ def build_partition_units(parsed_diff: ParsedDiff, max_loc: int) -> list[Partiti
             current_loc += hunk_loc
 
         if current_indices:
-            units.append(
-                PartitionUnit(
-                    id=f"{patch_file.path}:{current_indices[0]}-{current_indices[-1]}",
-                    file_path=patch_file.path,
-                    hunk_indices=tuple(current_indices),
-                    loc=current_loc,
-                    position=position,
-                )
-            )
+            units.append(_unit(patch_file, current_indices, current_loc, position))
             position += 1
 
     return units
@@ -120,6 +133,8 @@ def _affinity_score(unit_a: PartitionUnit, unit_b: PartitionUnit, priority: Prio
     if PurePosixPath(unit_a.file_path).suffix == PurePosixPath(unit_b.file_path).suffix:
         score += _AFFINITY_SAME_SUFFIX
     score += _test_pair_bonus(unit_a.file_path, unit_b.file_path)
+    if unit_a.defines & unit_b.uses or unit_b.defines & unit_a.uses:
+        score += _AFFINITY_SHARED_SYMBOL
 
     if priority == Priority.ORTHOGONAL:
         score = max(0, score - _AFFINITY_ORTHOGONAL_PENALTY)
@@ -129,11 +144,40 @@ def _affinity_score(unit_a: PartitionUnit, unit_b: PartitionUnit, priority: Prio
     return score
 
 
+def _merge_order_is_acyclic(grouped_units: Iterable[Sequence[PartitionUnit]]) -> bool:
+    """Check that the merge-order dependencies implied by ``grouped_units`` form a DAG.
+
+    Mirrors ``_derive_merge_order_dependencies``: within each file, groups are ordered by
+    their earliest unit and each group depends on the one before it.
+    """
+    file_occurrences: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for group_idx, group_units in enumerate(grouped_units):
+        first_positions: dict[str, int] = {}
+        for unit in group_units:
+            previous = first_positions.get(unit.file_path)
+            if previous is None or unit.position < previous:
+                first_positions[unit.file_path] = unit.position
+        for file_path, position in first_positions.items():
+            file_occurrences[file_path].append((position, group_idx))
+
+    sorter: TopologicalSorter[int] = TopologicalSorter()
+    for occurrences in file_occurrences.values():
+        ordered_group_indices = [group_idx for _, group_idx in sorted(occurrences)]
+        for parent_idx, child_idx in pairwise(ordered_group_indices):
+            sorter.add(child_idx, parent_idx)
+    try:
+        sorter.prepare()
+    except CycleError:
+        return False
+    return True
+
+
 def _group_units_graph(
     units: list[PartitionUnit], *, settings: Settings
 ) -> list[list[PartitionUnit]]:
     remaining = set(range(len(units)))
     grouped_units: list[list[PartitionUnit]] = []
+    grouped_files: set[str] = set()
 
     while remaining:
         seed = max(remaining, key=lambda idx: (units[idx].loc, -units[idx].position))
@@ -148,6 +192,10 @@ def _group_units_graph(
             for candidate in remaining:
                 candidate_unit = units[candidate]
                 if current_load and current_load + candidate_unit.loc > settings.max_loc:
+                    continue
+                if candidate_unit.file_path in grouped_files and not _merge_order_is_acyclic(
+                    [*grouped_units, [*(units[idx] for idx in current_group), candidate_unit]]
+                ):
                     continue
 
                 affinity = sum(
@@ -176,6 +224,7 @@ def _group_units_graph(
         grouped_units.append(
             sorted((units[idx] for idx in current_group), key=lambda unit: unit.position)
         )
+        grouped_files.update(units[idx].file_path for idx in current_group)
 
     return grouped_units
 
@@ -246,6 +295,8 @@ def _best_graph_merge_target(
         if merged_load > settings.max_loc:
             continue
         if not _shared_file_merge_is_contiguous(grouped_units, source_idx, target_idx):
+            continue
+        if not _merge_order_is_acyclic(_merge_group_units(grouped_units, source_idx, target_idx)):
             continue
 
         current_underflow = source_underflow + max(0, settings.min_loc - _group_load(target_group))
@@ -328,7 +379,11 @@ def _group_units_cp_sat(
         from ortools.sat.python import cp_model
     except ImportError as exc:
         raise PRSplitError(
-            "CP-SAT partitioning requires the optional 'ortools' package to be installed"
+            "CP-SAT partitioning requires the optional 'ortools' package; "
+            "install it with "
+            "`uv tool install 'pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split'` "
+            "for uv, or "
+            "`pip install 'pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split'` for pip"
         ) from exc
 
     if not units:
@@ -464,13 +519,40 @@ def _build_group_title(group_index: int, units: list[PartitionUnit]) -> str:
     if len(file_paths) == 1:
         stem = PurePosixPath(file_paths[0]).stem.replace("_", "-")
         return f"chore(split): review {stem}-{group_index}"
-    return f"chore(split): review-slice-{group_index}"
+    # Name a multi-file group after the directory its files share, or after
+    # its largest file, so every group title says what it covers.
+    parents = {PurePosixPath(path).parent for path in file_paths}
+    common = PurePosixPath(os.path.commonpath([str(p) for p in parents])) if parents else None
+    if common is not None and str(common) not in ("", "."):
+        return f"chore(split): review {common.name}-{group_index}"
+    largest = max(units, key=lambda unit: unit.loc).file_path
+    stem = PurePosixPath(largest).stem.replace("_", "-")
+    return f"chore(split): review {stem} and {len(file_paths) - 1} more-{group_index}"
+
+
+def _describe_files(backend: str, file_paths: Iterable[str]) -> str:
+    paths = sorted(set(file_paths))
+    return f"{backend} partition over {len(paths)} file(s): {', '.join(paths)}"
 
 
 def _build_group_description(backend: PartitionStrategy, units: list[PartitionUnit]) -> str:
-    file_paths = sorted({unit.file_path for unit in units})
-    files = ", ".join(file_paths)
-    return f"{backend.value} partition over {len(file_paths)} file(s): {files}"
+    return _describe_files(backend.value, (unit.file_path for unit in units))
+
+
+def refresh_generated_description(group: Group) -> None:
+    """Re-list a group's files in its description if the backend wrote it.
+
+    A graph or cp_sat description names the group's files, so it goes stale
+    when the editor moves a hunk; it would then become the PR body. A
+    description written by the LLM or by hand is left alone.
+    """
+    backend, _, rest = group.description.partition(" partition over ")
+    count, _, files = rest.partition(" file(s): ")
+    if backend not in (PartitionStrategy.GRAPH, PartitionStrategy.CP_SAT) or not count.isdigit():
+        return
+    if len(files.split(", ") if files else []) != int(count):
+        return
+    group.description = _describe_files(backend, (a.file_path for a in group.assignments))
 
 
 def _build_groups_from_units(
@@ -515,7 +597,44 @@ def _build_groups_from_units(
 
     recompute_estimated_loc(groups, parsed_diff)
     _derive_merge_order_dependencies(groups)
+    _add_symbol_dependencies(groups, parsed_diff)
     return groups
+
+
+def _add_symbol_dependencies(groups: list[Group], parsed_diff: ParsedDiff) -> None:
+    """Make a group depend on every group whose newly defined names it uses.
+
+    File order alone misses a new test file that imports a new module, so the
+    test's sub-PR would target the base and fail on import. An edge that
+    would close a cycle is skipped with a warning.
+    """
+    by_id = {g.id: g for g in groups}
+    for user, definers in sorted(symbol_dependencies(groups, parsed_diff).items()):
+        for definer, names in sorted(definers.items()):
+            group = by_id[user]
+            if definer in group.depends_on:
+                continue
+            group.depends_on.append(definer)
+            try:
+                PlanDAG(groups).validate_acyclic()
+            except PRSplitError:
+                group.depends_on.remove(definer)
+                logger.warning(
+                    logs.SYMBOL_EDGE_SKIPPED.format(
+                        user=user, definer=definer, names=", ".join(sorted(names)[:5])
+                    )
+                )
+    _reduce_transitive_dependencies(groups)
+
+
+def _reduce_transitive_dependencies(groups: list[Group]) -> None:
+    dep_map = {group.id: set(group.depends_on) for group in groups}
+    for group in groups:
+        reduced_deps = set(dep_map[group.id])
+        for dep in list(reduced_deps):
+            if _has_alternative_path(dep_map, group.id, dep):
+                reduced_deps.remove(dep)
+        group.depends_on = sorted(reduced_deps)
 
 
 def _has_alternative_path(dep_map: dict[str, set[str]], source: str, target: str) -> bool:
@@ -551,11 +670,8 @@ def _derive_merge_order_dependencies(groups: list[Group]) -> None:
             dep_map[child_id].add(parent_id)
 
     for group in groups:
-        reduced_deps = set(dep_map[group.id])
-        for dep in list(reduced_deps):
-            if _has_alternative_path(dep_map, group.id, dep):
-                reduced_deps.remove(dep)
-        group.depends_on = sorted(reduced_deps)
+        group.depends_on = sorted(dep_map[group.id])
+    _reduce_transitive_dependencies(groups)
 
 
 def partition_diff(parsed_diff: ParsedDiff, settings: Settings) -> list[Group]:
@@ -572,8 +688,10 @@ def partition_diff(parsed_diff: ParsedDiff, settings: Settings) -> list[Group]:
         case _:
             raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
 
-    return _build_groups_from_units(
+    groups = _build_groups_from_units(
         grouped_units,
         parsed_diff,
         backend=settings.partition_strategy,
     )
+    PlanDAG(groups).validate_acyclic()
+    return groups
