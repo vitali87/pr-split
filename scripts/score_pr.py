@@ -24,16 +24,6 @@ def _set_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
-COMMENT_MARKER = "<!-- pr-split-score -->"
-
-
-def _write_comment(body: str) -> None:
-    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
-    comment_path = Path(tmp_dir) / "pr-split-comment.md"
-    comment_path.write_text(body)
-    _set_output("comment_path", str(comment_path))
-
-
 def _skip(reason: str, *, within_limits: bool = False) -> None:
     print(reason)
     _set_output("total_groups", "1")
@@ -43,16 +33,71 @@ def _skip(reason: str, *, within_limits: bool = False) -> None:
         # Emit a comment body so an earlier "please split" comment on this
         # PR is refreshed once it shrinks under the threshold (the action
         # only updates an existing marker comment when should_split is
-        # false; it never creates one). Failure paths deliberately write no
-        # body so a transient error cannot overwrite a valid plan comment.
+        # false; it never creates one).
         _write_comment(
-            f"{COMMENT_MARKER}\n## pr-split analysis\n\n{reason}\n\n"
-            "This PR is within acceptable size limits."
+            [
+                "<!-- pr-split-score -->",
+                "## pr-split analysis",
+                "",
+                reason,
+                "",
+                "This PR is within acceptable size limits.",
+            ]
         )
+
+
+def _write_comment(lines: list[str]) -> None:
+    tmp_dir = os.environ.get("RUNNER_TEMP", tempfile.gettempdir())
+    comment_path = Path(tmp_dir) / "pr-split-comment.md"
+    comment_path.write_text("\n".join(lines))
+    _set_output("comment_path", str(comment_path))
+
+
+def _oversized_without_plan(
+    reason: str, total_loc: int, file_count: int, max_loc: int, total_groups: int = 0
+) -> None:
+    """Flag an oversized PR even though no usable split plan was produced.
+
+    The size verdict comes from ``total_loc`` alone; a failing or degenerate
+    planner must not make an oversized PR look acceptable. ``reason`` finishes
+    the sentence "..., but ..." explaining why no split is suggested.
+    """
+    print(f"PR has {total_loc} LOC, over the {max_loc} limit; {reason}")
+    _set_output("total_groups", str(total_groups))
+    _set_output("objective", "0")
+    _set_output("should_split", "true")
+    _write_comment(
+        [
+            "<!-- pr-split-score -->",
+            "## pr-split analysis",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
+            f"| Total LOC | {total_loc:,} |",
+            f"| Files changed | {file_count} |",
+            f"| Limit | {max_loc:,} LOC |",
+            "",
+            f"This PR has **{total_loc:,} LOC**, over the **{max_loc:,} LOC** limit, but {reason}",
+            "",
+            "*Run `pr-split split` locally to plan the split.*",
+        ]
+    )
 
 
 def _md_escape(s: str) -> str:
     return s.replace("|", "\\|")
+
+
+def load_plan_groups(plan_path: str) -> list[dict]:
+    """Return the groups from a saved plan file.
+
+    ``pr-split --dry-run`` writes a ``PlanFile`` whose top-level keys are
+    ``plan`` and ``git_state``; the groups live under ``plan``.
+    """
+    with open(plan_path) as f:
+        data = json.load(f)
+    plan = data.get("plan", data)
+    return plan.get("groups", [])
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -71,8 +116,14 @@ def main() -> None:
     priority = os.environ.get("PRIORITY", "orthogonal")
     threshold = _parse_int_env("THRESHOLD_GROUPS", 2)
     pr_number = os.environ.get("PR_NUMBER", "")
-    base_branch = os.environ["BASE_BRANCH"]
-    head_branch = os.environ["HEAD_BRANCH"]
+    base_branch = os.environ.get("BASE_BRANCH", "")
+    head_branch = os.environ.get("HEAD_BRANCH", "")
+
+    if not base_branch or not head_branch:
+        # github.event.pull_request.* is empty on push / workflow_dispatch / schedule.
+        _set_output("total_loc", "0")
+        _skip("Not a pull_request event (no base/head branch); skipping pr-split score.")
+        return
 
     # Fetch refs — use refs/pull/{n}/head for fork compatibility
     _run(["git", "fetch", "origin", base_branch])
@@ -134,19 +185,36 @@ def main() -> None:
     result = subprocess.run(cmd, capture_output=True, text=True, input="done\n")
     if result.returncode != 0:
         print(f"pr-split failed:\n{result.stderr}", file=sys.stderr)
-        _skip("pr-split failed to generate a plan.")
+        _oversized_without_plan(
+            "no split plan could be generated: pr-split exited with an error.",
+            total_loc,
+            file_count,
+            max_loc,
+        )
         return
 
     plan_path = ".pr-split/plan.json"
     if not os.path.exists(plan_path):
-        _skip("No plan file generated.")
+        _oversized_without_plan(
+            "no split plan could be generated: pr-split wrote no plan file.",
+            total_loc,
+            file_count,
+            max_loc,
+        )
         return
 
-    with open(plan_path) as f:
-        plan = json.load(f)
-
-    groups = plan.get("groups", [])
+    groups = load_plan_groups(plan_path)
     total_groups = len(groups)
+    if total_groups < threshold:
+        _oversized_without_plan(
+            f"the plan has {total_groups} group(s), below the {threshold} needed "
+            "to suggest a split.",
+            total_loc,
+            file_count,
+            max_loc,
+            total_groups,
+        )
+        return
 
     max_group_loc = max((g["estimated_loc"] for g in groups), default=0)
     overflow = sum(max(0, g["estimated_loc"] - max_loc) for g in groups)
@@ -157,19 +225,17 @@ def main() -> None:
     file_scatter = sum(max(0, len(gids) - 1) for gids in file_groups.values())
 
     objective = overflow * 1000 + file_scatter * 50 + total_groups
-    should_split = total_groups >= threshold
-
     _set_output("total_groups", str(total_groups))
     _set_output("objective", str(objective))
-    _set_output("should_split", str(should_split).lower())
+    _set_output("should_split", "true")
 
     print(f"PR: {total_loc} LOC across {file_count} files")
     print(f"Split plan: {total_groups} groups, objective={objective}")
-    print(f"Should split: {should_split}")
+    print("Should split: True")
 
     # Generate markdown comment
     lines = [
-        COMMENT_MARKER,
+        "<!-- pr-split-score -->",
         "## pr-split analysis",
         "",
         "| Metric | Value |",
@@ -183,30 +249,27 @@ def main() -> None:
         "",
     ]
 
-    if should_split:
-        lines.append(
-            f"This PR has **{total_loc:,} LOC** and could be split into "
-            f"**{total_groups} smaller PRs**:"
-        )
-        lines.append("")
-        lines.append("| Group | Title | Diff | Depends On | Files |")
-        lines.append("|-------|-------|------|------------|-------|")
-        for g in groups:
-            files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
-            deps = ", ".join(g.get("depends_on", [])) or "—"
-            diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
-            title = _md_escape(g["title"])
-            gid = _md_escape(g["id"])
-            lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")
-        lines.append("")
-        lines.append(
-            "*Run `pr-split split` locally to create these sub-PRs, "
-            "or adjust `--max-loc` to change the target size.*"
-        )
-    else:
-        lines.append("This PR is within acceptable size limits.")
+    lines.append(
+        f"This PR has **{total_loc:,} LOC** and could be split into "
+        f"**{total_groups} smaller PRs**:"
+    )
+    lines.append("")
+    lines.append("| Group | Title | Diff | Depends On | Files |")
+    lines.append("|-------|-------|------|------------|-------|")
+    for g in groups:
+        files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
+        deps = ", ".join(g.get("depends_on", [])) or "—"
+        diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
+        title = _md_escape(g["title"])
+        gid = _md_escape(g["id"])
+        lines.append(f"| {gid} | {title} | {diff_str} | {deps} | {files} |")
+    lines.append("")
+    lines.append(
+        "*Run `pr-split split` locally to create these sub-PRs, "
+        "or adjust `--max-loc` to change the target size.*"
+    )
 
-    _write_comment("\n".join(lines))
+    _write_comment(lines)
 
 
 if __name__ == "__main__":
