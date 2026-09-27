@@ -10,6 +10,8 @@ from unittest.mock import patch
 
 import pytest
 
+from pr_split.plan_store import plan_key
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "score_pr.py"
 
 
@@ -105,8 +107,10 @@ class TestOversizedVerdictDoesNotDependOnThePlanner:
 
         def fake_planner(cmd: list[str], **kwargs: object) -> object:
             if plan is not None:
-                (tmp_path / ".pr-split").mkdir(exist_ok=True)
-                (tmp_path / ".pr-split" / "plan.json").write_text(json.dumps(plan))
+                # Where pr-split saves the plan for dev branch pr-split/head-7.
+                plans = tmp_path / ".pr-split" / "plans"
+                plans.mkdir(parents=True, exist_ok=True)
+                (plans / f"{plan_key('pr-split/head-7')}.json").write_text(json.dumps(plan))
             return subprocess.CompletedProcess(cmd, returncode, "", "boom")
 
         with (

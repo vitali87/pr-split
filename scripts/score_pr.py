@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -99,6 +100,20 @@ def load_plan_groups(plan_path: str) -> list[dict]:
         data = json.load(f)
     plan = data.get("plan", data)
     return plan.get("groups", [])
+
+
+def _saved_plan_path(dev_branch: str) -> str | None:
+    """The plan file ``pr-split split <dev_branch>`` saved, if any.
+
+    pr-split keeps one plan per dev branch under ``.pr-split/plans/``, named
+    by the branch percent-encoded (``pr_split.plan_store.plan_key``); older
+    versions wrote a single ``.pr-split/plan.json``.
+    """
+    per_branch = os.path.join(".pr-split", "plans", f"{quote(dev_branch, safe='')}.json")
+    for path in (per_branch, os.path.join(".pr-split", "plan.json")):
+        if os.path.exists(path):
+            return path
+    return None
 
 
 def _parse_int_env(name: str, default: int) -> int:
@@ -201,8 +216,8 @@ def main() -> None:
         )
         return
 
-    plan_path = ".pr-split/plan.json"
-    if not os.path.exists(plan_path):
+    plan_path = _saved_plan_path(local_head)
+    if plan_path is None:
         _oversized_without_plan(
             "no split plan could be generated: pr-split wrote no plan file.",
             total_loc,
