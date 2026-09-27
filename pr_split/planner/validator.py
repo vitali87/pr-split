@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from loguru import logger
+
 from .. import logs
 from ..constants import AssignmentType, LocViolationType
 from ..diff_ops import ParsedDiff
@@ -7,6 +9,19 @@ from ..exceptions import ErrorMsg, PlanValidationError
 from ..graph import PlanDAG
 from ..schemas import Group
 from ..types_defs import LocBoundViolation
+from .symbols import symbol_dependencies
+
+
+def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
+    """Refuse diffs with binary files.
+
+    Binary patches carry no hunks, so coverage validation would pass
+    without any group claiming them and the change would silently be
+    dropped from every sub-PR.
+    """
+    binary = [pf.path for pf in parsed_diff.patch_set if pf.is_binary_file]
+    if binary:
+        raise PlanValidationError(ErrorMsg.BINARY_FILES_UNSUPPORTED(files=", ".join(binary)))
 
 
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
@@ -14,6 +29,10 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
     assigned: dict[tuple[str, int], list[str]] = {}
     for group in groups:
         for assignment in group.assignments:
+            if assignment.file_path not in hunk_counts:
+                raise PlanValidationError(
+                    ErrorMsg.UNKNOWN_FILE(file=assignment.file_path, group=group.id)
+                )
             # A WHOLE_FILE assignment claims every hunk of the file even when
             # its hunk_indices list was left empty.
             if assignment.assignment_type is AssignmentType.WHOLE_FILE:
@@ -32,6 +51,12 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
                 owners.append(group.id)
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
+
+    for key, group_ids in assigned.items():
+        if key not in all_hunks:
+            raise PlanValidationError(
+                ErrorMsg.UNKNOWN_HUNK(file=key[0], index=key[1], group=group_ids[0])
+            )
 
     for key in all_hunks:
         if key not in assigned:
@@ -53,12 +78,13 @@ def validate_loc(groups: list[Group], parsed_diff: ParsedDiff) -> None:
         )
 
 
-def validate_no_conflicts(groups: list[Group], dag: PlanDAG) -> None:
+def validate_no_conflicts(groups: list[Group], dag: PlanDAG, hunk_counts: dict[str, int]) -> None:
     group_files: dict[str, dict[str, set[int]]] = {}
     for group in groups:
         file_hunks: dict[str, set[int]] = {}
         for assignment in group.assignments:
-            file_hunks.setdefault(assignment.file_path, set()).update(assignment.hunk_indices)
+            covered = assignment.covered_indices(hunk_counts.get(assignment.file_path, 0))
+            file_hunks.setdefault(assignment.file_path, set()).update(covered)
         group_files[group.id] = file_hunks
 
     group_ids = [g.id for g in groups]
@@ -77,6 +103,48 @@ def validate_no_conflicts(groups: list[Group], dag: PlanDAG) -> None:
                     raise PlanValidationError(
                         ErrorMsg.MERGE_CONFLICT(a=gid_a, b=gid_b, file=file_path)
                     )
+
+
+def _piece_owners(groups: list[Group], path: str, pieces: int) -> list[str | None]:
+    owners: list[str | None] = [None] * pieces
+    for group in groups:
+        for assignment in group.assignments:
+            if assignment.file_path == path:
+                for idx in assignment.covered_indices(pieces):
+                    if 0 <= idx < pieces:
+                        owners[idx] = group.id
+    return owners
+
+
+def new_file_pieces_out_of_order(
+    groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG
+) -> list[tuple[str, int, str, str]]:
+    """(file, piece, group, parent) for each piece of a split new file whose
+    group neither holds nor builds on the group holding the piece before it.
+
+    A new file is rebuilt from the pieces a branch holds, and a stacked child
+    carries its ancestors' pieces; any other layout creates the file without
+    its beginning.
+    """
+    found: list[tuple[str, int, str, str]] = []
+    for path, pieces in sorted(parsed_diff.new_file_pieces.items()):
+        owners = _piece_owners(groups, path, pieces)
+        for piece in range(1, pieces):
+            parent, child = owners[piece - 1], owners[piece]
+            if parent is None or child is None or parent == child:
+                continue
+            if parent not in dag.ancestors(child):
+                found.append((path, piece, child, parent))
+    return found
+
+
+def validate_new_file_pieces(groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG) -> None:
+    for path, piece, child, parent in new_file_pieces_out_of_order(groups, parsed_diff, dag):
+        raise PlanValidationError(
+            ErrorMsg.NEW_FILE_PIECE_ORDER(
+                group=child, piece=piece + 1, file=path, parent=parent, previous=piece
+            )
+        )
 
 
 def detect_loc_bound_violations(
@@ -137,6 +205,27 @@ def validate_loc_bounds(
     ]
 
 
+def detect_symbol_order_violations(
+    groups: list[Group], parsed_diff: ParsedDiff, dag: PlanDAG
+) -> list[str]:
+    """Groups that use a name defined in a group they do not build on.
+
+    Such a sub-PR cannot compile or import on its own, e.g. a definition
+    placed in a child of the PR that uses it.
+    """
+    warnings: list[str] = []
+    for user, definers in sorted(symbol_dependencies(groups, parsed_diff).items()):
+        ancestors = dag.ancestors(user)
+        for definer, names in sorted(definers.items()):
+            if definer not in ancestors:
+                warnings.append(
+                    logs.SYMBOL_ORDER_VIOLATION.format(
+                        user=user, definer=definer, names=", ".join(sorted(names)[:5])
+                    )
+                )
+    return warnings
+
+
 def validate_plan(
     groups: list[Group],
     parsed_diff: ParsedDiff,
@@ -145,7 +234,11 @@ def validate_plan(
     min_loc: int | None = None,
 ) -> list[str]:
     dag.validate_acyclic()
+    validate_new_file_pieces(groups, parsed_diff, dag)
+    validate_no_binary_files(parsed_diff)
     validate_coverage(groups, parsed_diff)
     validate_loc(groups, parsed_diff)
-    validate_no_conflicts(groups, dag)
+    validate_no_conflicts(groups, dag, {pf.path: len(pf) for pf in parsed_diff.patch_set})
+    for warning in detect_symbol_order_violations(groups, parsed_diff, dag):
+        logger.warning(warning)
     return validate_loc_bounds(groups, max_loc, min_loc)
