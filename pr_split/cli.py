@@ -387,7 +387,11 @@ def _create_branches_and_commits(
     step = load_per_group_step()
     order = {gid: i for i, gid in enumerate(PlanDAG(groups).topological_order(), start=1)}
 
-    if stacked:
+    # A plan with dependency edges is laid out along its DAG whether or not
+    # native stacking is on: each dependant builds on (and targets) its
+    # parent's branch, so it is reviewable and buildable against the code it
+    # depends on. ``stacked`` only adds native gh-stack registration on top.
+    if stacked or any(g.depends_on for g in groups):
         dag = PlanDAG(groups)
         groups_by_id = {g.id: g for g in groups}
         branch_names = {g.id: f"{BRANCH_PREFIX}{namespace}/{g.id}" for g in groups}
@@ -498,7 +502,17 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
     )
     if group.depends_on:
         dep_list = ", ".join(f"`{d}`" for d in group.depends_on)
-        sections.append(f"## Dependencies\n\nThis PR depends on: {dep_list}")
+        dependencies = f"## Dependencies\n\nThis PR depends on: {dep_list}"
+        if len(set(group.depends_on)) > 1:
+            # A merge node targets the base branch, so its diff also shows
+            # every ancestor's changes beyond the files listed above.
+            ancestors = sorted(PlanDAG(all_groups).ancestors(group.id))
+            carried = ", ".join(f"`{a}`" for a in ancestors)
+            dependencies += (
+                f"\n\nIt targets the base branch, so its diff also includes the changes of: "
+                f"{carried}."
+            )
+        sections.append(dependencies)
     sections.append(_render_dag_markdown(all_groups, group.id))
     return "\n\n".join(sections)
 
@@ -980,7 +994,7 @@ def split(
         typer.Option(
             "--stack",
             envvar="PR_SPLIT_STACK",
-            help="Stack dependent PRs: each child branches from and targets its parent's branch",
+            help="Register dependent PR chains as native GitHub stacks",
         ),
     ] = False,
     draft: Annotated[
@@ -1345,7 +1359,7 @@ def execute(
         typer.Option(
             "--stack",
             envvar="PR_SPLIT_STACK",
-            help="Stack dependent PRs even if the saved plan was not created with --stack",
+            help="Register native GitHub stacks even if the plan was saved without --stack",
         ),
     ] = False,
     draft: Annotated[
