@@ -60,6 +60,8 @@ class Settings(BaseSettings):
                     self.model = DEFAULT_MODEL
                 case Provider.OPENAI:
                     self.model = OPENAI_MODEL
+                case Provider.CLAUDE_CLI:
+                    pass  # the CLI's own configured default model
                 case Provider.LOCAL:
                     pass  # no sensible default; checked when the llm backend runs
                 case _:
@@ -93,6 +95,8 @@ class Settings(BaseSettings):
             case Provider.OPENAI:
                 if not self.openai_api_key:
                     raise ValueError("OPENAI_API_KEY must be set when provider is 'openai'")
+            case Provider.CLAUDE_CLI:
+                pass  # authenticated through the CLI's own login
             case Provider.LOCAL:
                 if not self.model:
                     raise ValueError(ErrorMsg.LOCAL_MODEL_REQUIRED())
@@ -116,6 +120,8 @@ class Settings(BaseSettings):
                 return self.anthropic_api_key
             case Provider.OPENAI:
                 return self.openai_api_key
+            case Provider.CLAUDE_CLI:
+                return ""
             case Provider.LOCAL:
                 # The OpenAI client refuses an empty key; local servers ignore it
                 # unless they were started with one.
@@ -126,7 +132,7 @@ class Settings(BaseSettings):
     @property
     def max_context_tokens(self) -> int:
         match self.provider:
-            case Provider.ANTHROPIC:
+            case Provider.ANTHROPIC | Provider.CLAUDE_CLI:
                 return ANTHROPIC_MAX_CONTEXT_TOKENS
             case Provider.OPENAI:
                 return OPENAI_MAX_CONTEXT_TOKENS

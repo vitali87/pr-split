@@ -64,6 +64,14 @@ class SplitPlan(BaseModel):
     merge_base_sha: str | None = None
     dev_branch_arg: str | None = None
     raw_diff: str | None = None
+    # How the plan was produced, so a saved plan carries its provenance. The
+    # llm and cp_sat backends can return a different plan on each run.
+    partition_strategy: str | None = None
+    chunk_strategy: str | None = None
+    provider: str | None = None
+    model: str | None = None
+    # Groups whose LOC exceeded max_loc when the plan was saved.
+    oversized_groups: list[str] = Field(default_factory=list)
 
 
 class BranchRecord(BaseModel):
@@ -71,6 +79,8 @@ class BranchRecord(BaseModel):
     branch_name: str
     base_branch: str
     commit_sha: str = ""
+    # Registered by `adopt` rather than created by pr-split: clean leaves it alone.
+    adopted: bool = False
 
 
 class PRRecord(BaseModel):
@@ -78,6 +88,8 @@ class PRRecord(BaseModel):
     pr_number: int
     pr_url: str
     state: PRState = PRState.OPEN
+    # Registered by `adopt` rather than opened by pr-split: clean leaves it open.
+    adopted: bool = False
 
 
 class GitState(BaseModel):

@@ -38,6 +38,7 @@ class ErrorMsg(StrEnum):
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
+    CLAUDE_CLI_NOT_FOUND = "Provider 'claude-cli' needs the Claude Code CLI ('claude') on PATH"
     LOCAL_MODEL_REQUIRED = (
         "PR_SPLIT_MODEL must be set when provider is 'local'"
         " (the model name your local server serves, e.g. 'qwen2.5-coder:14b')"
@@ -106,10 +107,7 @@ class ErrorMsg(StrEnum):
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
     PR_NOT_FOUND = "PR #{number} not found"
     PR_RESPONSE_INVALID = "Unexpected response from GitHub for PR #{number}: {detail}"
-    PR_NOT_FROM_FORK = (
-        "PR #{number} is not from a fork; pass its head branch name instead of the PR number"
-    )
-    PR_FETCH_FAILED = "Failed to fetch fork branch for PR #{number}: {detail}"
+    PR_FETCH_FAILED = "Failed to fetch the head of PR #{number} from {source}: {detail}"
     FORK_FETCH_FAILED = "Failed to fetch {user}:{branch}: {detail}"
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
     MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
