@@ -31,6 +31,8 @@ class ErrorMsg(StrEnum):
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
+    NO_CHANGES = "No changes between '{base}' and '{dev}'; nothing to split"
+    PLAN_HAS_NO_CHANGES = "Saved plan has an empty diff; nothing to execute"
     PLAN_AMBIGUOUS = (
         "Several split plans are saved ({branches}); pick one with"
         " 'pr-split --branch <dev-branch> <command>'"
