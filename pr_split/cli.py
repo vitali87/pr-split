@@ -1253,7 +1253,14 @@ def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
 
 @app.command(help="Split a large PR into smaller dependency-ordered PRs.")
 def split(
-    dev_branch: Annotated[str, typer.Argument(help="Branch name, PR number, or user:branch")],
+    dev_branch: Annotated[
+        str,
+        typer.Argument(
+            help="Branch name, PR number, or user:branch. A bare number is always "
+            "treated as a PR number; for a local branch literally named like a "
+            "number, use its full ref, e.g. refs/heads/1006."
+        ),
+    ],
     base: Annotated[str, typer.Option(help="Base branch")] = "main",
     min_loc: Annotated[
         int | None,
@@ -1348,7 +1355,11 @@ def split(
         if not _is_fork_ref(name):
             adopt_remote_branch(name)
 
-    if not branch_exists(dev_branch):
+    # Decide the argument form before consulting git: `git rev-parse` accepts
+    # abbreviated SHAs, so a bare PR number such as 1006 would otherwise be
+    # taken for a commit whose hash starts with those digits and the wrong
+    # diff would be split without any warning.
+    if _is_fork_ref(dev_branch) or not branch_exists(dev_branch):
         # Only a PR number or user:branch can be fetched from GitHub; a plain
         # branch name that does not exist is just a typo, so say so before
         # touching gh (which --dry-run must not require).
