@@ -356,7 +356,7 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
     logger.info(logs.FETCHING_FORK_BRANCH.format(branch=branch, fork=fork_full_name))
 
     try:
-        run_git("fetch", clone_url, f"{branch}:{local_ref}")
+        run_git("fetch", clone_url, f"+{branch}:{local_ref}")
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.FORK_FETCH_FAILED(user=user, branch=branch, detail=str(exc))
