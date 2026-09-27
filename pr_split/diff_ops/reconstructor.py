@@ -72,6 +72,14 @@ def _get_base_file_content(file_path: str, ref: str) -> str:
     return result.stdout.decode("utf-8", errors="surrogateescape")
 
 
+def read_file_at(ref: str, file_path: str) -> str | None:
+    """A file's content at ``ref``, or None if it does not exist there."""
+    try:
+        return _get_base_file_content(file_path, ref)
+    except GitOperationError:
+        return None
+
+
 NO_NEWLINE_MARKER = "\\"
 
 

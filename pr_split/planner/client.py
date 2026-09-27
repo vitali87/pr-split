@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import subprocess
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 from urllib.parse import urlsplit
 
 import anthropic
@@ -36,7 +36,8 @@ from .chunker import (
     format_group_catalog,
     recompute_estimated_loc,
 )
-from .partitioning import partition_diff
+from .coherence import make_groups_standalone
+from .partitioning import describe_files, partition_diff, retitle_groups
 from .prompts import (
     SPLIT_TOOL_NAME,
     SPLIT_TOOL_SCHEMA,
@@ -49,6 +50,9 @@ from .prompts import (
 from .repair import repair_plan
 from .scoring import score_plan
 from .validator import detect_loc_bound_violations, validate_coverage, validate_no_conflicts
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
@@ -742,7 +746,14 @@ def _single_group_plan(parsed_diff: ParsedDiff) -> list[Group]:
 def plan_split(
     parsed_diff: ParsedDiff,
     settings: Settings,
+    read_file: Callable[[str], str | None] | None = None,
 ) -> list[Group]:
+    """Plan the split, then make each group a sub-PR that works on its own.
+
+    ``read_file`` returns a file as it stands at the dev branch's head (None
+    if absent); with it, a test's full imports are followed, not just the
+    lines its hunks show.
+    """
     if settings.partition_strategy not in (
         PartitionStrategy.LLM,
         PartitionStrategy.GRAPH,
@@ -760,6 +771,20 @@ def plan_split(
         groups = _plan_split_with_llm(parsed_diff, settings)
     else:
         groups = partition_diff(parsed_diff, settings)
+    groups = make_groups_standalone(
+        groups,
+        parsed_diff,
+        read_file,
+        settings.max_loc,
+        keep_declared_deps=settings.partition_strategy is PartitionStrategy.LLM,
+    )
+    if settings.partition_strategy is not PartitionStrategy.LLM:
+        # Combining groups changed what some hold; name them after it again.
+        retitle_groups(groups, parsed_diff)
+        for group in groups:
+            group.description = describe_files(
+                settings.partition_strategy.value, (a.file_path for a in group.assignments)
+            )
 
     metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from dataclasses import dataclass
 from graphlib import CycleError, TopologicalSorter
@@ -16,7 +15,7 @@ from ..exceptions import ErrorMsg, PRSplitError
 from ..graph import PlanDAG
 from ..schemas import Group, GroupAssignment
 from .chunker import recompute_estimated_loc
-from .symbols import names_in, symbol_dependencies
+from .symbols import LOCKFILES, is_test_path, names_in
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -147,7 +146,7 @@ def _affinity_score(unit_a: PartitionUnit, unit_b: PartitionUnit, priority: Prio
 def _merge_order_is_acyclic(grouped_units: Iterable[Sequence[PartitionUnit]]) -> bool:
     """Check that the merge-order dependencies implied by ``grouped_units`` form a DAG.
 
-    Mirrors ``_derive_merge_order_dependencies``: within each file, groups are ordered by
+    Mirrors ``derive_file_order_dependencies``: within each file, groups are ordered by
     their earliest unit and each group depends on the one before it.
     """
     file_occurrences: dict[str, list[tuple[int, int]]] = defaultdict(list)
@@ -514,29 +513,76 @@ def _group_units_cp_sat(
     return grouped
 
 
-def _build_group_title(group_index: int, units: list[PartitionUnit]) -> str:
-    file_paths = sorted({unit.file_path for unit in units})
-    if len(file_paths) == 1:
-        stem = PurePosixPath(file_paths[0]).stem.replace("_", "-")
-        return f"chore(split): review {stem}-{group_index}"
-    # Name a multi-file group after the directory its files share, or after
-    # its largest file, so every group title says what it covers.
-    parents = {PurePosixPath(path).parent for path in file_paths}
-    common = PurePosixPath(os.path.commonpath([str(p) for p in parents])) if parents else None
-    if common is not None and str(common) not in ("", "."):
-        return f"chore(split): review {common.name}-{group_index}"
-    largest = max(units, key=lambda unit: unit.loc).file_path
-    stem = PurePosixPath(largest).stem.replace("_", "-")
-    return f"chore(split): review {stem} and {len(file_paths) - 1} more-{group_index}"
+def _file_loc(parsed_diff: ParsedDiff) -> dict[str, dict[int, int]]:
+    return {
+        pf.path: {i: hunk.added + hunk.removed for i, hunk in enumerate(pf)}
+        for pf in parsed_diff.patch_set
+    }
 
 
-def _describe_files(backend: str, file_paths: Iterable[str]) -> str:
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def retitle_groups(groups: list[Group], parsed_diff: ParsedDiff) -> None:
+    """Title each group after what it changes: its main file, and its part of it.
+
+    A title names the verb (Add for new files, Remove for deleted ones,
+    Update otherwise), the group's largest non-test file, and how many other
+    files it touches, so a reviewer sees what the PR covers from its title.
+    """
+    new_files = {pf.path for pf in parsed_diff.patch_set if pf.is_added_file}
+    deleted = {pf.path for pf in parsed_diff.patch_set if pf.is_removed_file}
+    hunk_loc = _file_loc(parsed_diff)
+    hunk_counts = {path: len(locs) for path, locs in hunk_loc.items()}
+    # Which groups hold a piece of each file, in hunk order, for "part k of n".
+    holders: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for group in groups:
+        for assignment in group.assignments:
+            indices = assignment.covered_indices(hunk_counts.get(assignment.file_path, 0))
+            holders[assignment.file_path].append((min(indices, default=0), group.id))
+    for group in groups:
+        loc: dict[str, int] = defaultdict(int)
+        for assignment in group.assignments:
+            locs = hunk_loc.get(assignment.file_path, {})
+            for idx in assignment.covered_indices(len(locs)):
+                loc[assignment.file_path] += locs.get(idx, 0)
+        paths = sorted(loc)
+        if not paths:
+            continue
+        if all(p in new_files for p in paths):
+            verb = "Add"
+        elif all(p in deleted for p in paths):
+            verb = "Remove"
+        else:
+            verb = "Update"
+        # Name the group after code, not its tests or a lockfile it ships.
+        sources = (
+            [p for p in paths if not is_test_path(p) and PurePosixPath(p).name not in LOCKFILES]
+            or [p for p in paths if not is_test_path(p)]
+            or paths
+        )
+        main = max(sources, key=lambda p: (loc[p], p))
+        subject = main
+        pieces = sorted(holders[main])
+        if len(pieces) > 1:
+            part = [gid for _, gid in pieces].index(group.id) + 1
+            subject += f" (part {part} of {len(pieces)})"
+        others = len(paths) - 1
+        if others:
+            tests_only = all(is_test_path(p) for p in paths if p != main)
+            noun = "test file" if tests_only and not is_test_path(main) else "more file"
+            subject += f" and {_plural(others, noun)}"
+        group.title = f"{verb} {subject}"
+
+
+def describe_files(backend: str, file_paths: Iterable[str]) -> str:
     paths = sorted(set(file_paths))
     return f"{backend} partition over {len(paths)} file(s): {', '.join(paths)}"
 
 
 def _build_group_description(backend: PartitionStrategy, units: list[PartitionUnit]) -> str:
-    return _describe_files(backend.value, (unit.file_path for unit in units))
+    return describe_files(backend.value, (unit.file_path for unit in units))
 
 
 def refresh_generated_description(group: Group) -> None:
@@ -552,7 +598,7 @@ def refresh_generated_description(group: Group) -> None:
         return
     if len(files.split(", ") if files else []) != int(count):
         return
-    group.description = _describe_files(backend, (a.file_path for a in group.assignments))
+    group.description = describe_files(backend, (a.file_path for a in group.assignments))
 
 
 def _build_groups_from_units(
@@ -588,7 +634,7 @@ def _build_groups_from_units(
         groups.append(
             Group(
                 id=f"pr-{group_index}",
-                title=_build_group_title(group_index, units),
+                title=f"pr-{group_index}",
                 description=_build_group_description(backend, units),
                 assignments=sorted(assignments, key=lambda assignment: assignment.file_path),
                 estimated_loc=sum(unit.loc for unit in units),
@@ -596,38 +642,12 @@ def _build_groups_from_units(
         )
 
     recompute_estimated_loc(groups, parsed_diff)
-    _derive_merge_order_dependencies(groups)
-    _add_symbol_dependencies(groups, parsed_diff)
+    retitle_groups(groups, parsed_diff)
+    derive_file_order_dependencies(groups)
     return groups
 
 
-def _add_symbol_dependencies(groups: list[Group], parsed_diff: ParsedDiff) -> None:
-    """Make a group depend on every group whose newly defined names it uses.
-
-    File order alone misses a new test file that imports a new module, so the
-    test's sub-PR would target the base and fail on import. An edge that
-    would close a cycle is skipped with a warning.
-    """
-    by_id = {g.id: g for g in groups}
-    for user, definers in sorted(symbol_dependencies(groups, parsed_diff).items()):
-        for definer, names in sorted(definers.items()):
-            group = by_id[user]
-            if definer in group.depends_on:
-                continue
-            group.depends_on.append(definer)
-            try:
-                PlanDAG(groups).validate_acyclic()
-            except PRSplitError:
-                group.depends_on.remove(definer)
-                logger.warning(
-                    logs.SYMBOL_EDGE_SKIPPED.format(
-                        user=user, definer=definer, names=", ".join(sorted(names)[:5])
-                    )
-                )
-    _reduce_transitive_dependencies(groups)
-
-
-def _reduce_transitive_dependencies(groups: list[Group]) -> None:
+def reduce_transitive_dependencies(groups: list[Group]) -> None:
     dep_map = {group.id: set(group.depends_on) for group in groups}
     for group in groups:
         reduced_deps = set(dep_map[group.id])
@@ -653,7 +673,7 @@ def _has_alternative_path(dep_map: dict[str, set[str]], source: str, target: str
     return False
 
 
-def _derive_merge_order_dependencies(groups: list[Group]) -> None:
+def derive_file_order_dependencies(groups: list[Group]) -> None:
     file_occurrences: dict[str, list[tuple[int, str]]] = defaultdict(list)
     for group in groups:
         for assignment in group.assignments:
@@ -671,7 +691,7 @@ def _derive_merge_order_dependencies(groups: list[Group]) -> None:
 
     for group in groups:
         group.depends_on = sorted(dep_map[group.id])
-    _reduce_transitive_dependencies(groups)
+    reduce_transitive_dependencies(groups)
 
 
 def partition_diff(parsed_diff: ParsedDiff, settings: Settings) -> list[Group]:

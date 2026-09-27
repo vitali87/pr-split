@@ -378,11 +378,23 @@ For a deeper explanation of the planning model, optimization methods, scoring, a
 
 1. Extracts the merge-base diff between your branch and the base (same view as GitHub's PR page)
 2. Sends the diff to the configured backend (LLM, graph, or CP-SAT), which groups hunks into logical sub-PRs with dependency ordering
-3. Validates the plan: full coverage (every hunk assigned exactly once), no cycles, no merge conflicts between independent groups
-4. Shows you the plan (table + dependency tree) with an optional interactive editor to move hunks between groups
-5. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees. Use `--dry-run` to save the plan for later execution with `execute`
-6. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
-7. `status`, `merge`, and `clean` commands are available to track progress, merge PRs in dependency order, or clean up branches and PRs
+3. Makes each sub-PR work on its own, whichever backend planned it (see [Standalone sub-PRs](#standalone-sub-prs))
+4. Validates the plan: full coverage (every hunk assigned exactly once), no cycles, no merge conflicts between independent groups
+5. Shows you the plan (table + dependency tree) with an optional interactive editor to move hunks between groups
+6. Creates branches, commits, pushes, and opens GitHub PRs — materialization and push/PR creation run in parallel using git worktrees. Use `--dry-run` to save the plan for later execution with `execute`
+7. For diffs exceeding the model's context window, uses the configured chunking strategy and processes chunks sequentially while carrying forward the group catalog across chunks
+8. `status`, `merge`, and `clean` commands are available to track progress, merge PRs in dependency order, or clean up branches and PRs
+
+### Standalone sub-PRs
+
+A backend groups hunks by size and affinity, which can leave a sub-PR needing code another sub-PR adds; its CI would then fail on its own. After planning, pr-split finds what each group needs and fixes the plan:
+
+- **Dependencies it uses.** A group depends on every group whose new functions, classes, constants or fields it uses. It also depends on the group holding an added import it relies on, on the code that fills a new field it reads, and on the group that adds a name its `mock.patch("pkg.mod.name")` targets.
+- **Tests after the code they test.** Tests are taken out of groups of unrelated code. A test group depends on every changed module its tests import (followed through unchanged modules), on the files it loads by path, and on its `conftest.py`. Where the size limit allows, a test rejoins the group whose code it tests.
+- **Test updates with the change they follow.** An edit to an existing test, a conftest change, or a new autouse fixture moves into the group whose code change it adapts to. Otherwise the old test would fail in that group's own PR.
+- **Pieces that only work together.** Hunks of one function or its decorators stay in one group, as does a lockfile with its manifest (`uv.lock` and `pyproject.toml`, `package-lock.json` and `package.json`, …).
+
+Groups that end up needing each other are combined, and each combination is logged with the reason. The combined PR may exceed `--max-loc`; with `--strict-loc-bounds` that is an error, as for any oversized group. Import analysis is for Python; for other languages tests are paired with the file they are named after. The analysis is static, so behaviour a test only exercises indirectly can still slip through: check the sub-PRs' CI.
 
 ## License
 

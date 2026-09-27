@@ -11,6 +11,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import partial
 from pathlib import Path
 from threading import Lock, Semaphore
 from typing import Annotated
@@ -46,6 +47,7 @@ from .diff_ops import (
     materialize_group_files,
     merge_chain_assignments,
     parse_diff,
+    read_file_at,
     target_file_modes,
 )
 from .exceptions import (
@@ -1646,7 +1648,8 @@ def split(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     try:
-        groups = plan_split(parsed_diff, settings)
+        # Tests' full imports are read at the dev head to find what they exercise.
+        groups = plan_split(parsed_diff, settings, read_file=partial(read_file_at, dev_branch))
         link_new_file_pieces(groups, parsed_diff)
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
