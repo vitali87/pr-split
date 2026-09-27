@@ -28,6 +28,7 @@ class TestScoreUsesFetchedRefsDirectly:
         output_file = tmp_path / "output.txt"
         output_file.touch()
         monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
         monkeypatch.setenv("BASE_BRANCH", "main")
         monkeypatch.setenv("HEAD_BRANCH", "main")  # fork PR opened from the fork's main
         monkeypatch.setenv("PR_NUMBER", "7")
@@ -55,18 +56,20 @@ class TestScoreUsesFetchedRefsDirectly:
         ):
             module.main()
 
-        assert not any(c[:2] == ["git", "branch"] for c in git_calls)
+        branch_calls = [c for c in git_calls if c[:2] == ["git", "branch"]]
+        assert branch_calls == [["git", "branch", "-f", "main", "origin/main"]]
         assert len(split_cmds) == 1
         split = split_cmds[0]
         assert split[:3] == ["pr-split", "split", "pr-split/head-7"]
-        assert split[split.index("--base") + 1] == "origin/main"
+        assert split[split.index("--base") + 1] == "main"
 
-    def test_branch_event_without_pr_number_uses_origin_refs(
+    def test_branch_event_without_pr_number_uses_origin_head(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         output_file = tmp_path / "output.txt"
         output_file.touch()
         monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
         monkeypatch.setenv("BASE_BRANCH", "main")
         monkeypatch.setenv("HEAD_BRANCH", "feature")
         monkeypatch.delenv("PR_NUMBER", raising=False)
@@ -93,4 +96,4 @@ class TestScoreUsesFetchedRefsDirectly:
 
         split = split_cmds[0]
         assert split[2] == "origin/feature"
-        assert split[split.index("--base") + 1] == "origin/main"
+        assert split[split.index("--base") + 1] == "main"
