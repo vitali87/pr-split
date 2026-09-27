@@ -103,6 +103,7 @@ LOCAL_SERVER_OFF_MACHINE = (
     " the diff will be sent to that host"
 )
 LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
+LLM_UNEXPECTED_STOP = "LLM stopped with stop_reason={stop_reason} (keys in tool input: {keys})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
     "Group '{group}': invalid hunk index {index} for {file} (max: {max}), skipping"

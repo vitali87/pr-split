@@ -1305,6 +1305,57 @@ class TestTruncationIsRetried:
         assert mock_call.call_count == 2
 
 
+class TestOpenAIFailedResponse:
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_raises_with_error_message(self, mock_cls: MagicMock) -> None:
+        mock_response = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(code="server_error", message="upstream exploded"),
+            output=[],
+        )
+        mock_cls.return_value.responses.create.return_value = mock_response
+        settings = _make_settings(Provider.OPENAI)
+        with pytest.raises(LLMError, match="response failed: upstream exploded"):
+            _call_openai("sys", "usr", settings=settings)
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_without_error_object(self, mock_cls: MagicMock) -> None:
+        mock_cls.return_value.responses.create.return_value = SimpleNamespace(
+            status="failed", error=None, output=[]
+        )
+        with pytest.raises(LLMError, match="response failed: unknown error"):
+            _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))
+
+    @patch("pr_split.planner.client.openai.OpenAI")
+    def test_failed_status_falls_back_to_error_code(self, mock_cls: MagicMock) -> None:
+        mock_cls.return_value.responses.create.return_value = SimpleNamespace(
+            status="failed",
+            error=SimpleNamespace(code="rate_limit_exceeded", message=None),
+            output=[],
+        )
+        with pytest.raises(LLMError, match="response failed: rate_limit_exceeded"):
+            _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))
+
+
+class TestTruncationWarningScope:
+    @patch("pr_split.planner.client.logger")
+    @patch("pr_split.planner.client.anthropic.Anthropic")
+    def test_end_turn_with_tool_block_does_not_warn_truncated(
+        self, mock_cls: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        from anthropic.types.beta import BetaToolUseBlock
+
+        block = BetaToolUseBlock(
+            id="tu_1", type="tool_use", name=SPLIT_TOOL_NAME, input={"groups": _SAMPLE_RAW_GROUPS}
+        )
+        mock_cls.return_value.beta.messages.create.return_value = SimpleNamespace(
+            stop_reason="end_turn", content=[block]
+        )
+        result = _call_anthropic("sys", "usr", settings=_make_settings(Provider.ANTHROPIC))
+        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        assert not any("truncated" in str(c.args[0]) for c in mock_logger.warning.call_args_list)
+
+
 class TestMergeChunkGroupsSameFile:
     def test_same_file_in_later_chunk_is_merged_into_one_assignment(self) -> None:
         first = Group(
