@@ -15,6 +15,7 @@ from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.prs import (
     fetch_fork_branch,
     fetch_fork_pr,
+    find_open_pr,
     get_pr_state,
     merge_pr,
 )
@@ -263,3 +264,23 @@ class TestFetchForkPrMalformedResponse:
         mock_gh.return_value = raw
         with pytest.raises(GitOperationError, match="Unexpected response from GitHub for PR #42"):
             fetch_fork_pr(42)
+
+
+class TestFindOpenPr:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_only_an_exact_same_repository_head_counts(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = json.dumps(
+            [
+                {"number": 1, "url": "u1", "headRefName": "feat/x-2", "isCrossRepository": False},
+                {"number": 2, "url": "u2", "headRefName": "feat/x", "isCrossRepository": True},
+                {"number": 3, "url": "u3", "headRefName": "feat/x", "isCrossRepository": False},
+            ]
+        )
+        assert find_open_pr("feat/x") == (3, "u3")
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_no_exact_match_is_none(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = json.dumps(
+            [{"number": 1, "url": "u1", "headRefName": "feat/x-2", "isCrossRepository": False}]
+        )
+        assert find_open_pr("feat/x") is None

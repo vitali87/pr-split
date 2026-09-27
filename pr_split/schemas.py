@@ -79,6 +79,8 @@ class BranchRecord(BaseModel):
     branch_name: str
     base_branch: str
     commit_sha: str = ""
+    # Registered by `adopt` rather than created by pr-split: clean leaves it alone.
+    adopted: bool = False
 
 
 class PRRecord(BaseModel):
@@ -86,6 +88,8 @@ class PRRecord(BaseModel):
     pr_number: int
     pr_url: str
     state: PRState = PRState.OPEN
+    # Registered by `adopt` rather than opened by pr-split: clean leaves it open.
+    adopted: bool = False
 
 
 class GitState(BaseModel):
