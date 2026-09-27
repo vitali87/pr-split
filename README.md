@@ -345,7 +345,7 @@ jobs:
 |--------|-------------|
 | `total-loc` | Total lines of code in the PR diff |
 | `total-groups` | Number of suggested groups |
-| `objective` | Plan objective score (lower is better) |
+| `objective` | Simplified plan score, `overflow × 1000 + file_scatter × 50 + groups` (lower is better; `0` when no split plan was scored; not the full `score_plan` objective described in METHODOLOGY.md) |
 | `should-split` | Whether the PR should be split (`true`/`false`) |
 
 ## Planning backends
