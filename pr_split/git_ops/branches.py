@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import atexit
 import contextlib
+import functools
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 
 from loguru import logger
@@ -308,11 +312,36 @@ def add_worktree(path: str, branch_name: str, start_point: str) -> None:
         prev_sha = run_git("rev-parse", f"refs/heads/{branch_name}")
         run_git("branch", "-D", branch_name)
     try:
-        run_git("worktree", "add", "-b", branch_name, path, start_point)
+        # A repository post-checkout hook (husky, lint-staged installers)
+        # runs inside the throwaway worktree, where it has no toolchain and
+        # can only fail; pointing hooksPath at an empty directory for this
+        # one command disables it.
+        run_git(
+            "-c",
+            f"core.hooksPath={_no_hooks_dir()}",
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            path,
+            start_point,
+        )
     except GitOperationError:
         if prev_sha is not None:
             run_git("branch", branch_name, prev_sha)
         raise
+
+
+@functools.cache
+def _no_hooks_dir() -> str:
+    """An empty directory to use as core.hooksPath (no hooks run).
+
+    mkdtemp creates it private to this user, so nobody else can plant hooks
+    in it the way they could in a fixed, shared path under the temp dir.
+    """
+    path = tempfile.mkdtemp(prefix="pr-split-no-hooks-")
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 def remove_worktree(path: str) -> None:
@@ -324,7 +353,11 @@ def commit_files_in_dir(
 ) -> str:
     if not file_paths:
         raise GitOperationError("commit_files_in_dir called with no file paths")
-    run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
+    # -f: the dev branch may track a file that matches .gitignore (added
+    # with `git add -f`); the diff materialises it, and without -f `git add`
+    # refuses the path and the whole group fails. The path list is explicit,
+    # so -f cannot pull in anything unintended; -A still stages deletions.
+    run_git_in_dir(cwd, "add", "-A", "-f", "--", *file_paths)
     author_args = ("--author", author) if author else ()
     # The content is a subset of commits already accepted on the dev
     # branch; a pre-commit/commit-msg hook (husky, pre-commit, lint-staged)
