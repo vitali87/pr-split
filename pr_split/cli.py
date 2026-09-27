@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json as json_mod
 import shutil
+import sys
 import tempfile
 import time
 import urllib.request
@@ -1093,7 +1094,17 @@ def _merge_groups(
     return True
 
 
+def _stdin_is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
+    if not _stdin_is_interactive():
+        # Scripts and CI (`split --dry-run < /dev/null`) have no one to answer
+        # the editor prompt; typer.prompt would turn the EOF into an Abort
+        # before the plan is ever saved. Accept the plan as-is instead.
+        console.print("[yellow]Non-interactive stdin; accepting the plan as-is.[/yellow]")
+        return groups
     console.print(
         "\n[cyan]Interactive editor. Commands:[/cyan]\n"
         "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"

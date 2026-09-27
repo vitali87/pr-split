@@ -415,6 +415,11 @@ class TestShowGroupDetail:
 # _interactive_edit
 # ---------------------------------------------------------------------------
 class TestInteractiveEditRecomputesLoc:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     @patch("pr_split.cli.recompute_estimated_loc")
     @patch("pr_split.cli._move_assignment", return_value=True)
     @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
@@ -1844,6 +1849,11 @@ class TestDropEmptyGroups:
 
 
 class TestEditorEmptiedGroupEndToEnd:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     @patch("pr_split.cli.typer.prompt")
     def test_moving_the_last_hunk_out_yields_a_valid_one_group_plan(
         self, mock_prompt: MagicMock
@@ -2105,6 +2115,11 @@ class TestRetargetMergedBase:
 
 
 class TestEditorPlanCommands:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     def _partial(self, file_path: str, indices: list[int]) -> GroupAssignment:
         return GroupAssignment(
             file_path=file_path,
@@ -2232,3 +2247,58 @@ class TestExecuteYes:
         mock_confirm.assert_not_called()
         mock_create.assert_called_once()
         assert "stop here" in result.output
+
+
+class TestDryRunWithClosedStdin:
+    """`split --dry-run < /dev/null` must save the plan, not abort.
+
+    The interactive editor is entered unconditionally; with a closed stdin
+    (scripts, CI) `typer.prompt` raises EOFError, which used to become
+    typer.Abort before the plan was ever saved.
+    """
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_closed_stdin_accepts_the_plan_and_saves_it(
+        self,
+        mock_plan_exists: MagicMock,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 10,
+            "total_removed": 5,
+            "total_loc": 15,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        group = _group("pr-1", "feat: auth", files=["a.py"])
+        mock_plan_split.return_value = [group]
+
+        # No `input=` and no patched _interactive_edit: the editor really runs
+        # and hits EOF on the runner's empty stdin.
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 0
+        assert "accepting the plan as-is" in result.output.replace("\n", " ")
+        mock_save_plan.assert_called_once()
