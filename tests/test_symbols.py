@@ -144,3 +144,46 @@ def test_graph_partition_links_the_test_group_to_the_module_group() -> None:
     module_group = owner["pkg/context_pruning.py"]
     assert test_group.id != module_group.id
     assert module_group.id in PlanDAG(groups).ancestors(test_group.id)
+
+
+def test_graph_groups_a_test_file_with_the_module_it_imports() -> None:
+    from pr_split.config import Settings
+    from pr_split.constants import PartitionStrategy
+    from pr_split.planner.partitioning import partition_diff
+
+    # Different directories and file names: only the shared names relate them.
+    settings = Settings(partition_strategy=PartitionStrategy.GRAPH, max_loc=400)
+
+    groups = partition_diff(parse_diff(DIFF), settings)
+
+    assert len(groups) == 1
+    assert {a.file_path for a in groups[0].assignments} == {
+        "pkg/context_pruning.py",
+        "tests/test_pruning.py",
+    }
+    assert "review-slice" not in groups[0].title
+
+
+def test_multi_file_group_is_named_after_its_shared_directory() -> None:
+    from pr_split.planner.partitioning import PartitionUnit, _build_group_title
+
+    units = [
+        PartitionUnit(
+            id="a", file_path="pkg/edit/rename.py", hunk_indices=(0,), loc=5, position=0
+        ),
+        PartitionUnit(id="b", file_path="pkg/edit/move.py", hunk_indices=(0,), loc=9, position=1),
+    ]
+    assert _build_group_title(3, units) == "chore(split): review edit-3"
+
+
+def test_multi_file_group_without_a_shared_directory_names_its_largest_file() -> None:
+    from pr_split.planner.partitioning import PartitionUnit, _build_group_title
+
+    units = [
+        PartitionUnit(id="a", file_path="README.md", hunk_indices=(0,), loc=2, position=0),
+        PartitionUnit(
+            id="b", file_path="src/parser_core.py", hunk_indices=(0,), loc=40, position=1
+        ),
+        PartitionUnit(id="c", file_path="setup.cfg", hunk_indices=(0,), loc=1, position=2),
+    ]
+    assert _build_group_title(2, units) == "chore(split): review parser-core and 2 more-2"

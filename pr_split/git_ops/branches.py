@@ -1,12 +1,21 @@
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import time
 
 from loguru import logger
 
 from .. import logs
+from ..constants import PLAN_DIR
 from ..exceptions import GitOperationError
+
+
+def _git_env() -> dict[str, str]:
+    # delete_branch inspects git's stderr; pin the UI language so those
+    # messages are stable on localised systems.
+    return {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
 
 
 def run_git(*args: str) -> str:
@@ -14,6 +23,7 @@ def run_git(*args: str) -> str:
         ["git", *args],
         capture_output=True,
         text=True,
+        env=_git_env(),
     )
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
@@ -26,6 +36,7 @@ def run_git_in_dir(cwd: str, *args: str) -> str:
         capture_output=True,
         text=True,
         cwd=cwd,
+        env=_git_env(),
     )
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
@@ -72,28 +83,94 @@ def adopt_remote_branch(branch: str) -> bool:
 
 
 def is_worktree_clean() -> bool:
-    output = run_git("status", "--porcelain")
+    """True when nothing tracked is modified, ignoring pr-split's own plan directory.
+
+    `split`/`edit` write `.pr-split/plan.json`; a user who commits the plan
+    (to share or review it) then has a modified tracked file, and `execute`
+    would refuse to run on the very plan it was asked to execute. Everything
+    under the plan directory is therefore excluded from the check.
+    """
+    output = run_git("status", "--porcelain", "--", f":(top,exclude){PLAN_DIR}")
     return all(line.startswith("??") for line in output.splitlines())
+
+
+# Server-side failures GitHub reports for a push that can succeed on retry.
+_TRANSIENT_PUSH_ERRORS = (
+    "fatal error in commit_refs",
+    "the remote end hung up unexpectedly",
+    "internal server error",
+    "http 500",
+    "http 502",
+    "http 503",
+    "connection reset",
+    "operation timed out",
+)
+_PUSH_ATTEMPTS = 3
+_PUSH_RETRY_DELAY = 2.0
+
+
+def _remote_has_local_head(branch: str) -> bool:
+    try:
+        remote = run_git("ls-remote", "origin", f"refs/heads/{branch}").split()
+        return bool(remote) and remote[0] == run_git("rev-parse", branch)
+    except GitOperationError:
+        return False
 
 
 def push_branch(branch: str) -> None:
     logger.info(logs.PUSHING_BRANCH.format(branch=branch))
-    run_git("push", "--force-with-lease", "-u", "origin", branch)
+    retried = False
+    for attempt in range(1, _PUSH_ATTEMPTS + 1):
+        try:
+            run_git("push", "--force-with-lease", "-u", "origin", branch)
+            return
+        except GitOperationError as exc:
+            transient = any(marker in str(exc).lower() for marker in _TRANSIENT_PUSH_ERRORS)
+            # A push reported as failed (hung-up remote, timeout) may still have
+            # landed; the retry is then rejected as a stale lease although the
+            # branch is already on the remote.
+            if retried and not transient and _remote_has_local_head(branch):
+                return
+            if not transient or attempt == _PUSH_ATTEMPTS:
+                raise
+            retried = True
+            logger.warning(
+                logs.PUSH_RETRY.format(branch=branch, attempt=attempt, error=str(exc).strip())
+            )
+            time.sleep(_PUSH_RETRY_DELAY * attempt)
+
+
+_LOCAL_BRANCH_MISSING = "not found"
+_REMOTE_REF_MISSING = "remote ref does not exist"
 
 
 def delete_branch(branch: str, *, remote: bool = False) -> None:
+    """Delete ``branch`` locally and, with ``remote``, on origin.
+
+    A branch that is already gone (``pr-split merge`` deletes the local and
+    remote branch as part of merging) counts as deleted: cleanup must be
+    re-runnable and must not report a completed merge as a failure.
+    """
     local_error: GitOperationError | None = None
     try:
         run_git("branch", "-D", branch)
         logger.info(logs.BRANCH_DELETED.format(branch=branch))
     except GitOperationError as exc:
-        if not remote:
+        if _LOCAL_BRANCH_MISSING in str(exc):
+            logger.info(logs.BRANCH_ALREADY_GONE.format(branch=branch, where=" locally"))
+        elif not remote:
             raise
-        # The local branch may be checked out or already gone; still remove
-        # the remote branch so the cleanup is not left half done.
-        local_error = exc
+        else:
+            # The local branch may be checked out; still remove the remote
+            # branch so the cleanup is not left half done.
+            local_error = exc
     if remote:
-        run_git("push", "origin", "--delete", branch)
+        try:
+            run_git("push", "origin", "--delete", branch)
+        except GitOperationError as exc:
+            if _REMOTE_REF_MISSING not in str(exc):
+                raise
+            logger.info(logs.BRANCH_ALREADY_GONE.format(branch=branch, where=" on origin"))
     if local_error is not None:
         raise local_error
 

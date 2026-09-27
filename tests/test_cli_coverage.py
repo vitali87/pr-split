@@ -1035,11 +1035,138 @@ class TestExecuteRetriesAfterFailedPush:
         with patch("pr_split.cli.validate_coverage"):
             result = runner.invoke(app, ["execute"])
 
-        assert result.exit_code == 0
+        assert result.exit_code == 0, result.output
         assert "Recreating them and retrying" in result.output.replace("\n", " ")
         mock_create.assert_called_once()
         mock_push.assert_called_once()
         mock_save.assert_called_once()
+
+    @staticmethod
+    def _plan_with_one_of_two_prs(pr_groups: list[str]) -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, PRRecord, SplitPlan
+
+        return PlanFile(
+            plan=SplitPlan(
+                dev_branch="feature-branch",
+                base_branch="main",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                merge_base_sha="0123456789abcdef",
+                raw_diff="some diff",
+                groups=[
+                    _group("pr-1", "feat: a", files=["a.py"]),
+                    _group("pr-2", "feat: b", files=["b.py"]),
+                ],
+            ),
+            git_state=GitState(
+                branches=[
+                    BranchRecord(
+                        group_id=gid,
+                        branch_name=f"pr-split/feature-branch/{gid}",
+                        base_branch="main",
+                        commit_sha="abc123",
+                    )
+                    for gid in ("pr-1", "pr-2")
+                ],
+                prs=[PRRecord(group_id=gid, pr_number=10, pr_url="u") for gid in pr_groups],
+            ),
+        )
+
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_partial_prs_are_kept_and_the_rest_created(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_validate: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._plan_with_one_of_two_prs(["pr-1"])
+
+        result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0, result.output
+        assert "opened 1 of 2 PR(s)" in result.output.replace("\n", " ")
+        assert set(mock_create.call_args.kwargs["keep"]) == {"pr-1"}
+        assert set(mock_push.call_args.kwargs["existing_prs"]) == {"pr-1"}
+
+    @pytest.mark.parametrize("stacked", [True, False])
+    @patch("pr_split.cli._link_stacks")
+    @patch("pr_split.cli._require_gh_stack")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli._push_and_create_prs", return_value=[])
+    @patch("pr_split.cli._create_branches_and_commits", return_value=[])
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_stacked_resume_keeps_the_parents_of_a_layer_with_a_pr(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_validate: MagicMock,
+        mock_parse: MagicMock,
+        mock_commit: MagicMock,
+        mock_create: MagicMock,
+        mock_push: MagicMock,
+        mock_save: MagicMock,
+        mock_confirm: MagicMock,
+        mock_stack: MagicMock,
+        mock_link: MagicMock,
+        stacked: bool,
+    ) -> None:
+        """pr-2's PR opened but its parent pr-1's did not: rebuilding pr-1 would
+        rewrite the base under pr-2's open PR, so the resume keeps it. A plan
+        with dependencies is laid out along its DAG with or without --stack."""
+        plan_file = self._plan_with_one_of_two_prs(["pr-2"])
+        plan_file.plan.groups[1].depends_on = ["pr-1"]
+        plan_file.plan.stacked = stacked
+        mock_load.return_value = plan_file
+
+        result = runner.invoke(app, ["execute"])
+
+        assert result.exit_code == 0, result.output
+        kept = set(mock_create.call_args.kwargs["keep"])
+        assert kept == {"pr-1", "pr-2"}
+        # pr-1 still gets its PR opened.
+        assert set(mock_push.call_args.kwargs["existing_prs"]) == {"pr-2"}
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_every_group_with_a_pr_is_refused(
+        self, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_load.return_value = self._plan_with_one_of_two_prs(["pr-1", "pr-2"])
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "already has PRs" in result.output
 
     @staticmethod
     def _plan_with_stale_pr2() -> object:
@@ -1536,6 +1663,49 @@ class TestAdoptExistingBranches:
         assert all(b.adopted for b in saved.git_state.branches)
         assert all(p.adopted for p in saved.git_state.prs)
 
+    @patch("pr_split.cli.find_open_pr")
+    @patch("pr_split.cli.link_stack")
+    @patch("pr_split.cli.check_gh_stack", return_value=True)
+    def test_another_branchs_plan_does_not_block_adoption(
+        self,
+        mock_stack: MagicMock,
+        mock_link: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.plan_store import load_plan, save_plan, select_plan
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, SplitPlan
+
+        self._repo(tmp_path, monkeypatch)
+        for other in ("feat/a", "feat/b"):
+            save_plan(
+                PlanFile(
+                    plan=SplitPlan(
+                        dev_branch=other,
+                        base_branch="main",
+                        max_loc=400,
+                        priority=Priority.ORTHOGONAL,
+                        groups=[],
+                    ),
+                    git_state=GitState(
+                        branches=[
+                            BranchRecord(group_id="pr-1", branch_name=other, base_branch="main")
+                        ]
+                    ),
+                )
+            )
+        mock_find.side_effect = [(1951, "https://x/1951"), (1952, "https://x/1952")]
+
+        result = runner.invoke(
+            app, ["adopt", "test/allowlist", "test/derive", "--base", "main", "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        select_plan("test/derive")
+        assert [p.pr_number for p in load_plan().git_state.prs] == [1951, 1952]
+
     @patch("pr_split.cli.find_open_pr", return_value=None)
     @patch("pr_split.cli.link_stack")
     @patch("pr_split.cli.check_gh_stack", return_value=True)
@@ -1575,6 +1745,80 @@ class TestAdoptExistingBranches:
         result = runner.invoke(app, ["adopt", "only-one"])
         assert result.exit_code == 1
         assert "at least two branches" in result.output
+
+
+class TestRetargetMergedBase:
+    def _plan(self, stacked: bool = True) -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, PRRecord, SplitPlan
+
+        return PlanFile(
+            plan=SplitPlan(
+                dev_branch="feat/change-signature",
+                base_branch="feat/postcondition",
+                max_loc=400,
+                priority=Priority.ORTHOGONAL,
+                stacked=stacked,
+                groups=[_group("pr-1", "a"), _group("pr-2", "b", depends_on=["pr-1"])],
+            ),
+            git_state=GitState(
+                branches=[
+                    BranchRecord(
+                        group_id="pr-1", branch_name="s/pr-1", base_branch="feat/postcondition"
+                    ),
+                    BranchRecord(group_id="pr-2", branch_name="s/pr-2", base_branch="s/pr-1"),
+                ],
+                prs=[
+                    PRRecord(group_id="pr-1", pr_number=2042, pr_url="u"),
+                    PRRecord(group_id="pr-2", pr_number=2043, pr_url="u"),
+                ],
+            ),
+        )
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.link_stack")
+    @patch("pr_split.cli.set_pr_base")
+    @patch("pr_split.cli.unstack")
+    @patch("pr_split.cli.stack_numbers_for", return_value={2054})
+    @patch("pr_split.cli.default_branch", return_value="main")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_unstacks_retargets_roots_and_relinks_on_the_new_base(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_default: MagicMock,
+        mock_stacks: MagicMock,
+        mock_unstack: MagicMock,
+        mock_set_base: MagicMock,
+        mock_link: MagicMock,
+        mock_save: MagicMock,
+    ) -> None:
+        mock_load.return_value = self._plan()
+
+        result = runner.invoke(app, ["retarget", "--yes"])
+
+        assert result.exit_code == 0, result.output
+        mock_unstack.assert_called_once_with(2054)
+        mock_set_base.assert_called_once_with(2042, "main")
+        mock_link.assert_called_once_with([2042, 2043], base="main")
+        saved = mock_save.call_args.args[0]
+        assert saved.plan.base_branch == "main"
+        assert [b.base_branch for b in saved.git_state.branches] == ["main", "s/pr-1"]
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_merge_refuses_when_the_base_has_merged(
+        self, mock_pe: MagicMock, mock_load: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr("pr_split.cli._base_has_merged", lambda base: True)
+        mock_load.return_value = self._plan()
+
+        result = runner.invoke(app, ["merge"])
+
+        assert result.exit_code == 1
+        assert "feat/postcondition has already merged" in " ".join(result.output.split())
+        assert "pr-split retarget" in " ".join(result.output.split())
 
 
 class TestEditorPlanCommands:

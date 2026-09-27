@@ -69,16 +69,21 @@ from .git_ops import (
 )
 from .git_ops.branches import commit_exists, run_git
 from .git_ops.prs import (
+    branch_has_merged,
     close_pr,
     create_pr,
+    default_branch,
     find_open_pr,
     get_pr_state,
     link_stack,
     merge_pr,
+    set_pr_base,
+    stack_numbers_for,
+    unstack,
 )
 from .graph import PlanDAG
 from .per_group import PerGroupStep, load_per_group_step, run_per_group_step
-from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
+from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan, select_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
@@ -104,6 +109,21 @@ app = typer.Typer(
     help="Decompose large PRs into reviewable dependency-ordered PRs",
 )
 console = Console()
+
+
+@app.callback()
+def _choose_plan(
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            envvar="PR_SPLIT_BRANCH",
+            help="Dev branch whose saved plan to use when several splits are in progress",
+        ),
+    ] = None,
+) -> None:
+    # Plans are saved per dev branch; without --branch the only saved plan is used.
+    select_plan(branch)
 
 
 def _render_dag(groups: list[Group]) -> str:
@@ -441,7 +461,15 @@ def _create_branches_and_commits(
     *,
     author: str | None = None,
     stacked: bool = False,
+    keep: dict[str, BranchRecord] | None = None,
 ) -> list[BranchRecord]:
+    """Create a branch and commit per group; groups in ``keep`` reuse their record.
+
+    ``keep`` holds groups whose PRs already exist from an earlier, partly
+    failed run: their branches are left as they are (recreating them would
+    rewrite the open PR's head).
+    """
+    kept = keep or {}
     worktree_base = Path(tempfile.mkdtemp(prefix="pr-split-worktrees-"))
     step = load_per_group_step()
     order = {gid: i for i, gid in enumerate(PlanDAG(groups).topological_order(), start=1)}
@@ -462,9 +490,10 @@ def _create_branches_and_commits(
         batches = iter([[(group, base_branch, merge_base_ref) for group in groups]])
 
     try:
-        results: dict[str, BranchRecord] = {}
+        results: dict[str, BranchRecord] = dict(kept)
         errors: list[tuple[str, Exception]] = []
         for batch_args in batches:
+            batch_args = [args for args in batch_args if args[0].id not in kept]
             with ThreadPoolExecutor(max_workers=_WORKTREE_MAX_WORKERS) as executor:
                 future_to_group_id = {
                     executor.submit(
@@ -494,7 +523,9 @@ def _create_branches_and_commits(
         if errors:
             # Failed groups already removed their own branch inside the
             # worker; only the successful ones remain to roll back.
-            for record in results.values():
+            for gid, record in results.items():
+                if gid in kept:
+                    continue
                 try:
                     delete_branch(record.branch_name)
                 except PRSplitError as exc:
@@ -605,7 +636,10 @@ def _push_and_create_prs(
     branch_records: list[BranchRecord],
     *,
     draft: bool = False,
+    existing_prs: dict[str, PRRecord] | None = None,
 ) -> list[PRRecord]:
+    """Push each group's branch and open its PR; groups in ``existing_prs`` are done."""
+    done = existing_prs or {}
     record_map = {r.group_id: r for r in branch_records}
     errors: list[tuple[str, Exception]] = []
 
@@ -614,8 +648,9 @@ def _push_and_create_prs(
         push_futures = {
             executor.submit(push_branch, record_map[group.id].branch_name): group.id
             for group in groups
+            if group.id not in done
         }
-        pushed: set[str] = set()
+        pushed: set[str] = set(done)
         for future in as_completed(push_futures):
             group_id = push_futures[future]
             try:
@@ -650,9 +685,9 @@ def _push_and_create_prs(
                 _create_single_pr, group, record_map[group.id], groups, draft=draft
             ): group.id
             for group in groups
-            if group.id in pushed and _base_pushed(group)
+            if group.id not in done and group.id in pushed and _base_pushed(group)
         }
-        results: dict[str, PRRecord] = {}
+        results: dict[str, PRRecord] = dict(done)
         for future in as_completed(future_to_group_id):
             group_id = future_to_group_id[future]
             try:
@@ -1267,6 +1302,7 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
+    select_plan(dev_branch_arg)
 
     # A branch that exists only as origin/<name> (fresh clone or worktree)
     # is adopted as a local branch, as `git checkout <name>` would.
@@ -1478,6 +1514,11 @@ def status() -> None:
     plan = plan_file.plan
     git_state = plan_file.git_state
 
+    if git_state.prs and _base_has_merged(plan.base_branch):
+        console.print(
+            f"[yellow]{logs.BASE_ALREADY_MERGED.format(base=escape(plan.base_branch))}[/yellow]"
+        )
+
     branch_map = {r.group_id: r.branch_name for r in git_state.branches}
     pr_map = {r.group_id: r for r in git_state.prs}
 
@@ -1603,6 +1644,8 @@ def adopt(
     if len(set(branches)) != len(branches):
         console.print("[red]Each branch may appear only once.[/red]")
         raise typer.Exit(1)
+    # The adopted stack's plan is filed under its top branch, like a split's dev branch.
+    select_plan(branches[-1])
     if plan_exists():
         existing = _load_plan_or_exit()
         if existing.git_state.branches or existing.git_state.prs:
@@ -1684,6 +1727,80 @@ def adopt(
         )
     )
     logger.success(f"Adopted {len(branches)} branches as a stack on {base}")
+
+
+def _base_has_merged(base: str) -> bool:
+    """True when the plan's base is itself a merged feature branch."""
+    try:
+        return base != default_branch() and branch_has_merged(base)
+    except PRSplitError:
+        return False
+
+
+@app.command(
+    help="Move the split onto a new base, e.g. after its --base branch merged: "
+    "retargets the root PRs and relinks native stacks on the new base."
+)
+def retarget(
+    to: Annotated[
+        str | None,
+        typer.Option("--to", help="New base branch (default: the repository's default branch)"),
+    ] = None,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Retarget without confirming")] = False,
+) -> None:
+    if not plan_exists():
+        console.print(ErrorMsg.NO_PLAN())
+        raise typer.Exit(1)
+    plan_file = _load_plan_or_exit()
+    plan, git_state = plan_file.plan, plan_file.git_state
+    if not git_state.prs:
+        console.print("[yellow]The plan has no PRs; nothing to retarget.[/yellow]")
+        raise typer.Exit(0)
+    try:
+        new_base = to or default_branch()
+    except PRSplitError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+    old_base = plan.base_branch
+    if new_base == old_base:
+        console.print(f"[yellow]The split already targets {escape(new_base)}.[/yellow]")
+        raise typer.Exit(0)
+
+    pr_by_group = {r.group_id: r.pr_number for r in git_state.prs}
+    roots = [r for r in git_state.branches if r.base_branch == old_base]
+    console.print(
+        f"Retarget {len(roots)} root PR(s) from {escape(old_base)} to {escape(new_base)}"
+        + (" and relink the native stacks" if plan.stacked else "")
+    )
+    if not yes:
+        typer.confirm("Proceed?", abort=True)
+
+    try:
+        # GitHub refuses to change the base of a PR that is in a stack, so
+        # unstack first, retarget the roots, then link the chains again.
+        if plan.stacked:
+            for number in sorted(stack_numbers_for(list(pr_by_group.values()))):
+                unstack(number)
+        for record in roots:
+            if record.group_id in pr_by_group:
+                set_pr_base(pr_by_group[record.group_id], new_base)
+        branches = [
+            r.model_copy(update={"base_branch": new_base}) if r.base_branch == old_base else r
+            for r in git_state.branches
+        ]
+        if plan.stacked:
+            _link_stacks(PlanDAG(plan.groups), git_state.prs, branches)
+    except PRSplitError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
+
+    save_plan(
+        PlanFile(
+            plan=plan.model_copy(update={"base_branch": new_base}),
+            git_state=git_state.model_copy(update={"branches": branches}),
+        )
+    )
+    logger.success(f"Retargeted the split from {old_base} to {new_base}")
 
 
 @app.command(help="Close all split PRs and delete their branches.")
@@ -1778,10 +1895,25 @@ def execute(
     if draft and not plan.draft:
         plan = plan.model_copy(update={"draft": True})
 
-    if plan_file.git_state.prs:
+    existing_prs = {r.group_id: r for r in plan_file.git_state.prs}
+    recorded = {r.group_id: r for r in plan_file.git_state.branches}
+    kept_branches = {gid: recorded[gid] for gid in existing_prs if gid in recorded}
+    group_ids = {g.id for g in plan.groups}
+    if existing_prs and (
+        set(existing_prs) >= group_ids
+        or not set(existing_prs) <= group_ids
+        or set(kept_branches) != set(existing_prs)
+    ):
+        # Every group already has a PR, or the recorded PRs no longer match
+        # the plan's groups: there is nothing safe to resume.
         console.print("[red]This plan already has PRs. Use 'pr-split clean' first.[/red]")
         raise typer.Exit(1)
-    if plan_file.git_state.branches:
+    if existing_prs:
+        console.print(
+            f"[yellow]A previous run opened {len(existing_prs)} of {len(plan.groups)} PR(s)."
+            " Keeping those and creating the rest.[/yellow]"
+        )
+    elif plan_file.git_state.branches:
         # A previous execute created branches but no PRs - a failed push or PR
         # creation. Branch creation is idempotent (add_worktree recreates an
         # existing branch), so retry instead of forcing 'clean' + a full
@@ -1840,6 +1972,16 @@ def execute(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
+    # Any plan with dependency edges is laid out along its DAG (stacked or not),
+    # so a kept layer's branch sits on its ancestors' current commits; rebuilding
+    # an ancestor would rewrite the base under the kept layer's open PR, which
+    # would then show the ancestor's changes again. Their PRs are still opened.
+    if plan.stacked or any(g.depends_on for g in plan.groups):
+        for gid in list(kept_branches):
+            for ancestor in dag.ancestors(gid):
+                if ancestor in recorded:
+                    kept_branches.setdefault(ancestor, recorded[ancestor])
+
     _present_plan(plan.groups)
     _report_oversized_groups(
         plan.groups, plan.max_loc, {pf.path: len(pf) for pf in parsed_diff.patch_set}
@@ -1858,12 +2000,15 @@ def execute(
             namespace,
             author=plan.author,
             stacked=plan.stacked,
+            keep=kept_branches,
         )
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
     try:
-        pr_records = _push_and_create_prs(plan.groups, branch_records, draft=plan.draft)
+        pr_records = _push_and_create_prs(
+            plan.groups, branch_records, draft=plan.draft, existing_prs=existing_prs
+        )
     except PRCreationError as exc:
         save_plan(
             PlanFile(
@@ -1962,6 +2107,12 @@ def merge_all(
     if not pr_map:
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
+
+    if _base_has_merged(plan.base_branch):
+        console.print(
+            f"[red]{logs.BASE_ALREADY_MERGED.format(base=escape(plan.base_branch))}[/red]"
+        )
+        raise typer.Exit(1)
 
     # A hand-edited plan.json can carry unknown or cyclic dependencies;
     # report that instead of a traceback from the DAG walk.
@@ -2196,6 +2347,8 @@ def recover(
     ] = False,
     force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
 ) -> None:
+    # The recovered plan is this dev branch's; other branches' plans are left alone.
+    select_plan(dev_branch)
     if plan_exists() and not force:
         console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
         raise typer.Exit(1)
