@@ -1158,3 +1158,96 @@ class TestRenderDagMultiParent:
         tree = _render_dag(groups)
         assert "pr-2: child (depends on: pr-1)" in tree
         assert "pr-3: leaf" in tree
+
+
+class TestWorktreeAppliesFileModes:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.target_file_modes", return_value={"run.sh": 0o100755})
+    @patch("pr_split.cli.materialize_group_files", return_value={"run.sh": "x\n", "a.py": "y\n"})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_executable_bit_applied_only_where_diff_says(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_modes: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        import os
+        import stat
+        from pathlib import Path
+
+        modes: dict[str, int] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                modes[file_path] = stat.S_IMODE(os.stat(Path(cwd) / file_path).st_mode)
+            return "sha1"
+
+        mock_commit.side_effect = capture
+        _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert modes["run.sh"] & stat.S_IXUSR
+        assert not modes["a.py"] & stat.S_IXUSR
+
+
+class TestWorktreeMaterializesSymlinks:
+    def _run(
+        self, materialized: dict[str, str | None], modes: dict[str, int]
+    ) -> dict[str, object]:
+        import os
+        from pathlib import Path
+
+        seen: dict[str, object] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                p = Path(cwd) / file_path
+                seen[file_path] = (
+                    os.readlink(p) if p.is_symlink() else ("missing" if not p.exists() else "file")
+                )
+            return "sha1"
+
+        with (
+            patch("pr_split.cli.add_worktree"),
+            patch("pr_split.cli.remove_worktree"),
+            patch("pr_split.cli.materialize_group_files", return_value=materialized),
+            patch("pr_split.cli.target_file_modes", return_value=modes),
+            patch("pr_split.cli.commit_files_in_dir", side_effect=capture),
+        ):
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        return seen
+
+    def test_new_symlink_is_created_as_a_link(self) -> None:
+        seen = self._run({"link": "other.py\n", "other.py": "x\n"}, {"link": 0o120000})
+        assert seen["link"] == "other.py"
+        assert seen["other.py"] == "file"
+
+    def test_symlink_without_mode_info_stays_a_plain_file(self) -> None:
+        seen = self._run({"link": "other.py\n"}, {})
+        assert seen["link"] == "file"
+
+    def test_regular_file_converted_to_symlink(self) -> None:
+        import os
+        from pathlib import Path
+
+        seen: dict[str, object] = {}
+
+        def pre_populate(path: str, branch: str, start: str) -> None:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            (Path(path) / "toref").write_text("old regular content\n")
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            p = Path(cwd) / "toref"
+            seen["toref"] = os.readlink(p) if p.is_symlink() else "file"
+            return "sha1"
+
+        with (
+            patch("pr_split.cli.add_worktree", side_effect=pre_populate),
+            patch("pr_split.cli.remove_worktree"),
+            patch("pr_split.cli.materialize_group_files", return_value={"toref": "a.py\n"}),
+            patch("pr_split.cli.target_file_modes", return_value={"toref": 0o120000}),
+            patch("pr_split.cli.commit_files_in_dir", side_effect=capture),
+        ):
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert seen["toref"] == "a.py"

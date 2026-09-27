@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json as json_mod
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -45,6 +46,7 @@ from .diff_ops import (
     materialize_group_files,
     merge_chain_assignments,
     parse_diff,
+    target_file_modes,
 )
 from .exceptions import (
     DiffParseError,
@@ -438,14 +440,33 @@ def _create_single_branch_and_commit(
         add_worktree(worktree_path, branch_name, start_point or merge_base_ref)
     try:
         materialized = materialize_group_files(parsed_diff, group, merge_base_ref)
+        modes = target_file_modes(parsed_diff, group)
         for file_path, content in materialized.items():
             p = Path(worktree_path) / file_path
-            if content is not None:
-                p.parent.mkdir(parents=True, exist_ok=True)
-                # newline="" keeps CRLF from the reconstructed content intact.
-                p.write_text(content, encoding="utf-8", errors="surrogateescape", newline="")
-            elif p.exists():
+            mode = modes.get(file_path)
+            if content is None:
+                # A dangling symlink is not "exists()" but must still go.
+                if p.is_symlink() or p.exists():
+                    p.unlink()
+                continue
+            p.parent.mkdir(parents=True, exist_ok=True)
+            if p.is_symlink():
+                # Never write through an existing link (it would modify the
+                # target file); replace the link itself.
                 p.unlink()
+            if mode is not None and stat.S_ISLNK(mode):
+                # Git stores a symlink's target as the blob content. A regular
+                # file being converted to a link is still on disk here.
+                if p.is_symlink() or p.exists():
+                    p.unlink()
+                p.symlink_to(content.rstrip("\n"))
+                continue
+            # newline="" keeps CRLF from the reconstructed content intact.
+            p.write_text(content, encoding="utf-8", errors="surrogateescape", newline="")
+            if mode is not None:
+                # Git only tracks the executable bit; apply the diff's target
+                # mode so chmod changes reach the sub-PR.
+                p.chmod(mode & 0o777)
 
         logger.info(logs.COMMITTING_GROUP.format(group=group.id, title=group.title))
         commit_sha = commit_files_in_dir(

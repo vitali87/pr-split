@@ -13,6 +13,7 @@ from pr_split.diff_ops.reconstructor import (
     materialize_group_files,
     merge_chain_assignments,
     split_git_lines,
+    target_file_modes,
 )
 from pr_split.exceptions import GitOperationError
 from pr_split.schemas import Group, GroupAssignment
@@ -617,3 +618,125 @@ class TestCrlfPreserved:
             ],
         )
         assert materialize_group_files(parsed, group, "main")["c.txt"] == "x\ry\nZ\n"
+
+
+class TestTruncatedFileIsNotDeleted:
+    @patch("pr_split.diff_ops.reconstructor._get_base_file_content", return_value="x\ny\n")
+    def test_file_emptied_on_dev_is_written_empty(self, mock_base: MagicMock) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.txt b/a.txt\nindex 1111111..e69de29 100644\n"
+            "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        assert parsed.patch_set[0].is_removed_file  # the heuristic that misled us
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main") == {"a.txt": ""}
+
+    def test_real_deletion_still_removes(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.txt b/a.txt\ndeleted file mode 100644\nindex 1111111..0000000\n"
+            "--- a/a.txt\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        group = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.txt",
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        assert materialize_group_files(parsed, group, "main") == {"a.txt": None}
+
+
+class TestTargetFileModes:
+    def _group(self, *paths: str) -> Group:
+        return Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path=p, assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+                )
+                for p in paths
+            ],
+        )
+
+    def test_mode_change_with_content_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n"
+            "index 422c2b7..55dce13\n--- a/run.sh\n+++ b/run.sh\n@@ -1,2 +1,2 @@\n a\n-b\n+B\n"
+        )
+        assert target_file_modes(parsed, self._group("run.sh")) == {"run.sh": 0o100755}
+
+    def test_new_executable_file_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/n.sh b/n.sh\nnew file mode 100755\n--- /dev/null\n+++ b/n.sh\n"
+            "@@ -0,0 +1 @@\n+x\n"
+        )
+        assert target_file_modes(parsed, self._group("n.sh")) == {"n.sh": 0o100755}
+
+    def test_plain_change_and_unassigned_files_are_ignored(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+            "diff --git a/b.sh b/b.sh\nold mode 100644\nnew mode 100755\n"
+            "--- a/b.sh\n+++ b/b.sh\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.py")) == {}
+
+    def test_removed_file_is_ignored(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/d.sh b/d.sh\ndeleted file mode 100755\n--- a/d.sh\n+++ /dev/null\n"
+            "@@ -1 +0,0 @@\n-x\n"
+        )
+        assert target_file_modes(parsed, self._group("d.sh")) == {}
+
+    def test_new_symlink_mode_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/link b/link\nnew file mode 120000\n--- /dev/null\n+++ b/link\n"
+            "@@ -0,0 +1 @@\n+other.py\n\\ No newline at end of file\n"
+        )
+        assert target_file_modes(parsed, self._group("link")) == {"link": 0o120000}
+
+    def test_retargeted_symlink_mode_comes_from_index_line(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/link b/link\nindex d90d485..5f35558 120000\n--- a/link\n+++ b/link\n"
+            "@@ -1 +1 @@\n-other.py\n\\ No newline at end of file\n"
+            "+missing.py\n\\ No newline at end of file\n"
+        )
+        assert target_file_modes(parsed, self._group("link")) == {"link": 0o120000}
+
+    def test_unchanged_regular_mode_from_index_line(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.py b/a.py\nindex 1111111..2222222 100644\n--- a/a.py\n+++ b/a.py\n"
+            "@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.py")) == {"a.py": 0o100644}
+
+    def test_mode_change_back_to_non_executable_is_reported(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/run.sh b/run.sh\nold mode 100755\nnew mode 100644\n"
+            "--- a/run.sh\n+++ b/run.sh\n@@ -1 +1 @@\n-x\n+y\n"
+        )
+        assert target_file_modes(parsed, self._group("run.sh")) == {"run.sh": 0o100644}
+
+    def test_file_truncated_to_empty_keeps_its_new_mode(self) -> None:
+        parsed = parse_diff(
+            "diff --git a/a.sh b/a.sh\nold mode 100644\nnew mode 100755\n"
+            "--- a/a.sh\n+++ b/a.sh\n@@ -1,2 +0,0 @@\n-x\n-y\n"
+        )
+        assert target_file_modes(parsed, self._group("a.sh")) == {"a.sh": 0o100755}

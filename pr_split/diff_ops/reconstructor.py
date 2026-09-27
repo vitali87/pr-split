@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import stat
 import subprocess
 
 from loguru import logger
@@ -152,7 +154,10 @@ def materialize_group_files(
         patch_file = pf_map.get(file_path)
         if patch_file is None:
             continue
-        if patch_file.is_removed_file:
+        # unidiff's is_removed_file is a heuristic that is also true for a
+        # file truncated to empty (single hunk with target length 0); only a
+        # /dev/null target is a real deletion.
+        if patch_file.target_file == "/dev/null":
             result[file_path] = None
             continue
         indices = _assigned_hunk_indices(patch_file, assignments)
@@ -164,3 +169,37 @@ def materialize_group_files(
         base_content = _get_base_file_content(file_path, ref)
         result[file_path] = apply_hunks(base_content, patch_file, indices)
     return result
+
+
+# "new file mode"/"new mode" appear when the mode changes; an unchanged mode
+# is only visible on the "index <old>..<new> <mode>" line.
+_TARGET_MODE_RE = re.compile(
+    r"^(?:new file mode|new mode) (\d{6})$|^index [0-9a-f]+\.\.[0-9a-f]+ (\d{6})$",
+    re.MULTILINE,
+)
+
+
+def target_file_modes(parsed_diff: ParsedDiff, group: Group) -> dict[str, int]:
+    """Map each file the group materializes to the mode the diff gives it.
+
+    unidiff parses ``old mode``/``new mode``/``new file mode`` and ``index``
+    headers into ``patch_info`` only; nothing else applies them, so without
+    this a ``chmod +x`` that comes with a content change silently loses the
+    bit and a symlink is written as a regular file. Regular files (100644,
+    100755) and symlinks (120000) are reported.
+    """
+    wanted = {assignment.file_path for assignment in group.assignments}
+    modes: dict[str, int] = {}
+    for patch_file in parsed_diff.patch_set:
+        # target_file, not is_removed_file: the latter is also true for a file
+        # truncated to empty, which still needs its mode applied.
+        if patch_file.path not in wanted or patch_file.target_file == "/dev/null":
+            continue
+        header = "".join(str(line) for line in patch_file.patch_info or [])
+        match = _TARGET_MODE_RE.search(header)
+        if not match:
+            continue
+        mode = int(match.group(1) or match.group(2), 8)
+        if stat.S_ISREG(mode) or stat.S_ISLNK(mode):
+            modes[patch_file.path] = mode
+    return modes
