@@ -1533,6 +1533,29 @@ class TestAdoptExistingBranches:
         ]
         assert [p.pr_number for p in saved.git_state.prs] == [1951, 1952]
 
+    @patch("pr_split.cli.find_open_pr", return_value=None)
+    @patch("pr_split.cli.link_stack")
+    @patch("pr_split.cli.check_gh_stack", return_value=True)
+    def test_a_failed_lookup_saves_nothing_and_says_to_rerun(
+        self,
+        mock_stack: MagicMock,
+        mock_link: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._repo(tmp_path, monkeypatch)
+
+        result = runner.invoke(
+            app, ["adopt", "test/allowlist", "test/derive", "--base", "main", "--yes"]
+        )
+
+        assert result.exit_code == 1
+        assert "re-run the same adopt command" in " ".join(result.output.split())
+        from pr_split.plan_store import plan_exists
+
+        assert not plan_exists()
+
     @patch("pr_split.cli.link_stack")
     def test_branch_that_does_not_contain_its_parent_is_refused(
         self, mock_link: MagicMock, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

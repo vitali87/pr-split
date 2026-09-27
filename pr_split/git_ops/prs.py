@@ -47,17 +47,31 @@ def check_gh_stack() -> bool:
 
 
 def find_open_pr(branch: str) -> tuple[int, str] | None:
-    """The open PR whose head is ``branch`` in this repository, if any."""
+    """The open PR whose head is ``branch`` in this repository, if any.
+
+    ``gh pr list --head`` can also return PRs from forks and PRs whose head
+    merely starts with ``branch``, so only an exact, same-repository head counts.
+    """
     raw = _run_gh(
-        "pr", "list", "--head", branch, "--state", "open", "--json", "number,url", "--limit", "1"
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number,url,headRefName,isCrossRepository",
+        "--limit",
+        str(PR_LIST_LIMIT),
     )
     try:
         prs = json.loads(raw or "[]")
     except json.JSONDecodeError:
         return None
-    if not prs:
-        return None
-    return int(prs[0]["number"]), str(prs[0]["url"])
+    for pr in prs:
+        if pr.get("headRefName") == branch and not pr.get("isCrossRepository"):
+            return int(pr["number"]), str(pr["url"])
+    return None
 
 
 def create_pr(

@@ -1569,6 +1569,14 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     return closed_prs, deleted_branches
 
 
+# Nothing is saved until every step succeeds, so a failed adopt never blocks
+# a re-run; the stack itself may already be partly registered on GitHub.
+ADOPT_RERUN_HINT = (
+    "[yellow]The stack may be partly registered on GitHub; nothing was saved, so"
+    " re-run the same adopt command to finish it.[/yellow]"
+)
+
+
 @app.command(
     help="Register branches you already built as a native stack (bottom to top) and "
     "save them as a plan, so 'status' and 'merge' work on them."
@@ -1621,10 +1629,12 @@ def adopt(
         prs = [find_open_pr(name) for name in branches]
     except PRSplitError as exc:
         console.print(f"[red]{escape(str(exc))}[/red]")
+        console.print(ADOPT_RERUN_HINT)
         raise typer.Exit(1) from exc
     missing = [name for name, pr in zip(branches, prs, strict=True) if pr is None]
     if missing:
         console.print(f"[red]No open PR found for: {', '.join(missing)}[/red]")
+        console.print(ADOPT_RERUN_HINT)
         raise typer.Exit(1)
 
     groups: list[Group] = []
