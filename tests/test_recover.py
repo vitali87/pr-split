@@ -174,6 +174,8 @@ def test_cli_keeps_an_existing_plan_without_force(
     stack: tuple[Path, PlanFile],  # noqa: F811
 ) -> None:
     _, original = stack
+    # Plans are kept per dev branch; the plan to protect is the one for "x".
+    original.plan.dev_branch = original.plan.dev_branch_arg = "x"
     save_plan(original)
     listed = _gh_prs(original)
     with patch("pr_split.recover.list_prs_with_head_prefix", return_value=listed) as gh:
