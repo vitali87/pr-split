@@ -681,6 +681,7 @@ class TestCleanupSkipsFinishedPrs:
 
 
 class TestCleanupAfterMergeDeletedBranches:
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.cli.get_pr_state", return_value={"state": "MERGED"})
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.plan_path")
@@ -693,6 +694,7 @@ class TestCleanupAfterMergeDeletedBranches:
         mock_path: MagicMock,
         mock_rmtree: MagicMock,
         mock_state: MagicMock,
+        mock_forget: MagicMock,
     ) -> None:
         mock_path.return_value.exists.return_value = True
         # merge --delete-branch already removed both local and remote branches

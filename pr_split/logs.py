@@ -162,3 +162,7 @@ SYMBOL_ORDER_VIOLATION = (
     " its sub-PR will not compile or import on its own"
 )
 ADOPTED_REMOTE_BRANCH = "Created local branch {branch} from {remote_ref}"
+PRUNE_FAILED = (
+    "Could not prune origin's tracking refs before pushing ({error}); "
+    "a reused branch name may be rejected as stale"
+)
