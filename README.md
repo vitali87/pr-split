@@ -14,7 +14,7 @@
 
 ## Latest News 🔥
 
-- Stacked PR Mode — pass `--stack` and every dependent PR branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Chains are registered as native GitHub stacks via the `gh-stack` extension when it is installed.
+- Stacked PR Mode — every PR with a single parent branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Pass `--stack` to also register chains as native GitHub stacks via the `gh-stack` extension.
 - GitHub Action — add pr-split to any repo as a CI check. Scores every PR and posts a split plan comment when it's too large. No API key needed.
 - Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
 
@@ -24,21 +24,23 @@ Vibe coding with AI assistants can produce massive PRs that no one wants to revi
 
 ## How it works
 
-`pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
+`pr-split` takes a large pull request (local branch, PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
 
 <img src="pr-split.png" alt="pr-split system design" width="100%">
 
 ## Installation
 
+pr-split is not published on PyPI; install it from this repository.
+
 ```bash
 # With uv (recommended)
-uv tool install pr-split
+uv tool install "git+https://github.com/vitali87/pr-split"
 
 # With pip
-pip install pr-split
+pip install "git+https://github.com/vitali87/pr-split"
 
 # With the optional CP-SAT partitioning backend
-uv tool install "pr-split[cp-sat]"
+uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"
 ```
 
 ## Prerequisites
@@ -46,7 +48,7 @@ uv tool install "pr-split[cp-sat]"
 - Python 3.12+
 - [GitHub CLI](https://cli.github.com/) (`gh`) authenticated via `gh auth login`
 - [`gh-stack` extension](https://github.com/github/gh-stack) (`gh extension install github/gh-stack`) when using `--stack`
-- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend
+- `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` environment variable set when using the `llm` partition backend, unless you plan with a [local model](#local-models) (no key needed). With neither and no `--partition-strategy`, `split` uses the `graph` backend, which needs no model, and says so
 
 ## Usage
 
@@ -56,7 +58,9 @@ uv tool install "pr-split[cp-sat]"
 pr-split split feature-branch --base main
 ```
 
-### Split a fork PR by number
+### Split a PR by number
+
+Works for same-repo and fork PRs: the PR's head (`refs/pull/<N>/head`) is fetched from the repository `gh` resolves, through `origin` when that is the same repository, and its base branch is used.
 
 ```bash
 pr-split split '#42' --base main
@@ -85,9 +89,9 @@ pr-split split feature-branch --base main --dry-run
 | `--max-refinement-iterations` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
-| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`). `graph` is deterministic; `llm` and `cp_sat` can return a different plan on each run, so treat the saved plan file as the artifact of record |
 | `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
+| `--stack` | `false` | Register dependent PR chains as native GitHub stacks (a PR with one parent always branches from and targets it) |
 | `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
 
@@ -97,7 +101,9 @@ pr-split split feature-branch --base main --dry-run
 pr-split split feature-branch --base main --stack
 ```
 
-Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
+A group with a single parent has its branch cut from the parent group's branch, carries the parent's hunks for shared files, and targets the parent's branch, with or without `--stack`. Its PR shows only its own diff, compiles standalone, and GitHub retargets it automatically as the parent merges. A group with several parents is cut from the merge base, carries every ancestor's changes, and targets the base branch, so its diff also includes those ancestors' changes (its PR description lists them). Groups with no dependencies are cut from the merge base and target the base branch. `--stack` additionally registers the chains as native GitHub stacks.
+
+A new file larger than `--max-loc` cannot fit in any one sub-PR. With `--stack` it is cut into pieces between top-level definitions: Python files at top-level statements, and other languages at unindented lines after a blank line, outside brackets, strings and comments. Each piece is appended by a PR stacked on the one holding the piece before it. Every layer holds a valid prefix of the file, and the top of the chain holds the whole file. Without `--stack` a new file is never cut.
 
 Linear chains in the plan are registered as [native GitHub stacks](https://github.blog/changelog/2026-07-30-stacked-pull-requests-are-now-in-public-preview/) via the [`gh-stack` extension](https://github.com/github/gh-stack), which is **required** for `--stack`: install it with `gh extension install github/gh-stack`. `pr-split` checks for it up front and refuses to run a stacked split (or `execute` a stacked plan) without it; a `--dry-run` does not need it. If linking fails after the PRs are created, the command exits with an error — the plan state is already saved, so `pr-split clean` can undo the split. Groups that depend on more than one group target the base branch directly, since native stacks are strictly linear; their branch carries every ancestor's changes so it still builds standalone, and those extra changes drop out of the diff as the ancestor PRs merge.
 
@@ -137,7 +143,7 @@ pr-split merge --notify https://hooks.slack.com/...
 pr-split execute
 ```
 
-Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags.
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags. Pass `--yes` (`-y`) to skip the confirmation prompt, e.g. from a script or CI job.
 
 ### Interactive plan editing
 
@@ -146,6 +152,12 @@ After the plan is displayed, an interactive editor lets you adjust the plan befo
 ```
 edit> show pr-1          # inspect a group's assignments
 edit> move src/foo.py:2 pr-1 pr-2   # move a hunk between groups
+edit> movefile src/foo.py pr-1 pr-2 # move every hunk of a file
+edit> dep pr-3 pr-2      # make pr-3 depend on pr-2 (undep removes the edge)
+edit> title pr-3 feat: add the parser    # set the PR title
+edit> desc pr-3 Adds the parser and its tests.  # set the PR body text
+edit> new pr-9           # create an empty group to move hunks into
+edit> merge pr-1 pr-2    # fold pr-2 (hunks, parents, dependants) into pr-1
 edit> plan               # redisplay the plan table
 edit> done               # proceed (default — just press Enter)
 edit> abort              # cancel
@@ -170,6 +182,48 @@ Create `.pr-split/template.md` to customize the body of each generated PR using 
 
 Available placeholders: `{description}`, `{files}`, `{added}`, `{removed}`, `{loc}`, `{dependencies}`, `{dag}`, `{id}`, `{title}`.
 
+### Carry a fix up a stack
+
+```bash
+pr-split restack            # or: pr-split restack --dry-run
+```
+
+After review feedback is fixed with a new commit on a lower layer's branch (locally or on GitHub), the layers above it lack the fix, and their diffs show it reversed. `restack` fetches the stack's branches, rebases each layer onto its parent's current head in plan order, and pushes the rewritten branches with `--force-with-lease`. It stops at the first conflicting layer, names it, and leaves that layer and everything above it unchanged. `pr-split status` warns about any layer that lacks its parent's head.
+
+When the base branch itself moves on (another PR lands on `main` and touches a line your bottom layer also touches), run `pr-split restack --onto-base`. It fetches the base and rebases the layers that target it onto its current head, then restacks every layer above them, with the same conflict handling.
+
+### Move a hunk up an executed stack
+
+```bash
+pr-split move docs/flags.md:1 --from pr-1 --to pr-3
+```
+
+When review shows a change belongs in a higher layer, `move` takes it out of the source layer, carries that removal up through the layers in between, and applies it on the target layer, then restacks the layers above. Each step patches the layer's current content, so changes that arrived by other routes (a base merge, a review fix) are kept. Only changed branches are force-pushed, so every PR stays open with its threads, and the saved plan is updated. The hunk index is the one the plan editor's `show` prints.
+
+### Recover a lost plan
+
+```bash
+pr-split recover feat/x          # --base main if its PRs target more than one branch
+```
+
+The plan lives in `.pr-split/plan.json` of the checkout where `split` ran. If that checkout is gone (a removed worktree, a fresh clone), `recover` rebuilds the plan from the stack itself: it lists the PRs whose head branch is `pr-split/<dev branch>/…` and fetches those branches. Each layer depends on the layer its PR targets, or on the groups its PR body's "depends on" line names once a merged parent has been retargeted. `status`, `merge`, `restack` and `clean` then work as before. A recovered plan holds no diff, so `execute` and `move` cannot use it. `recover` refuses to replace an existing plan unless you pass `--force`.
+
+### Per-PR release gates
+
+Some repositories require every PR to carry files unique to it, such as a version bump above its base and a release-notes file for that version. With `--stack` each layer's base is its parent's branch, so each layer needs its own. Configure a command in `.pr-split.toml` at the repository root:
+
+```toml
+[per_group]
+run = "scripts/bump-version.sh"
+commit_message = "chore: release notes for {title}"   # {id}, {title}, {index}
+```
+
+`execute`, and `split` without `--dry-run`, run it in each sub-PR's worktree after that group's commit and before anything is pushed, in stack order. Whatever it changes is committed to that layer, and children are cut from the layer after it ran. The command gets `PR_SPLIT_GROUP_ID`, `PR_SPLIT_GROUP_TITLE`, `PR_SPLIT_GROUP_INDEX`, `PR_SPLIT_PR_BASE` (the branch the PR targets) and `PR_SPLIT_PARENT_REF` (the commit the layer was cut from, e.g. `git show "$PR_SPLIT_PARENT_REF:Cargo.toml"`) as environment variables, never spliced into the command line. A failing command stops the run and names the group. `PR_SPLIT_PER_GROUP_RUN` and `PR_SPLIT_PER_GROUP_COMMIT_MESSAGE` override the file.
+
+### Stale local base branch
+
+`--base` names the branch the sub-PRs are opened against. When it tracks a remote branch, `split` fetches it and diffs against the remote copy (for example `origin/main`), so commits that landed upstream after your local `main` was last updated are not split as branch work. A warning says when the local branch is behind or ahead of its upstream.
+
 ### Re-split with different parameters
 
 Running `split` again when a plan already exists will prompt you to clean up existing branches and PRs before re-planning. Dry-run plans are silently overwritten.
@@ -188,19 +242,23 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider (`anthropic` or `openai`) |
+| `PR_SPLIT_PROVIDER` | `anthropic` | LLM provider: `anthropic`, `openai`, `claude-cli` (the local Claude Code CLI, `claude -p`, using its own login; no API key needed), or `local` (any OpenAI-compatible server such as Ollama, llama.cpp, vLLM or LM Studio; no API key) |
 | `ANTHROPIC_API_KEY` | (required for Anthropic) | Anthropic API key |
 | `OPENAI_API_KEY` | (required for OpenAI) | OpenAI API key |
-| `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider) |
+| `PR_SPLIT_MODEL` | auto per provider | Model name (defaults to best available model for the chosen provider; required for `local`) |
+| `PR_SPLIT_LOCAL_BASE_URL` | `http://localhost:11434/v1` | Base URL of the local server (the default is Ollama) |
+| `PR_SPLIT_LOCAL_CONTEXT_TOKENS` | `32768` | Context window the local server was started with; larger diffs are chunked to fit |
+| `PR_SPLIT_LOCAL_MAX_OUTPUT_TOKENS` | `8192` | Tokens reserved for the plan in each local reply |
+| `PR_SPLIT_LOCAL_API_KEY` | (none) | Only for a local server started with an API key |
 | `PR_SPLIT_MIN_LOC` | unset | Minimum target diff lines per sub-PR |
 | `PR_SPLIT_MAX_LOC` | `400` | Default maximum target diff lines |
 | `PR_SPLIT_STRICT_LOC_BOUNDS` | `false` | Fail if the final plan violates configured LOC bounds |
 | `PR_SPLIT_MAX_REFINEMENT_ITERATIONS` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `PR_SPLIT_PRIORITY` | `orthogonal` | Default grouping priority |
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
-| `PR_SPLIT_PARTITION_STRATEGY` | `llm` | Hunk-to-PR partition backend |
+| `PR_SPLIT_PARTITION_STRATEGY` | `llm` if its provider is configured, else `graph` | Hunk-to-PR partition backend |
 | `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
+| `PR_SPLIT_STACK` | `false` | Register dependent PR chains as native GitHub stacks |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
@@ -262,7 +320,21 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"`.
+
+### Local models
+
+The `llm` backend can run entirely on your machine. Any server exposing the OpenAI-compatible `/v1/chat/completions` endpoint with tool calling works, and no API key is needed. With the default `PR_SPLIT_LOCAL_BASE_URL` (localhost) the diff never leaves the machine. If you point it at another host, the diff is sent there, and `pr-split` warns once that it is:
+
+```bash
+ollama pull qwen2.5-coder:14b
+PR_SPLIT_PROVIDER=local PR_SPLIT_MODEL=qwen2.5-coder:14b \
+  pr-split split feature-branch --base main --partition-strategy llm --dry-run
+```
+
+For llama.cpp (`llama-server --jinja -c 32768`), vLLM or LM Studio, set `PR_SPLIT_LOCAL_BASE_URL` to the server's `/v1` URL. Set `PR_SPLIT_LOCAL_CONTEXT_TOKENS` to the context size the server was started with, because Ollama's own default window is small. Requests use temperature 0, so the same diff gives the same plan. A model that answers with the plan as JSON text instead of a tool call is accepted too.
+
+For no model at all, use `--partition-strategy graph` or `cp_sat`. Without an API key or a local provider, `split` picks `graph` on its own.
 
 For a deeper explanation of the planning model, optimization methods, scoring, and research directions, see [METHODOLOGY.md](METHODOLOGY.md).
 

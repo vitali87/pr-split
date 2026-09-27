@@ -1,5 +1,12 @@
 EXTRACTING_DIFF = "Extracting diff between {base} and {dev}"
 DIFF_STATS = "Diff: {files} files, +{added}/-{removed} lines ({loc} LOC)"
+NEW_FILE_SPLIT = (
+    "New file '{file}' ({loc} lines) is over --max-loc; split it into {pieces} pieces"
+    " at top-level boundaries, each stacked on the one before"
+)
+NEW_FILE_PIECE_LINKED = (
+    "Group '{child}' holds a later piece of new file '{file}'; it now depends on '{parent}'"
+)
 SENDING_TO_LLM = "Sending diff to LLM for analysis ({model})"
 LLM_RESPONSE_RECEIVED = "Received split plan with {count} groups"
 VALIDATING_PLAN = "Validating split plan"
@@ -12,6 +19,47 @@ CREATING_MERGE_BASE = "Creating merge base {branch} from parents: {parents}"
 MATERIALIZING_FILES = "Materializing {count} file(s) for group '{group}'"
 COMMITTING_GROUP = "Committing group '{group}': {title}"
 PUSHING_BRANCH = "Pushing {branch} to origin"
+MOVE_REVERTED = "Removed {file} hunk {index} from {branch}"
+MOVE_APPLIED = "Applied {file} hunk {index} to {branch}"
+RECOVER_FETCH_FAILED = "Could not fetch the stack's branches from {remote} ({detail})"
+RECOVERED_PLAN = (
+    "Rebuilt the plan from {branches} branch(es) and {prs} PR(s) and saved it to {path}"
+)
+LLM_UNAVAILABLE_USING_GRAPH = (
+    "LLM planner unavailable ({reason}); planning with the graph backend, which needs no model."
+    " Set the key, or PR_SPLIT_PROVIDER=local for a local model, to use the LLM planner"
+)
+REPAIR_UNKNOWN_FILE = (
+    "Plan repair: group '{group}' named '{file}', which is not in the diff; dropped"
+)
+REPAIR_UNKNOWN_HUNKS = (
+    "Plan repair: group '{group}' named hunks {indices} of '{file}', which do not exist; dropped"
+)
+REPAIR_DUPLICATE_HUNKS = (
+    "Plan repair: hunks {indices} of '{file}' were also in group '{owner}';"
+    " removed from group '{group}'"
+)
+REPAIR_UNKNOWN_DEPENDENCY = "Plan repair: group '{group}' depended on unknown ids {deps}; dropped"
+REPAIR_EMPTY_GROUP = "Plan repair: group '{group}' holds no hunks; dropped"
+PER_GROUP_STEP_RUNNING = "Running per-group step for {group}: {command}"
+RESTACKED_LAYER = "Rebased {branch} onto the current head of {parent}"
+RESTACK_FETCH_FAILED = "Could not fetch {branch} ({detail}); using the local branch"
+LAYER_BEHIND_PARENT = (
+    "{group} ({branch}) does not contain the current head of {parent};"
+    " run 'pr-split restack' to carry the parent's changes up"
+)
+BASE_FETCH_FAILED = (
+    "Could not fetch '{base}' from '{remote}' ({detail}); splitting against its last fetched state"
+)
+LOCAL_BASE_BEHIND = (
+    "Local '{base}' is {count} commit(s) behind '{upstream}'; splitting against '{upstream}',"
+    " which the sub-PRs target, so upstream commits are not split as branch work"
+)
+LOCAL_BASE_AHEAD = (
+    "Local '{base}' has {count} commit(s) not on '{upstream}'; the sub-PRs target '{upstream}',"
+    " so any of them on the dev branch are split as branch work. Push '{base}' first if that is"
+    " not intended"
+)
 CREATING_PR = "Creating PR for group '{group}'"
 PR_CREATED = "PR #{number} created: {url}"
 SAVING_PLAN = "Saving plan to {path}"
@@ -26,11 +74,13 @@ CLEAN_INCOMPLETE = (
     " so 'pr-split clean' can be re-run"
 )
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
+FETCHING_SAME_REPO_PR = "Fetching PR #{number} (same-repository branch {branch})"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
 COUNTING_TOKENS = "Counting input tokens ({model})"
 TOKEN_COUNT = "Token count: {tokens} (limit: {limit})"
 PLANNING_WITH_BACKEND = "Planning split with backend '{backend}'"
+DIFF_WITHIN_MAX_LOC = "Diff is {loc} LOC, within --max-loc {max_loc}; keeping it as a single PR"
 CHUNK_STRATEGY_SELECTED = "Using chunking strategy '{strategy}'"
 DIFF_TOO_LARGE = (
     "Diff exceeds context window ({tokens} tokens > {limit} limit), switching to chunked mode"
@@ -44,6 +94,10 @@ CHUNK_SENDING = "Sending chunk {index}/{total} ({hunks} hunks, ~{tokens} tokens)
 CHUNK_RECEIVED = "Chunk {index}/{total}: {new_groups} new groups, {total_groups} total"
 LLM_OUTPUT_TRUNCATED = (
     "LLM output truncated (stop_reason: {stop_reason}), keys in partial output: {keys}"
+)
+LOCAL_SERVER_OFF_MACHINE = (
+    "PR_SPLIT_LOCAL_BASE_URL points at '{host}', which is not this machine;"
+    " the diff will be sent to that host"
 )
 LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
@@ -80,7 +134,7 @@ REFINEMENT_NO_IMPROVEMENT = (
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
 MERGE_NODE_NOT_STACKED = (
-    "Group '{group}' depends on multiple groups; native stacks are linear, so its"
+    "Group '{group}' depends on multiple groups; a PR can target only one branch, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
     " changes until those PRs merge"
 )
@@ -91,3 +145,12 @@ CP_SAT_NOT_OPTIMAL = (
     "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
+SYMBOL_EDGE_SKIPPED = (
+    "Group '{user}' uses {names} from group '{definer}', but depending on it would"
+    " create a cycle; the edge was not added"
+)
+SYMBOL_ORDER_VIOLATION = (
+    "Group '{user}' uses {names} defined in group '{definer}', which it does not build on;"
+    " its sub-PR will not compile or import on its own"
+)
+ADOPTED_REMOTE_BRANCH = "Created local branch {branch} from {remote_ref}"
