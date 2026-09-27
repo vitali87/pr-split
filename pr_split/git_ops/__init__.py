@@ -2,25 +2,22 @@ from .branches import (
     add_worktree as add_worktree,
 )
 from .branches import (
+    adopt_remote_branch as adopt_remote_branch,
+)
+from .branches import (
     branch_exists as branch_exists,
 )
 from .branches import (
-    checkout_branch as checkout_branch,
-)
-from .branches import (
-    commit_files as commit_files,
-)
-from .branches import (
     commit_files_in_dir as commit_files_in_dir,
-)
-from .branches import (
-    create_group_branch as create_group_branch,
 )
 from .branches import (
     delete_branch as delete_branch,
 )
 from .branches import (
     derive_split_namespace as derive_split_namespace,
+)
+from .branches import (
+    diff_base_ref as diff_base_ref,
 )
 from .branches import (
     is_worktree_clean as is_worktree_clean,
