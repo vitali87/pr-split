@@ -18,6 +18,7 @@ class ErrorMsg(StrEnum):
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"
+    COVERAGE_DUPLICATE = "Hunk {file}[{index}] listed more than once in group '{group}'"
     UNKNOWN_HUNK = "Hunk {file}[{index}] assigned to group '{group}' does not exist in the diff"
     UNKNOWN_FILE = "File '{file}' assigned to group '{group}' does not exist in the diff"
     UNKNOWN_DEPENDENCY = "Group '{group}' depends on unknown group '{dep}'"
