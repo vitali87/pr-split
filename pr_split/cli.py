@@ -1345,7 +1345,7 @@ def split(
     # A branch that exists only as origin/<name> (fresh clone or worktree)
     # is adopted as a local branch, as `git checkout <name>` would.
     for name in (dev_branch, base):
-        if not (name.lstrip("#").isdigit() or ":" in name):
+        if not _is_fork_ref(name):
             adopt_remote_branch(name)
 
     if not branch_exists(dev_branch):
@@ -1374,6 +1374,27 @@ def split(
         author = fork_info["author"]
 
     _validate_inputs(dev_branch, base, dry_run=dry_run, stacked=stack)
+
+    # Validate settings before anything destructive: the existing-plan
+    # cleanup below closes PRs and deletes branches, and a bad --min-loc or
+    # a missing API key must not be discovered only after that.
+    try:
+        settings = _split_settings(
+            partition_strategy,
+            lambda strategy: Settings(
+                min_loc=min_loc,
+                max_loc=max_loc,
+                strict_loc_bounds=strict_loc_bounds,
+                max_refinement_iterations=max_refinement_iterations,
+                cp_sat_timeout=cp_sat_timeout,
+                priority=priority,
+                chunk_strategy=chunk_strategy,
+                partition_strategy=strategy,
+            ),
+        )
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
 
     if plan_exists():
         existing = _load_plan_or_exit()
@@ -1429,23 +1450,6 @@ def split(
         )
     )
 
-    try:
-        settings = _split_settings(
-            partition_strategy,
-            lambda strategy: Settings(
-                min_loc=min_loc,
-                max_loc=max_loc,
-                strict_loc_bounds=strict_loc_bounds,
-                max_refinement_iterations=max_refinement_iterations,
-                cp_sat_timeout=cp_sat_timeout,
-                priority=priority,
-                chunk_strategy=chunk_strategy,
-                partition_strategy=strategy,
-            ),
-        )
-    except (ValidationError, ValueError) as exc:
-        console.print(f"[red]{escape(str(exc))}[/red]")
-        raise typer.Exit(1) from exc
     try:
         validate_no_binary_files(parsed_diff)
     except PlanValidationError as exc:
