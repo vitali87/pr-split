@@ -2,6 +2,9 @@ from .branches import (
     add_worktree as add_worktree,
 )
 from .branches import (
+    adopt_remote_branch as adopt_remote_branch,
+)
+from .branches import (
     branch_exists as branch_exists,
 )
 from .branches import (
