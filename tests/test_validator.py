@@ -82,6 +82,35 @@ class TestValidateCoverage:
         with pytest.raises(PlanValidationError, match="not assigned"):
             validate_coverage(groups, parsed)
 
+    def test_out_of_range_hunk_index_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [0, 7])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"a\.py\[7\] assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_unknown_file_raises(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0]), _ga("ghost.py", PARTIAL, [0])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
+    def test_unknown_whole_file_path_raises(self) -> None:
+        # A WHOLE_FILE assignment for a path outside the diff expands to zero
+        # hunks, so it must be rejected before expansion.
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, []), _ga("ghost.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"File 'ghost\.py' assigned to group 'g1'"):
+            validate_coverage(groups, parsed)
+
     def test_duplicate_assignment_raises(self) -> None:
         parsed = parse_diff(SAMPLE_DIFF)
         groups = [
@@ -151,7 +180,7 @@ class TestValidateNoConflicts:
             _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
         ]
         dag = PlanDAG(groups)
-        validate_no_conflicts(groups, dag)
+        validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
 
     def test_independent_overlapping_hunks_raises(self) -> None:
         groups = [
@@ -160,7 +189,15 @@ class TestValidateNoConflicts:
         ]
         dag = PlanDAG(groups)
         with pytest.raises(PlanValidationError, match="overlapping"):
-            validate_no_conflicts(groups, dag)
+            validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
+
+    def test_whole_file_with_empty_indices_conflicts_with_partial(self) -> None:
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [])], 3),
+            _make_group("g2", [_ga("a.py", PARTIAL, [0])], 0),
+        ]
+        with pytest.raises(PlanValidationError, match=r"overlapping regions in 'a\.py'"):
+            validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})
 
     def test_dependent_groups_skip_conflict_check(self) -> None:
         groups = [
@@ -173,7 +210,7 @@ class TestValidateNoConflicts:
             ),
         ]
         dag = PlanDAG(groups)
-        validate_no_conflicts(groups, dag)
+        validate_no_conflicts(groups, dag, {"a.py": 1, "b.py": 1})
 
 
 class TestValidateLocBounds:
@@ -226,6 +263,18 @@ class TestValidateCoverageWholeFileExpansion:
         ]
         with pytest.raises(PlanValidationError, match="multiple groups"):
             validate_coverage(groups, parsed)
+
+    def test_stale_whole_file_index_does_not_create_a_phantom_conflict(self) -> None:
+        # a.py has exactly one hunk. g1's WHOLE_FILE assignment carries a stale
+        # index 99; an independent g2 lists the same bogus index for a.py.
+        # Coverage validation rejects g2's index as an unknown hunk, so exercise
+        # the conflict check alone: 99 is not a hunk and must not be reported
+        # as a region the two groups both touch.
+        groups = [
+            _make_group("g1", [_ga("a.py", WHOLE, [0, 99])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0]), _ga("a.py", PARTIAL, [99])], 4),
+        ]
+        validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})
 
 
 MODE_ONLY_DIFF = """\
