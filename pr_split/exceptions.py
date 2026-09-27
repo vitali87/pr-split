@@ -127,6 +127,10 @@ class ErrorMsg(StrEnum):
         " run 'gh extension install github/gh-stack'"
     )
     STACK_LINK_FAILED = "Failed to link stack for PRs {prs}: {detail}"
+    SUBMODULE_UNSUPPORTED = (
+        "Submodule changes are not supported (pointer bump at {paths}); "
+        "split them out of the branch first"
+    )
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

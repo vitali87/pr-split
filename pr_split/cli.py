@@ -44,6 +44,7 @@ from .diff_ops import (
     parse_diff,
 )
 from .exceptions import (
+    DiffParseError,
     ErrorMsg,
     GitOperationError,
     PlanValidationError,
@@ -1367,7 +1368,11 @@ def split(
     raw_diff = extract_diff(dev_branch, diff_base)
     # Only a stacked child builds on the PR holding a file's earlier pieces.
     split_new_files_over = max_loc if stack else None
-    parsed_diff = parse_diff(raw_diff, split_new_files_over=split_new_files_over)
+    try:
+        parsed_diff = parse_diff(raw_diff, split_new_files_over=split_new_files_over)
+    except DiffParseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
     stats = parsed_diff.stats
     logger.info(
         logs.DIFF_STATS.format(
@@ -1972,7 +1977,11 @@ def execute(
     if plan.stacked:
         _require_gh_stack()
 
-    parsed_diff = parse_diff(plan.raw_diff, split_new_files_over=plan.split_new_files_over)
+    try:
+        parsed_diff = parse_diff(plan.raw_diff, split_new_files_over=plan.split_new_files_over)
+    except DiffParseError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
     try:
         validate_no_binary_files(parsed_diff)
