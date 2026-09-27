@@ -81,6 +81,17 @@ class TestBuildPrBody:
         assert "## Dependencies" in body
         assert "`pr-1`" in body
 
+    def test_merge_node_names_the_ancestors_its_diff_carries(self) -> None:
+        g0 = _group("pr-0", "root")
+        g1 = _group("pr-1", "left", depends_on=["pr-0"])
+        g2 = _group("pr-2", "right")
+        g3 = _group("pr-3", "join", depends_on=["pr-1", "pr-2"], files=["c.py"])
+        body = _build_pr_body(g3, [g0, g1, g2, g3])
+        assert "This PR depends on: `pr-1`, `pr-2`\n" in body
+        assert "also includes the changes of: `pr-0`, `pr-1`, `pr-2`." in body
+        single = _build_pr_body(g1, [g0, g1, g2, g3])
+        assert "also includes" not in single
+
     def test_no_dependencies_section_for_root(self) -> None:
         group = _group("pr-1", "root", files=["a.py"])
         body = _build_pr_body(group, [group])
