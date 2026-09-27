@@ -6,17 +6,17 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pr_split.constants import PLAN_DIR
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
+    adopt_remote_branch,
     branch_exists,
-    checkout_branch,
-    checkout_new_branch,
-    commit_files,
+    commit_exists,
     commit_files_in_dir,
-    create_group_branch,
     delete_branch,
     derive_split_namespace,
+    diff_base_ref,
     is_worktree_clean,
     merge_base,
     push_branch,
@@ -80,34 +80,6 @@ class TestMergeBase:
         assert merge_base("main", "feature") == "abc123def"
 
 
-class TestCommitFiles:
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_basic_commit(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = ["", "", "abc123"]
-        sha = commit_files(["file.py"], "test commit")
-        assert sha == "abc123"
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_commit_with_author(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = ["", "", "abc123"]
-        sha = commit_files(["file.py"], "test commit", author="Jane <jane@x.com>")
-        assert sha == "abc123"
-        commit_call = mock_git.call_args_list[1]
-        assert "--author" in commit_call.args[0] or "--author" in commit_call[0]
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_commit_fallback_on_failure(self, mock_git: MagicMock) -> None:
-        mock_git.side_effect = [
-            "",
-            GitOperationError("nothing to commit"),
-            "",
-            "",
-            "def456",
-        ]
-        sha = commit_files(["file.py"], "test commit")
-        assert sha == "def456"
-
-
 class TestPushBranch:
     @patch("pr_split.git_ops.branches.run_git")
     def test_calls_push(self, mock_git: MagicMock) -> None:
@@ -116,6 +88,90 @@ class TestPushBranch:
         mock_git.assert_called_once_with(
             "push", "--force-with-lease", "-u", "origin", "pr-split/pr-1"
         )
+
+
+class TestPushBranchRetries:
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_transient_server_error_is_retried(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_git.side_effect = [
+            GitOperationError("remote: fatal error in commit_refs"),
+            "",
+        ]
+        push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 2
+        mock_sleep.assert_called_once()
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_rejection_is_not_retried(self, mock_git: MagicMock, mock_sleep: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("! [rejected] (stale info)")
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 1
+        mock_sleep.assert_not_called()
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_gives_up_after_the_last_attempt(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        mock_git.side_effect = GitOperationError("fatal: the remote end hung up unexpectedly")
+        with pytest.raises(GitOperationError, match="hung up"):
+            push_branch("pr-split/pr-5")
+        assert mock_git.call_count == 3
+
+
+class TestPushThatLandedDespiteAnError:
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_stale_lease_after_a_landed_push_is_success(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        def git(*args: str) -> str:
+            if args[0] == "push":
+                if git.pushes == 0:
+                    git.pushes += 1
+                    raise GitOperationError("fatal: the remote end hung up unexpectedly")
+                raise GitOperationError("! [rejected] pr-split/pr-5 (stale info)")
+            if args[0] == "ls-remote":
+                return "abc123\trefs/heads/pr-split/pr-5"
+            return "abc123"  # rev-parse
+
+        git.pushes = 0  # type: ignore[attr-defined]
+        mock_git.side_effect = git
+        push_branch("pr-split/pr-5")
+
+    @patch("pr_split.git_ops.branches.time.sleep")
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_stale_lease_is_still_an_error_when_the_remote_differs(
+        self, mock_git: MagicMock, mock_sleep: MagicMock
+    ) -> None:
+        def git(*args: str) -> str:
+            if args[0] == "push":
+                if git.pushes == 0:
+                    git.pushes += 1
+                    raise GitOperationError("fatal: the remote end hung up unexpectedly")
+                raise GitOperationError("! [rejected] pr-split/pr-5 (stale info)")
+            if args[0] == "ls-remote":
+                return "fff999\trefs/heads/pr-split/pr-5"
+            return "abc123"
+
+        git.pushes = 0  # type: ignore[attr-defined]
+        mock_git.side_effect = git
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/pr-5")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_a_first_attempt_rejection_does_not_consult_the_remote(
+        self, mock_git: MagicMock
+    ) -> None:
+        mock_git.side_effect = GitOperationError("! [rejected] (stale info)")
+        with pytest.raises(GitOperationError):
+            push_branch("pr-split/pr-5")
+        assert [c.args[0] for c in mock_git.call_args_list] == ["push"]
 
 
 class TestDeleteBranch:
@@ -220,32 +276,6 @@ class TestDeriveSplitNamespace:
         assert "!" not in result
 
 
-class TestCreateGroupBranch:
-    @patch("pr_split.git_ops.branches.checkout_new_branch")
-    @patch("pr_split.git_ops.branches.branch_exists")
-    def test_creates_new_branch(self, mock_exists: MagicMock, mock_checkout: MagicMock) -> None:
-        mock_exists.return_value = False
-        result = create_group_branch("pr-1", "abc123", "my-feat")
-        assert result == "pr-split/my-feat/pr-1"
-        mock_checkout.assert_called_once()
-
-    @patch("pr_split.git_ops.branches.checkout_new_branch")
-    @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.checkout_branch")
-    @patch("pr_split.git_ops.branches.branch_exists")
-    def test_deletes_existing_branch(
-        self,
-        mock_exists: MagicMock,
-        mock_checkout: MagicMock,
-        mock_run_git: MagicMock,
-        mock_checkout_new: MagicMock,
-    ) -> None:
-        mock_exists.return_value = True
-        mock_run_git.return_value = ""
-        create_group_branch("pr-1", "abc123", "my-feat")
-        mock_run_git.assert_called_once_with("branch", "-D", "pr-split/my-feat/pr-1")
-
-
 class TestRunGitExtended:
     @patch("pr_split.git_ops.branches.subprocess.run")
     def test_strips_trailing_whitespace(self, mock_run: MagicMock) -> None:
@@ -287,20 +317,6 @@ class TestIsWorktreeCleanExtended:
     def test_renamed_file_is_dirty(self, mock_git: MagicMock) -> None:
         mock_git.return_value = "R  old.py -> new.py"
         assert is_worktree_clean() is False
-
-
-class TestCheckoutWrappers:
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_checkout_new_branch_args(self, mock_git: MagicMock) -> None:
-        mock_git.return_value = ""
-        checkout_new_branch("feature/x", "abc123")
-        mock_git.assert_called_once_with("checkout", "-b", "feature/x", "abc123")
-
-    @patch("pr_split.git_ops.branches.run_git")
-    def test_checkout_branch_args(self, mock_git: MagicMock) -> None:
-        mock_git.return_value = ""
-        checkout_branch("main")
-        mock_git.assert_called_once_with("checkout", "main")
 
 
 class TestRunGitInDir:
@@ -571,3 +587,162 @@ class TestStaleRemoteTrackingRefs:
         delete_branch("pr-split/ns/pr-3", remote=True)
 
         assert not branch_exists("refs/remotes/origin/pr-split/ns/pr-3")
+
+
+class TestIsWorktreeCleanIgnoresPlanDir:
+    """The check must not trip on pr-split's own `.pr-split/plan.json`."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+        (tmp_path / "src.py").write_text("x = 1\n")
+        plan = tmp_path / PLAN_DIR / "plan.json"
+        plan.parent.mkdir()
+        plan.write_text("{}\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "init"], check=True)
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def test_modified_tracked_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        assert is_worktree_clean() is True
+
+    def test_staged_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        subprocess.run(["git", "add", "-A"], check=True)
+        assert is_worktree_clean() is True
+
+    def test_plan_dir_is_ignored_from_a_subdirectory(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        sub = repo / "pkg"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        assert is_worktree_clean() is True
+
+    def test_other_modifications_still_count(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        (repo / "src.py").write_text("x = 2\n")
+        assert is_worktree_clean() is False
+
+
+def _git_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CI runners have no git identity configured; commits need one."""
+    for var in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_NAME"):
+        monkeypatch.setenv(var, "t")
+    for var in ("GIT_AUTHOR_EMAIL", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.setenv(var, "t@x")
+
+
+class TestCommitsSkipHooks:
+    @patch("pr_split.git_ops.branches.run_git_in_dir", return_value="sha")
+    def test_commit_files_in_dir_passes_no_verify(self, mock_git: MagicMock) -> None:
+        commit_files_in_dir("/wt", ["a.py"], "msg", author="A <a@x>")
+        commit_call = next(c for c in mock_git.call_args_list if c.args[1] == "commit")
+        assert commit_call.args == (
+            "/wt",
+            "commit",
+            "--no-verify",
+            "-m",
+            "msg",
+            "--author",
+            "A <a@x>",
+        )
+
+    def test_failing_pre_commit_hook_does_not_block_the_sub_pr_commit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        hook = repo / ".git" / "hooks" / "pre-commit"
+        hook.write_text("#!/bin/sh\necho 'husky: node_modules missing' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        (repo / "a.py").write_text("x\n")
+
+        sha = commit_files_in_dir(str(repo), ["a.py"], "feat: a", author="Test <t@x>")
+
+        assert len(sha) == 40
+        log = subprocess.run(
+            ["git", "log", "--format=%s", "-1"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        assert log.strip() == "feat: a"
+
+
+class TestCommitExists:
+    @patch("pr_split.git_ops.branches.run_git", return_value="")
+    def test_true_when_object_resolves(self, mock_git: MagicMock) -> None:
+        assert commit_exists("abc123") is True
+        mock_git.assert_called_once_with("cat-file", "-e", "abc123^{commit}")
+
+    @patch(
+        "pr_split.git_ops.branches.run_git", side_effect=GitOperationError("Not a valid object")
+    )
+    def test_false_when_missing(self, mock_git: MagicMock) -> None:
+        assert commit_exists("0123456789abcdef") is False
+
+
+class TestAdoptRemoteBranch:
+    def _clone_with_remote_branch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *remotes: str
+    ) -> Path:
+        _git_identity(monkeypatch)
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=upstream, check=True)
+        (upstream / "a.txt").write_text("a\n")
+        subprocess.run(["git", "add", "a.txt"], cwd=upstream, check=True)
+        subprocess.run(["git", "commit", "-qm", "a"], cwd=upstream, check=True)
+        subprocess.run(["git", "branch", "feat/move-op"], cwd=upstream, check=True)
+        clone = tmp_path / "clone"
+        subprocess.run(["git", "init", "-q", "-b", "other", str(clone)], check=True)
+        for remote in remotes:
+            subprocess.run(["git", "remote", "add", remote, str(upstream)], cwd=clone, check=True)
+            subprocess.run(["git", "fetch", "-q", remote], cwd=clone, check=True)
+        monkeypatch.chdir(clone)
+        return clone
+
+    def test_branch_on_one_remote_is_created_locally(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin")
+        assert not branch_exists("refs/heads/feat/move-op")
+
+        assert adopt_remote_branch("feat/move-op") is True
+
+        assert run_git("rev-parse", "refs/heads/feat/move-op") == run_git(
+            "rev-parse", "origin/feat/move-op"
+        )
+        # It tracks the remote, so diff_base_ref diffs an adopted base against it.
+        assert diff_base_ref("feat/move-op") == "origin/feat/move-op"
+
+    def test_branch_on_two_remotes_is_ambiguous_and_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin", "upstream")
+        assert adopt_remote_branch("feat/move-op") is False
+        assert not branch_exists("refs/heads/feat/move-op")
+
+    def test_existing_local_branch_is_untouched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._clone_with_remote_branch(tmp_path, monkeypatch, "origin")
+        run_git("branch", "--no-track", "feat/move-op", "origin/main")
+        before = run_git("rev-parse", "refs/heads/feat/move-op")
+        assert adopt_remote_branch("feat/move-op") is False
+        assert run_git("rev-parse", "refs/heads/feat/move-op") == before

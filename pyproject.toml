@@ -38,6 +38,8 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Keeps split from fetching the base branch's upstream during tests.
+addopts = "-p tests.network_guards"
 
 [dependency-groups]
 dev = [
