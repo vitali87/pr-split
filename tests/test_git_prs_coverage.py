@@ -17,6 +17,7 @@ from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.prs import (
     fetch_fork_branch,
     fetch_fork_pr,
+    find_open_pr,
     get_pr_state,
     merge_pr,
 )
@@ -168,6 +169,125 @@ class TestFetchForkBranch:
             fetch_fork_branch("user", "branch")
 
 
+def _pr_data(head_repo: str, base_repo: str, *, fork: bool) -> str:
+    def repo(full_name: str, *, is_fork: bool) -> dict[str, object]:
+        return {
+            "fork": is_fork,
+            "clone_url": f"https://github.com/{full_name}.git",
+            "full_name": full_name,
+        }
+
+    return json.dumps(
+        {
+            "head": {"ref": "feat/1806-constant-node", "repo": repo(head_repo, is_fork=fork)},
+            "base": {"ref": "main", "repo": repo(base_repo, is_fork=fork)},
+        }
+    )
+
+
+class TestFetchPrHead:
+    """A PR's head is fetched as refs/pull/N/head from the repository gh resolved."""
+
+    @pytest.mark.parametrize(
+        "origin_url",
+        [
+            "https://github.com/org/repo.git",
+            "git@github.com:Org/Repo.git",
+            "ssh://git@github.com/org/repo",
+        ],
+    )
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_same_repo_pr_is_fetched_from_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock, origin_url: str
+    ) -> None:
+        mock_gh.return_value = _pr_data("org/repo", "org/repo", fork=False)
+        mock_git.side_effect = [origin_url, "", "A <a@x>"]
+
+        info = fetch_fork_pr(1931)
+
+        assert mock_git.call_args_list[1].args == (
+            "fetch",
+            "origin",
+            "+refs/pull/1931/head:refs/pr-split/pr-1931",
+        )
+        assert info["local_ref"] == "refs/pr-split/pr-1931"
+        assert info["base_branch"] == "main"
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_internal_pr_of_a_forked_repo_uses_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        # The repository is itself a fork, so head.repo.fork is true for an internal PR.
+        mock_gh.return_value = _pr_data("me/repo", "me/repo", fork=True)
+        mock_git.side_effect = ["git@github.com:me/repo.git", "", "A <a@x>"]
+
+        fetch_fork_pr(7)
+
+        assert mock_git.call_args_list[1].args[1] == "origin"
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_pr_of_another_repo_is_not_fetched_from_origin(
+        self, mock_gh: MagicMock, mock_git: MagicMock
+    ) -> None:
+        # gh resolved upstream while origin is the user's fork: a same-named
+        # branch on origin must not stand in for the PR's head.
+        mock_gh.return_value = _pr_data("up/repo", "up/repo", fork=False)
+        mock_git.side_effect = ["git@github.com:me/repo.git", "", "A <a@x>"]
+
+        fetch_fork_pr(7)
+
+        assert mock_git.call_args_list[1].args == (
+            "fetch",
+            "https://github.com/up/repo.git",
+            "+refs/pull/7/head:refs/pr-split/pr-7",
+        )
+
+    @patch("pr_split.git_ops.branches.run_git")
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_fetch_failure_names_the_source(self, mock_gh: MagicMock, mock_git: MagicMock) -> None:
+        mock_gh.return_value = _pr_data("org/repo", "org/repo", fork=False)
+        mock_git.side_effect = ["https://github.com/org/repo", GitOperationError("no ref")]
+
+        with pytest.raises(GitOperationError, match="head of PR #7 from origin: no ref"):
+            fetch_fork_pr(7)
+
+
+class TestFetchForkPrMalformedResponse:
+    @pytest.mark.parametrize(
+        "raw", ["not json", "[]", '{"head": {}}'], ids=["text", "list", "no-base"]
+    )
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_malformed_response_is_a_git_operation_error(
+        self, mock_gh: MagicMock, raw: str
+    ) -> None:
+        mock_gh.return_value = raw
+        with pytest.raises(GitOperationError, match="Unexpected response from GitHub for PR #42"):
+            fetch_fork_pr(42)
+
+
+class TestFindOpenPr:
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_only_an_exact_same_repository_head_counts(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = json.dumps(
+            [
+                {"number": 1, "url": "u1", "headRefName": "feat/x-2", "isCrossRepository": False},
+                {"number": 2, "url": "u2", "headRefName": "feat/x", "isCrossRepository": True},
+                {"number": 3, "url": "u3", "headRefName": "feat/x", "isCrossRepository": False},
+            ]
+        )
+        assert find_open_pr("feat/x") == (3, "u3")
+
+    @patch("pr_split.git_ops.prs._run_gh")
+    def test_no_exact_match_is_none(self, mock_gh: MagicMock) -> None:
+        mock_gh.return_value = json.dumps(
+            [{"number": 1, "url": "u1", "headRefName": "feat/x-2", "isCrossRepository": False}]
+        )
+        assert find_open_pr("feat/x") is None
+
+
 class TestForkFetchRefspecIsForced:
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.prs._run_gh")
@@ -187,7 +307,7 @@ class TestForkFetchRefspecIsForced:
         fetch_fork_pr(42)
         fetch_call = mock_git.call_args_list[0].args
         assert fetch_call[0] == "fetch"
-        assert fetch_call[2] == "+feature:refs/pr-split/pr-42"
+        assert fetch_call[2] == "+refs/heads/feature:refs/pr-split/pr-42"
 
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.prs._run_gh")
