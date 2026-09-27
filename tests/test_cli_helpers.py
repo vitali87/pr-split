@@ -739,3 +739,68 @@ class TestWorktreeWritesPreserveCrlf:
         assert written["c.txt"] == b"a\r\nb\r\n"
         content_writes = [c for c in wt.call_args_list if c.args[1] == "a\r\nb\r\n"]
         assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)
+
+
+class TestOversizedGroupsReport:
+    def _sized(self, gid: str, loc: int) -> Group:
+        group = _group(gid, gid)
+        group.estimated_loc = loc
+        return group
+
+    def test_summary_names_count_limit_and_largest(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 120), self._sized("pr-3", 401)]
+        with console.capture() as capture:
+            _report_oversized_groups(groups, 400, {})
+        out = " ".join(capture.get().split())
+        assert "2 of 3 groups exceed --max-loc 400 (largest: pr-1 at 876 LOC)" in out
+
+    def test_single_hunk_group_is_named_as_irreducible(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        big_file = self._sized("pr-1", 734)
+        big_file.assignments = [
+            GroupAssignment(
+                file_path="tests/test_big.py",
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=[0],
+            )
+        ]
+        with console.capture() as capture:
+            _report_oversized_groups([big_file], 400, {"tests/test_big.py": 1})
+        out = " ".join(capture.get().split())
+        assert "pr-1 hold a single hunk each and cannot be split below the limit" in out
+
+    def test_whole_file_assignments_count_the_hunks_they_cover(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        # WHOLE_FILE may list no indices: count what it covers in the parsed diff.
+        new_file = self._sized("pr-1", 734)
+        new_file.assignments = [
+            GroupAssignment(file_path="big.py", assignment_type=AssignmentType.WHOLE_FILE)
+        ]
+        edited = self._sized("pr-2", 600)
+        edited.assignments = [
+            GroupAssignment(
+                file_path="multi.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+            )
+        ]
+        with console.capture() as capture:
+            _report_oversized_groups([new_file, edited], 400, {"big.py": 1, "multi.py": 3})
+        out = " ".join(capture.get().split())
+        assert "pr-1 hold a single hunk each" in out
+        assert "pr-2 hold" not in out and "pr-1, pr-2" not in out
+
+    def test_nothing_printed_within_the_limit(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        with console.capture() as capture:
+            _report_oversized_groups([self._sized("pr-1", 400)], 400, {})
+        assert capture.get() == ""
+
+    def test_oversized_ids_are_recorded(self) -> None:
+        from pr_split.cli import _oversized_group_ids
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 400)]
+        assert _oversized_group_ids(groups, 400) == ["pr-1"]
