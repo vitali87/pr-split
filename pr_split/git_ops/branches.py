@@ -3,6 +3,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import functools
+import hashlib
 import os
 import re
 import shutil
@@ -256,9 +257,24 @@ def diff_base_ref(base: str) -> str:
 
 
 def derive_split_namespace(dev_branch_arg: str) -> str:
-    raw = dev_branch_arg.split(":", 1)[1] if ":" in dev_branch_arg else dev_branch_arg.lstrip("#")
+    """Derive the branch namespace for a split from its dev-branch argument.
+
+    The result must be a valid git ref component and distinct per source:
+    ``user:branch`` keeps the user so a fork branch cannot collide with a
+    local branch of the same name, ``..`` is never emitted, and an argument
+    that sanitises to nothing falls back to a short hash rather than an
+    empty component (``pr-split//pr-1`` is not a valid ref).
+    """
+    if ":" in dev_branch_arg:
+        user, branch = dev_branch_arg.split(":", 1)
+        raw = f"{user}-{branch}"
+    else:
+        raw = dev_branch_arg.lstrip("#")
     sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", raw)
-    return sanitized.strip("-")
+    sanitized = re.sub(r"\.{2,}", "-", sanitized).strip("-.")
+    if not sanitized:
+        return hashlib.sha1(dev_branch_arg.encode("utf-8")).hexdigest()[:8]
+    return sanitized
 
 
 def local_branch_exists(branch: str) -> bool:
