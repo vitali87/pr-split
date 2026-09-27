@@ -1532,6 +1532,9 @@ class TestAdoptExistingBranches:
             ("test/derive", "test/allowlist"),
         ]
         assert [p.pr_number for p in saved.git_state.prs] == [1951, 1952]
+        # The branches and PRs are the user's own, so clean must never delete them.
+        assert all(b.adopted for b in saved.git_state.branches)
+        assert all(p.adopted for p in saved.git_state.prs)
 
     @patch("pr_split.cli.find_open_pr", return_value=None)
     @patch("pr_split.cli.link_stack")

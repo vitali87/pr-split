@@ -151,7 +151,7 @@ Creates branches and PRs from a previously saved `--dry-run` plan. Uses the save
 pr-split adopt test/allowlist test/derive --base main
 ```
 
-Registers existing branches, bottom first, as a native GitHub stack on `--base`, opening a PR for any branch that has none, and saves them as a plan so `status` and `merge` work on them. Each branch must contain the one below it (the first must contain `--base`); otherwise it is refused. Pass `--yes` to skip the confirmation.
+Registers existing branches, bottom first, as a native GitHub stack on `--base`, opening a PR for any branch that has none, and saves them as a plan so `status` and `merge` work on them. Each branch must contain the one below it (the first must contain `--base`); otherwise it is refused. Pass `--yes` to skip the confirmation. The branches and PRs stay yours: `pr-split clean` forgets an adopted stack without closing its PRs or deleting its branches.
 
 ### Interactive plan editing
 

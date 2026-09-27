@@ -68,6 +68,8 @@ CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
 PR_ALREADY_DONE = "PR #{number} is already {state}, nothing to close"
+ADOPTED_PR_KEPT = "PR #{number} was adopted, not opened by pr-split; leaving it open"
+ADOPTED_BRANCH_KEPT = "Branch {branch} was adopted, not created by pr-split; keeping it"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
 CLEAN_INCOMPLETE = (
     "Some PRs or branches could not be cleaned up; the plan file was kept"

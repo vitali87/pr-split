@@ -136,6 +136,36 @@ class TestBuildPrBody:
 
 class TestCleanupGitState:
     @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.close_pr")
+    def test_adopted_prs_and_branches_are_left_alone(
+        self,
+        mock_close: MagicMock,
+        mock_delete: MagicMock,
+        mock_state: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        git_state = GitState(
+            branches=[
+                BranchRecord(
+                    group_id="pr-1", branch_name="test/mine", base_branch="main", adopted=True
+                ),
+                BranchRecord(group_id="pr-2", branch_name="pr-split/ns/pr-2", base_branch="main"),
+            ],
+            prs=[
+                PRRecord(group_id="pr-1", pr_number=10, pr_url="url1", adopted=True),
+                PRRecord(group_id="pr-2", pr_number=11, pr_url="url2"),
+            ],
+        )
+        closed, deleted = _cleanup_git_state(git_state)
+        # Both count as done, so the plan is forgotten, but only pr-split's own are touched.
+        assert (closed, deleted) == (2, 2)
+        mock_close.assert_called_once_with(11)
+        mock_delete.assert_called_once_with("pr-split/ns/pr-2", remote=True)
+
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.Path")
     @patch("pr_split.cli.delete_branch")

@@ -1534,6 +1534,11 @@ def status() -> None:
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     closed_prs = 0
     for pr_record in git_state.prs:
+        if pr_record.adopted:
+            # The user's own PR, only registered by adopt: forget it, never close it.
+            logger.info(logs.ADOPTED_PR_KEPT.format(number=pr_record.pr_number))
+            closed_prs += 1
+            continue
         # gh refuses to close a merged PR and silently succeeds on a closed
         # one; neither needs a warning nor should count as newly closed, but
         # both are "done" for the purpose of removing the plan.
@@ -1553,6 +1558,10 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
     logger.info(logs.CLEANING_BRANCHES)
     deleted_branches = 0
     for branch_record in git_state.branches:
+        if branch_record.adopted:
+            logger.info(logs.ADOPTED_BRANCH_KEPT.format(branch=branch_record.branch_name))
+            deleted_branches += 1
+            continue
         try:
             delete_branch(branch_record.branch_name, remote=True)
             deleted_branches += 1
@@ -1656,9 +1665,10 @@ def adopt(
                 branch_name=name,
                 base_branch=parent,
                 commit_sha=run_git("rev-parse", name),
+                adopted=True,
             )
         )
-        pr_records.append(PRRecord(group_id=gid, pr_number=pr[0], pr_url=pr[1]))
+        pr_records.append(PRRecord(group_id=gid, pr_number=pr[0], pr_url=pr[1], adopted=True))
     save_plan(
         PlanFile(
             plan=SplitPlan(
