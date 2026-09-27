@@ -81,6 +81,17 @@ class TestBuildPrBody:
         assert "## Dependencies" in body
         assert "`pr-1`" in body
 
+    def test_merge_node_names_the_ancestors_its_diff_carries(self) -> None:
+        g0 = _group("pr-0", "root")
+        g1 = _group("pr-1", "left", depends_on=["pr-0"])
+        g2 = _group("pr-2", "right")
+        g3 = _group("pr-3", "join", depends_on=["pr-1", "pr-2"], files=["c.py"])
+        body = _build_pr_body(g3, [g0, g1, g2, g3])
+        assert "This PR depends on: `pr-1`, `pr-2`\n" in body
+        assert "also includes the changes of: `pr-0`, `pr-1`, `pr-2`." in body
+        single = _build_pr_body(g1, [g0, g1, g2, g3])
+        assert "also includes" not in single
+
     def test_no_dependencies_section_for_root(self) -> None:
         group = _group("pr-1", "root", files=["a.py"])
         body = _build_pr_body(group, [group])
@@ -101,7 +112,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{description}\n\nFiles: {files}\nLOC: {loc}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"], added=10, removed=5)
         body = _build_pr_body(group, [group])
@@ -116,7 +127,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{nonexistent}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"])
         with pytest.raises(PRSplitError, match="Invalid PR template"):
@@ -124,6 +135,36 @@ class TestBuildPrBody:
 
 
 class TestCleanupGitState:
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
+    @patch("pr_split.cli.delete_branch")
+    @patch("pr_split.cli.close_pr")
+    def test_adopted_prs_and_branches_are_left_alone(
+        self,
+        mock_close: MagicMock,
+        mock_delete: MagicMock,
+        mock_state: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        git_state = GitState(
+            branches=[
+                BranchRecord(
+                    group_id="pr-1", branch_name="test/mine", base_branch="main", adopted=True
+                ),
+                BranchRecord(group_id="pr-2", branch_name="pr-split/ns/pr-2", base_branch="main"),
+            ],
+            prs=[
+                PRRecord(group_id="pr-1", pr_number=10, pr_url="url1", adopted=True),
+                PRRecord(group_id="pr-2", pr_number=11, pr_url="url2"),
+            ],
+        )
+        closed, deleted = _cleanup_git_state(git_state)
+        # Both count as done, so the plan is forgotten, but only pr-split's own are touched.
+        assert (closed, deleted) == (2, 2)
+        mock_close.assert_called_once_with(11)
+        mock_delete.assert_called_once_with("pr-split/ns/pr-2", remote=True)
+
     @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
     @patch("pr_split.cli.Path")
@@ -582,7 +623,7 @@ class TestCorruptPlanFile:
 class TestCleanupSkipsFinishedPrs:
     @patch("pr_split.cli.get_pr_state")
     @patch("pr_split.cli.shutil.rmtree")
-    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.plan_path")
     @patch("pr_split.cli.delete_branch")
     @patch("pr_split.cli.close_pr")
     def test_merged_and_closed_prs_are_not_closed_again_but_count_as_done(
@@ -619,7 +660,7 @@ class TestCleanupSkipsFinishedPrs:
 
     @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
-    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.plan_path")
     @patch("pr_split.cli.delete_branch")
     @patch("pr_split.cli.close_pr", side_effect=GitOperationError("gh: rate limited"))
     def test_close_failure_warning_includes_the_reason(
@@ -894,7 +935,7 @@ class TestSplitMalformedLlmOutput:
         mock_save_plan: MagicMock,
     ) -> None:
         mock_extract_diff.return_value = (
-            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-x\n+y\n"
+            "diff --git a/a.py b/a.py\n--- a/a.py\n+++ b/a.py\n@@ -1 +1,2 @@\n-x\n+y\n+z\n"
         )
         mock_call_llm.return_value = {
             "groups": [
@@ -912,7 +953,7 @@ class TestSplitMalformedLlmOutput:
 
         result = runner.invoke(
             app,
-            ["split", "feature-branch", "--dry-run"],
+            ["split", "feature-branch", "--dry-run", "--max-loc", "2"],
             env={"ANTHROPIC_API_KEY": "sk-test"},
         )
 

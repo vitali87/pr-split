@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from collections.abc import Sequence
 
 from loguru import logger
 
@@ -44,6 +46,34 @@ def check_gh_stack() -> bool:
     return any(GH_STACK_EXTENSION in line.split() for line in installed.splitlines())
 
 
+def find_open_pr(branch: str) -> tuple[int, str] | None:
+    """The open PR whose head is ``branch`` in this repository, if any.
+
+    ``gh pr list --head`` can also return PRs from forks and PRs whose head
+    merely starts with ``branch``, so only an exact, same-repository head counts.
+    """
+    raw = _run_gh(
+        "pr",
+        "list",
+        "--head",
+        branch,
+        "--state",
+        "open",
+        "--json",
+        "number,url,headRefName,isCrossRepository",
+        "--limit",
+        str(PR_LIST_LIMIT),
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError:
+        return None
+    for pr in prs:
+        if pr.get("headRefName") == branch and not pr.get("isCrossRepository"):
+            return int(pr["number"]), str(pr["url"])
+    return None
+
+
 def create_pr(
     head: str, base: str, title: str, body: str, *, draft: bool = False
 ) -> tuple[int, str]:
@@ -80,6 +110,36 @@ def get_pr_state(pr_number: int) -> dict[str, str | bool | None]:
         return {}
 
 
+PR_LIST_LIMIT = 1000
+
+
+def list_prs_with_head_prefix(prefix: str) -> list[dict[str, object]]:
+    """Every PR, in any state, opened from this repository's branches under ``prefix``."""
+    raw = _run_gh(
+        "pr",
+        "list",
+        # Narrow on the server, so the limit applies to the stack's PRs only.
+        "--search",
+        f"head:{prefix}",
+        "--state",
+        "all",
+        "--limit",
+        str(PR_LIST_LIMIT),
+        "--json",
+        "number,url,state,headRefName,baseRefName,title,body,isCrossRepository",
+    )
+    try:
+        prs = json.loads(raw or "[]")
+    except json.JSONDecodeError as exc:
+        raise GitOperationError(f"gh pr list returned invalid JSON: {exc}") from exc
+    # A fork's branch of the same name is not one of the stack's branches.
+    return [
+        pr
+        for pr in prs
+        if str(pr.get("headRefName", "")).startswith(prefix) and not pr.get("isCrossRepository")
+    ]
+
+
 def merge_pr(pr_number: int, *, auto: bool = False) -> None:
     args = ["pr", "merge", str(pr_number), "--merge", "--delete-branch"]
     if auto:
@@ -93,12 +153,28 @@ def close_pr(pr_number: int) -> None:
     logger.info(logs.PR_CLOSED.format(number=pr_number))
 
 
-def link_stack(pr_numbers: list[int]) -> None:
+def link_stack(pr_numbers: Sequence[int | str], base: str) -> None:
+    """Link PRs (numbers, or branch names to open PRs for) into a stack, bottom first."""
+    # Without --base, gh stack link roots the stack on the repository default
+    # branch and retargets the bottom PR there.
     try:
-        _run_gh("stack", "link", *[str(n) for n in pr_numbers])
+        _run_gh("stack", "link", "--base", base, *[str(n) for n in pr_numbers])
     except GitOperationError as exc:
         raise GitOperationError(ErrorMsg.STACK_LINK_FAILED(prs=pr_numbers, detail=exc)) from exc
     logger.info(logs.STACK_LINKED.format(prs=pr_numbers))
+
+
+def _origin_is(full_name: str) -> bool:
+    """Whether the ``origin`` remote points at the GitHub repository ``full_name``."""
+    from .branches import run_git
+
+    try:
+        url = run_git("remote", "get-url", "origin")
+    except GitOperationError:
+        return False
+    path = url.strip().removesuffix("/").removesuffix(".git")
+    owner_repo = "/".join(re.split(r"[/:]", path)[-2:])
+    return owner_repo.lower() == full_name.lower()
 
 
 def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
@@ -125,22 +201,35 @@ def fetch_fork_pr(pr_number: int) -> ForkPRInfo:
     if not isinstance(head_repo, dict):
         # head.repo is null when the fork was deleted
         raise GitOperationError(ErrorMsg.PR_NOT_FOUND(number=pr_number))
-    if not head_repo.get("fork"):
-        raise GitOperationError(ErrorMsg.PR_NOT_FROM_FORK(number=pr_number))
-
     clone_url = str(head_repo["clone_url"])
     head_ref = str(head["ref"])
     base_ref = str(base["ref"])
     fork_full_name = str(head_repo["full_name"])
 
     local_ref = f"{PR_REF_PREFIX}{pr_number}"
-    logger.info(logs.FETCHING_FORK_PR.format(number=pr_number, fork=fork_full_name))
+    # GitHub keeps every PR's head at refs/pull/N/head of the base repository,
+    # whether the branch lives there or in a fork, so fetching that ref from
+    # the repository gh resolved never picks up a same-named branch elsewhere.
+    base_repo = base.get("repo")
+    base_full_name = str(base_repo.get("full_name", "")) if isinstance(base_repo, dict) else ""
+    pull_ref = f"+refs/pull/{pr_number}/head:{local_ref}"
+    if base_full_name and _origin_is(base_full_name):
+        source, refspec = "origin", pull_ref
+    elif isinstance(base_repo, dict) and base_repo.get("clone_url"):
+        source, refspec = str(base_repo["clone_url"]), pull_ref
+    else:
+        # No base repository in the response: fall back to the head branch itself.
+        source, refspec = clone_url, f"+refs/heads/{head_ref}:{local_ref}"
+    if fork_full_name != base_full_name:
+        logger.info(logs.FETCHING_FORK_PR.format(number=pr_number, fork=fork_full_name))
+    else:
+        logger.info(logs.FETCHING_SAME_REPO_PR.format(number=pr_number, branch=head_ref))
 
     try:
-        run_git("fetch", clone_url, f"{head_ref}:{local_ref}")
+        run_git("fetch", source, refspec)
     except GitOperationError as exc:
         raise GitOperationError(
-            ErrorMsg.PR_FETCH_FAILED(number=pr_number, detail=str(exc))
+            ErrorMsg.PR_FETCH_FAILED(number=pr_number, source=source, detail=str(exc))
         ) from exc
 
     author = run_git("log", "-1", "--format=%aN <%aE>", local_ref)

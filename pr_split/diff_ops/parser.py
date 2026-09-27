@@ -11,6 +11,7 @@ from unidiff import PatchSet
 from .. import logs
 from ..exceptions import DiffParseError, GitOperationError
 from ..types_defs import DiffStats, FileSummary, HunkInfo
+from .new_file_split import split_new_file
 
 # Flags that pin the diff to the exact unified format the parser and
 # reconstructor expect, regardless of the user's git config:
@@ -96,14 +97,61 @@ def unquote_git_path(path: str) -> str:
     return bytes(out).decode("utf-8", errors="surrogateescape")
 
 
-def parse_diff(raw_diff: str) -> ParsedDiff:
+_QUOTED_PATH_RE = re.compile(r'"(?:[^"\\]|\\.)*"')
+_HEADER_PREFIXES = ("diff --git ", "--- ", "+++ ")
+
+
+def _escape_spaces_in_quoted_paths(line: str) -> str:
+    return _QUOTED_PATH_RE.sub(lambda m: m.group(0).replace(" ", "\\040"), line)
+
+
+def _normalize_quoted_headers(raw_diff: str) -> str:
+    """Make C-quoted paths containing spaces parseable by unidiff.
+
+    unidiff splits `diff --git <src> <dst>` on the last space, so a quoted
+    path with a space (`"a/my \\"notes\\".md"`) is cut in the wrong place and
+    no longer matches the `---`/`+++` lines: unidiff then keeps a phantom
+    0-hunk file for a modification and raises "Target without source" for an
+    addition or deletion. Spaces inside quoted paths are rewritten as the
+    octal escape `\\040` -- still valid C-quoting, which unquote_git_path
+    decodes -- on the header lines only (between `diff --git` and the first
+    `@@`), so hunk content is never touched.
+    """
+    if '"' not in raw_diff:
+        return raw_diff
+    lines = raw_diff.split("\n")
+    in_header = False
+    for i, line in enumerate(lines):
+        if line.startswith("diff --git "):
+            in_header = True
+        elif line.startswith("@@"):
+            in_header = False
+        if in_header and '"' in line and line.startswith(_HEADER_PREFIXES):
+            lines[i] = _escape_spaces_in_quoted_paths(line)
+    return "\n".join(lines)
+
+
+def parse_diff(raw_diff: str, *, split_new_files_over: int | None = None) -> ParsedDiff:
+    """Parse a unified diff.
+
+    With ``split_new_files_over``, a new file larger than that many lines is
+    cut into several hunks at top-level boundaries (see new_file_split), so a
+    stacked split can spread it over a chain of PRs. The same value must be
+    passed wherever the plan's hunk indices are read back.
+    """
     try:
-        patch_set = PatchSet(raw_diff)
+        patch_set = PatchSet(_normalize_quoted_headers(raw_diff))
     except Exception as exc:
         raise DiffParseError(str(exc)) from exc
     for patch_file in patch_set:
         patch_file.source_file = unquote_git_path(patch_file.source_file)
         patch_file.target_file = unquote_git_path(patch_file.target_file)
+        if split_new_files_over is not None and split_new_file(patch_file, split_new_files_over):
+            logger.info(
+                logs.NEW_FILE_SPLIT.format(
+                    file=patch_file.path, loc=patch_file.added, pieces=len(patch_file)
+                )
+            )
     return ParsedDiff(patch_set=patch_set, raw_diff=raw_diff)
 
 
@@ -111,6 +159,15 @@ def parse_diff(raw_diff: str) -> ParsedDiff:
 class ParsedDiff:
     patch_set: PatchSet
     raw_diff: str
+
+    @property
+    def new_file_pieces(self) -> dict[str, int]:
+        """New files cut into several pieces, with their piece counts.
+
+        Git reports a new file as a single hunk, so a new file with more than
+        one is one that parse_diff split; piece k needs pieces 0..k-1 below it.
+        """
+        return {pf.path: len(pf) for pf in self.patch_set if pf.is_added_file and len(pf) > 1}
 
     @property
     def file_paths(self) -> list[str]:
