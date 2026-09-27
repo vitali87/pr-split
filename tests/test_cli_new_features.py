@@ -112,7 +112,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{description}\n\nFiles: {files}\nLOC: {loc}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"], added=10, removed=5)
         body = _build_pr_body(group, [group])
@@ -127,7 +127,7 @@ class TestBuildPrBody:
         template_dir.mkdir()
         template_file = template_dir / "template.md"
         template_file.write_text("{nonexistent}")
-        monkeypatch.setattr("pr_split.cli._PR_TEMPLATE_PATH", template_file)
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
 
         group = _group("pr-1", "feat: auth", files=["auth.py"])
         with pytest.raises(PRSplitError, match="Invalid PR template"):
@@ -593,7 +593,7 @@ class TestCorruptPlanFile:
 class TestCleanupSkipsFinishedPrs:
     @patch("pr_split.cli.get_pr_state")
     @patch("pr_split.cli.shutil.rmtree")
-    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.plan_path")
     @patch("pr_split.cli.delete_branch")
     @patch("pr_split.cli.close_pr")
     def test_merged_and_closed_prs_are_not_closed_again_but_count_as_done(
@@ -630,7 +630,7 @@ class TestCleanupSkipsFinishedPrs:
 
     @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN"})
     @patch("pr_split.cli.shutil.rmtree")
-    @patch("pr_split.cli.Path")
+    @patch("pr_split.cli.plan_path")
     @patch("pr_split.cli.delete_branch")
     @patch("pr_split.cli.close_pr", side_effect=GitOperationError("gh: rate limited"))
     def test_close_failure_warning_includes_the_reason(

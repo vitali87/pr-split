@@ -31,8 +31,6 @@ from .constants import (
     DEFAULT_MIN_LOC,
     DEFAULT_STRICT_LOC_BOUNDS,
     NO_BACKEND_STRATEGY,
-    PLAN_DIR,
-    PLAN_FILE,
     AssignmentType,
     ChunkStrategy,
     PartitionStrategy,
@@ -80,7 +78,7 @@ from .git_ops.prs import (
 )
 from .graph import PlanDAG
 from .per_group import PerGroupStep, load_per_group_step, run_per_group_step
-from .plan_store import load_plan, plan_exists, save_plan
+from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
@@ -518,11 +516,13 @@ _GH_API_CONCURRENCY = 3
 _gh_semaphore = Semaphore(_GH_API_CONCURRENCY)
 
 
-_PR_TEMPLATE_PATH = Path(PLAN_DIR) / "template.md"
+def _pr_template_path() -> Path:
+    return plan_dir() / "template.md"
 
 
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
-    if _PR_TEMPLATE_PATH.exists():
+    template_path = _pr_template_path()
+    if template_path.exists():
         files = [a.file_path for a in group.assignments]
         template_vars = {
             "description": group.description,
@@ -536,19 +536,17 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
             "title": group.title,
         }
         try:
-            template = _PR_TEMPLATE_PATH.read_text(encoding="utf-8")
+            template = template_path.read_text(encoding="utf-8")
             return template.format(**template_vars)
         except (KeyError, ValueError, IndexError) as exc:
             available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
             raise PRSplitError(
-                f"Invalid PR template at {_PR_TEMPLATE_PATH}: {exc}. "
+                f"Invalid PR template at {template_path}: {exc}. "
                 f"Available placeholders: {available}. "
                 "Escape literal braces with {{ and }}."
             ) from exc
         except OSError as exc:
-            raise PRSplitError(
-                f"Could not read PR template at {_PR_TEMPLATE_PATH}: {exc}"
-            ) from exc
+            raise PRSplitError(f"Could not read PR template at {template_path}: {exc}") from exc
 
     files = [a.file_path for a in group.assignments]
     sections = [group.description]
@@ -1434,7 +1432,7 @@ def split(
 
     if dry_run:
         save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))
-        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {PLAN_FILE}")
+        logger.success(f"Dry run complete: plan with {len(groups)} groups saved to {plan_path()}")
         return
 
     typer.confirm("Proceed with creating branches and PRs?", abort=True)
@@ -1562,9 +1560,9 @@ def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
             logger.warning(f"Could not delete branch {branch_record.branch_name}")
 
     complete = closed_prs == len(git_state.prs) and deleted_branches == len(git_state.branches)
-    plan_path = Path(PLAN_FILE)
-    if complete and plan_path.exists():
-        plan_path.unlink()
+    saved_plan = plan_path()
+    if complete and saved_plan.exists():
+        saved_plan.unlink()
 
     return closed_prs, deleted_branches
 
@@ -2189,7 +2187,7 @@ def recover(
     force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
 ) -> None:
     if plan_exists() and not force:
-        console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=PLAN_FILE)}[/red]")
+        console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
         raise typer.Exit(1)
     try:
         plan_file = recover_plan(dev_branch, base=base, stacked=stack)
@@ -2216,6 +2214,6 @@ def recover(
     console.print(table)
     logger.success(
         logs.RECOVERED_PLAN.format(
-            branches=len(git_state.branches), prs=len(git_state.prs), path=PLAN_FILE
+            branches=len(git_state.branches), prs=len(git_state.prs), path=plan_path()
         )
     )
