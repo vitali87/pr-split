@@ -14,7 +14,7 @@ from loguru import logger
 
 from .. import logs
 from ..constants import PLAN_DIR
-from ..exceptions import GitOperationError
+from ..exceptions import ErrorMsg, GitOperationError
 
 
 def _git_env() -> dict[str, str]:
@@ -23,29 +23,36 @@ def _git_env() -> dict[str, str]:
     return {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
 
 
-def run_git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-    )
+def _git(args: tuple[str, ...], cwd: str | None = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            env=_git_env(),
+        )
+    except FileNotFoundError as exc:
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="git")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
     return result.stdout.strip()
+
+
+def run_git(*args: str) -> str:
+    return _git(args)
 
 
 def run_git_in_dir(cwd: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-        env=_git_env(),
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout.strip()
+    return _git(args, cwd=cwd)
+
+
+def require_tools(*tools: str) -> str | None:
+    """Return the first of ``tools`` that is not on PATH, or None."""
+    for tool in tools:
+        if shutil.which(tool) is None:
+            return tool
+    return None
 
 
 def commit_exists(ref: str) -> bool:

@@ -72,7 +72,7 @@ from .git_ops import (
     push_branch,
     remove_worktree,
 )
-from .git_ops.branches import commit_exists, run_git
+from .git_ops.branches import commit_exists, require_tools, run_git
 from .git_ops.prs import (
     branch_has_merged,
     close_pr,
@@ -183,6 +183,13 @@ def _check_pr_template() -> None:
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
+
+
+def _require_cli_tools(*tools: str) -> None:
+    missing = require_tools(*tools)
+    if missing is not None:
+        console.print(f"[red]{ErrorMsg.TOOL_NOT_FOUND(tool=missing)}[/red]")
+        raise typer.Exit(1)
 
 
 def _require_local_branch(base: str) -> None:
@@ -1437,6 +1444,10 @@ def split(
     fork_info: ForkPRInfo | None = None
     select_plan(dev_branch_arg)
 
+    # Say "git/gh is not installed" before any helper turns that into a
+    # misleading "branch not found" or "authentication failed".
+    _require_cli_tools("git", *(() if dry_run else ("gh",)))
+
     # A branch that exists only as origin/<name> (fresh clone or worktree)
     # is adopted as a local branch, as `git checkout <name>` would.
     for name in (dev_branch, base):
@@ -1454,6 +1465,9 @@ def split(
         if not _is_fork_ref(dev_branch):
             console.print(f"[red]{ErrorMsg.BRANCH_NOT_FOUND(branch=dev_branch)}[/red]")
             raise typer.Exit(1)
+        # A PR number or user:branch has to be fetched with gh even for a
+        # dry run.
+        _require_cli_tools("gh")
         if not check_gh_auth():
             console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
             raise typer.Exit(1)
@@ -1513,6 +1527,7 @@ def split(
             console.print(
                 "[red]Warning: this will permanently close PRs and delete remote branches.[/red]"
             )
+            _require_cleanup_tools(existing.git_state)
             if typer.confirm("Clean up and proceed with re-splitting?"):
                 closed_prs, deleted_branches = _cleanup_git_state(existing.git_state)
                 logger.success(
@@ -1738,6 +1753,14 @@ def status() -> None:
             f"[yellow]Could not fetch live state for {len(unverified)} PR(s): "
             f"{', '.join(f'#{n}' for n in unverified)}. Check 'gh auth status'.[/yellow]"
         )
+
+
+def _require_cleanup_tools(git_state: GitState) -> None:
+    # Every close/delete failure inside _cleanup_git_state is swallowed as a
+    # warning, so a missing binary would otherwise look like a successful
+    # cleanup that then deletes the plan. Both callers (clean and the
+    # re-split prompt in split) go through here before asking to proceed.
+    _require_cli_tools("git", *(("gh",) if git_state.prs else ()))
 
 
 def _cleanup_git_state(git_state: GitState) -> tuple[int, int]:
@@ -1980,6 +2003,8 @@ def clean() -> None:
     plan_file = _load_plan_or_exit()
     git_state = plan_file.git_state
 
+    _require_cleanup_tools(git_state)
+
     typer.confirm("Delete all pr-split branches and close PRs?", abort=True)
 
     closed_prs, deleted_branches = _cleanup_git_state(git_state)
@@ -2108,6 +2133,7 @@ def execute(
             " Re-run 'pr-split split --dry-run' to regenerate.[/red]"
         )
         raise typer.Exit(1)
+    _require_cli_tools("git", "gh")
     if not commit_exists(plan.merge_base_sha):
         console.print(
             f"[red]Plan's merge base {plan.merge_base_sha} is not in this repository "
@@ -2331,6 +2357,10 @@ def merge_all(
     if not pr_map:
         console.print("[yellow]No PRs found in plan. Nothing to merge.[/yellow]")
         raise typer.Exit(0)
+
+    # Without gh every PR would be skipped as a "fetch error" and the run
+    # would still report success.
+    _require_cli_tools("gh")
 
     if _base_has_merged(plan.base_branch):
         console.print(

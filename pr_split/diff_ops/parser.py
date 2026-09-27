@@ -44,13 +44,23 @@ def extract_diff(dev_branch: str, base_branch: str) -> str:
     # Capture bytes: text mode applies universal-newline translation, which
     # turns CRLF into LF and would make every sub-PR rewrite the file's
     # line endings.
-    result = subprocess.run(
-        # core.quotePath=false: otherwise git octal-escapes and quotes any
-        # non-ASCII path ("b/caf\303\251.txt"), which unidiff cannot parse for
-        # new/deleted files and mis-reports as a literal quoted path otherwise.
-        ["git", "-c", "core.quotePath=false", "diff", *DIFF_ARGS, f"{base_branch}...{dev_branch}"],
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            # core.quotePath=false: otherwise git octal-escapes and quotes any
+            # non-ASCII path ("b/caf\303\251.txt"), which unidiff cannot parse for
+            # new/deleted files and mis-reports as a literal quoted path otherwise.
+            [
+                "git",
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                *DIFF_ARGS,
+                f"{base_branch}...{dev_branch}",
+            ],
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="git")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
     # Git diffs any NUL-free file as text, so legacy latin-1 sources reach us
