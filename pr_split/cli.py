@@ -83,7 +83,7 @@ from .git_ops.prs import (
 )
 from .graph import PlanDAG
 from .per_group import PerGroupStep, load_per_group_step, run_per_group_step
-from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan
+from .plan_store import load_plan, plan_dir, plan_exists, plan_path, save_plan, select_plan
 from .planner import plan_split, validate_coverage, validate_no_binary_files, validate_plan
 from .planner.chunker import recompute_estimated_loc
 from .planner.new_file_pieces import link_new_file_pieces
@@ -109,6 +109,21 @@ app = typer.Typer(
     help="Decompose large PRs into reviewable dependency-ordered PRs",
 )
 console = Console()
+
+
+@app.callback()
+def _choose_plan(
+    branch: Annotated[
+        str | None,
+        typer.Option(
+            "--branch",
+            envvar="PR_SPLIT_BRANCH",
+            help="Dev branch whose saved plan to use when several splits are in progress",
+        ),
+    ] = None,
+) -> None:
+    # Plans are saved per dev branch; without --branch the only saved plan is used.
+    select_plan(branch)
 
 
 def _render_dag(groups: list[Group]) -> str:
@@ -1272,6 +1287,7 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
+    select_plan(dev_branch_arg)
 
     # A branch that exists only as origin/<name> (fresh clone or worktree)
     # is adopted as a local branch, as `git checkout <name>` would.
@@ -1613,6 +1629,8 @@ def adopt(
     if len(set(branches)) != len(branches):
         console.print("[red]Each branch may appear only once.[/red]")
         raise typer.Exit(1)
+    # The adopted stack's plan is filed under its top branch, like a split's dev branch.
+    select_plan(branches[-1])
     if plan_exists():
         existing = _load_plan_or_exit()
         if existing.git_state.branches or existing.git_state.prs:
@@ -2286,6 +2304,8 @@ def recover(
     ] = False,
     force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
 ) -> None:
+    # The recovered plan is this dev branch's; other branches' plans are left alone.
+    select_plan(dev_branch)
     if plan_exists() and not force:
         console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
         raise typer.Exit(1)

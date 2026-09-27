@@ -1536,6 +1536,49 @@ class TestAdoptExistingBranches:
         assert all(b.adopted for b in saved.git_state.branches)
         assert all(p.adopted for p in saved.git_state.prs)
 
+    @patch("pr_split.cli.find_open_pr")
+    @patch("pr_split.cli.link_stack")
+    @patch("pr_split.cli.check_gh_stack", return_value=True)
+    def test_another_branchs_plan_does_not_block_adoption(
+        self,
+        mock_stack: MagicMock,
+        mock_link: MagicMock,
+        mock_find: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.plan_store import load_plan, save_plan, select_plan
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, SplitPlan
+
+        self._repo(tmp_path, monkeypatch)
+        for other in ("feat/a", "feat/b"):
+            save_plan(
+                PlanFile(
+                    plan=SplitPlan(
+                        dev_branch=other,
+                        base_branch="main",
+                        max_loc=400,
+                        priority=Priority.ORTHOGONAL,
+                        groups=[],
+                    ),
+                    git_state=GitState(
+                        branches=[
+                            BranchRecord(group_id="pr-1", branch_name=other, base_branch="main")
+                        ]
+                    ),
+                )
+            )
+        mock_find.side_effect = [(1951, "https://x/1951"), (1952, "https://x/1952")]
+
+        result = runner.invoke(
+            app, ["adopt", "test/allowlist", "test/derive", "--base", "main", "--yes"]
+        )
+
+        assert result.exit_code == 0, result.output
+        select_plan("test/derive")
+        assert [p.pr_number for p in load_plan().git_state.prs] == [1951, 1952]
+
     @patch("pr_split.cli.find_open_pr", return_value=None)
     @patch("pr_split.cli.link_stack")
     @patch("pr_split.cli.check_gh_stack", return_value=True)

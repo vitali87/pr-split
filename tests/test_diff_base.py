@@ -103,7 +103,7 @@ def test_split_does_not_count_upstream_commits_as_branch_work(
         )
 
     assert result.exit_code == 0, result.output
-    plan = json.loads((clone / ".pr-split" / "plan.json").read_text())
+    plan = json.loads((clone / ".pr-split" / "plans" / "feature.json").read_text())
     plan = plan.get("plan", plan)
     files = {a["file_path"] for g in plan["groups"] for a in g["assignments"]}
     assert files == {"src/feature.py"}
