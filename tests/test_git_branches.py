@@ -15,6 +15,7 @@ from pr_split.git_ops.branches import (
     commit_files_in_dir,
     delete_branch,
     derive_split_namespace,
+    diff_base_ref,
     is_worktree_clean,
     merge_base,
     push_branch,
@@ -353,6 +354,8 @@ class TestAdoptRemoteBranch:
         assert run_git("rev-parse", "refs/heads/feat/move-op") == run_git(
             "rev-parse", "origin/feat/move-op"
         )
+        # It tracks the remote, so diff_base_ref diffs an adopted base against it.
+        assert diff_base_ref("feat/move-op") == "origin/feat/move-op"
 
     def test_branch_on_two_remotes_is_ambiguous_and_left_alone(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
