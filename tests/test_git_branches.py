@@ -9,6 +9,7 @@ import pytest
 from pr_split.constants import PLAN_DIR
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
+    _no_hooks_dir,
     add_worktree,
     adopt_remote_branch,
     branch_exists,
@@ -331,6 +332,13 @@ class TestAddWorktree:
         args = mock_git.call_args.args
         assert args[0] == "-c" and args[1].startswith("core.hooksPath=")
         assert args[2:] == ("worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123")
+
+    def test_hooks_dir_is_private_and_empty(self) -> None:
+        path = Path(_no_hooks_dir())
+        assert path.is_dir()
+        assert list(path.iterdir()) == []
+        # A fixed shared path would let another local user plant hooks there.
+        assert path.stat().st_mode & 0o077 == 0
 
     @patch("pr_split.git_ops.branches.run_git")
     @patch("pr_split.git_ops.branches.branch_exists", return_value=True)

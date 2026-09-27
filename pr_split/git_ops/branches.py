@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import atexit
+import functools
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 
 from loguru import logger
 
@@ -251,11 +253,16 @@ def add_worktree(path: str, branch_name: str, start_point: str) -> None:
         raise
 
 
+@functools.cache
 def _no_hooks_dir() -> str:
-    """An empty directory to use as core.hooksPath (no hooks run)."""
-    path = Path(tempfile.gettempdir()) / "pr-split-no-hooks"
-    path.mkdir(exist_ok=True)
-    return str(path)
+    """An empty directory to use as core.hooksPath (no hooks run).
+
+    mkdtemp creates it private to this user, so nobody else can plant hooks
+    in it the way they could in a fixed, shared path under the temp dir.
+    """
+    path = tempfile.mkdtemp(prefix="pr-split-no-hooks-")
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 def remove_worktree(path: str) -> None:
