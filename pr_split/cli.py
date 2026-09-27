@@ -227,15 +227,25 @@ def _oversized_group_ids(groups: list[Group], max_loc: int) -> list[str]:
     return [g.id for g in groups if g.estimated_loc > max_loc]
 
 
-def _report_oversized_groups(groups: list[Group], max_loc: int) -> None:
-    """One visible line when groups miss the --max-loc target, so it is never silent."""
+def _report_oversized_groups(
+    groups: list[Group], max_loc: int, hunk_counts: dict[str, int]
+) -> None:
+    """One visible line when groups miss the --max-loc target, so it is never silent.
+
+    ``hunk_counts`` maps each file to its parsed hunk count, so a WHOLE_FILE
+    assignment is counted by the hunks it covers, not the indices it lists.
+    """
     oversized = [g for g in groups if g.estimated_loc > max_loc]
     if not oversized:
         return
     largest = max(oversized, key=lambda g: g.estimated_loc)
     # A group holding one hunk (e.g. a whole new file) cannot be split by any
     # plan; say so rather than leave it looking like a planning miss.
-    single_hunk = [g.id for g in oversized if sum(len(a.hunk_indices) for a in g.assignments) == 1]
+    single_hunk = [
+        g.id
+        for g in oversized
+        if sum(len(a.covered_indices(hunk_counts.get(a.file_path, 0))) for a in g.assignments) == 1
+    ]
     irreducible = (
         f" {', '.join(escape(gid) for gid in single_hunk)} hold a single hunk each and"
         " cannot be split below the limit."
@@ -1361,7 +1371,7 @@ def split(
         )
         _handle_loc_bound_warnings(warnings, strict_loc_bounds=settings.strict_loc_bounds)
         logger.success("Edited plan validation passed")
-        _report_oversized_groups(groups, settings.max_loc)
+        _report_oversized_groups(groups, settings.max_loc, hunk_counts)
     except PRSplitError as exc:
         console.print(f"[red]Edited plan is invalid: {exc}[/red]")
         raise typer.Exit(1) from exc
@@ -1678,7 +1688,9 @@ def execute(
         raise typer.Exit(1) from exc
 
     _present_plan(plan.groups)
-    _report_oversized_groups(plan.groups, plan.max_loc)
+    _report_oversized_groups(
+        plan.groups, plan.max_loc, {pf.path: len(pf) for pf in parsed_diff.patch_set}
+    )
     if not yes:
         typer.confirm("Proceed with creating branches and PRs?", abort=True)
 
