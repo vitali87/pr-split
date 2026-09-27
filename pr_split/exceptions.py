@@ -102,6 +102,11 @@ class ErrorMsg(StrEnum):
         "Cannot tell which base branch the stack under '{prefix}' targets ({bases}); pass --base"
     )
     RECOVER_PR_LIST_FAILED = "Cannot list PRs to rebuild the plan ({detail})"
+    LLM_TOKEN_COUNT_FAILED = "Could not count prompt tokens with the LLM API: {detail}"
+    LLM_KEY_REJECTED = (
+        "{variable} was rejected by the LLM API; set a valid key, or plan without one"
+        " using --partition-strategy graph"
+    )
     BRANCH_CREATE_FAILED = "Failed to create branch '{branch}': {detail}"
     PR_CREATE_FAILED = "Failed to create PR for group '{group}': {detail}"
     MERGE_FAILED = "Merge of '{source}' into '{target}' failed: {detail}"
