@@ -14,7 +14,7 @@
 
 ## Latest News 🔥
 
-- Stacked PR Mode — pass `--stack` and every dependent PR branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Chains are registered as native GitHub stacks via the `gh-stack` extension when it is installed.
+- Stacked PR Mode — every PR with a single parent branches from and targets its parent's branch, so each sub-PR compiles and passes CI on its own. Pass `--stack` to also register chains as native GitHub stacks via the `gh-stack` extension.
 - GitHub Action — add pr-split to any repo as a CI check. Scores every PR and posts a split plan comment when it's too large. No API key needed.
 - Smart LOC Bounds — set `--min-loc` and `--max-loc` to control sub-PR size across all three backends (LLM, graph, CP-SAT). Undersized groups get merged, oversized groups get penalised.
 
@@ -24,21 +24,23 @@ Vibe coding with AI assistants can produce massive PRs that no one wants to revi
 
 ## How it works
 
-`pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
+`pr-split` takes a large pull request (local branch, PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
 
 <img src="pr-split.png" alt="pr-split system design" width="100%">
 
 ## Installation
 
+pr-split is not published on PyPI; install it from this repository.
+
 ```bash
 # With uv (recommended)
-uv tool install pr-split
+uv tool install "git+https://github.com/vitali87/pr-split"
 
 # With pip
-pip install pr-split
+pip install "git+https://github.com/vitali87/pr-split"
 
 # With the optional CP-SAT partitioning backend
-uv tool install "pr-split[cp-sat]"
+uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"
 ```
 
 ## Prerequisites
@@ -56,7 +58,9 @@ uv tool install "pr-split[cp-sat]"
 pr-split split feature-branch --base main
 ```
 
-### Split a fork PR by number
+### Split a PR by number
+
+Works for same-repo and fork PRs: the PR's head (`refs/pull/<N>/head`) is fetched from the repository `gh` resolves, through `origin` when that is the same repository, and its base branch is used.
 
 ```bash
 pr-split split '#42' --base main
@@ -85,9 +89,9 @@ pr-split split feature-branch --base main --dry-run
 | `--max-refinement-iterations` | `0` | Maximum LLM refinement iterations to fix LOC bound violations (0 = disabled) |
 | `--priority` | `orthogonal` | Grouping priority (`orthogonal` or `logical`) |
 | `--chunk-strategy` | `dynamic_programming` | Large-diff chunking strategy (`dynamic_programming` or `greedy`) |
-| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`) |
+| `--partition-strategy` | `llm` | Hunk-to-PR partition backend (`llm`, `graph`, or `cp_sat`). `graph` is deterministic; `llm` and `cp_sat` can return a different plan on each run, so treat the saved plan file as the artifact of record |
 | `--cp-sat-timeout` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `--stack` | `false` | Stack dependent PRs: each child branches from and targets its parent's branch |
+| `--stack` | `false` | Register dependent PR chains as native GitHub stacks (a PR with one parent always branches from and targets it) |
 | `--draft` | `false` | Open every sub-PR as a draft |
 | `--dry-run` | `false` | Preview plan and save to `.pr-split/plan.json` without creating branches or PRs |
 
@@ -97,7 +101,7 @@ pr-split split feature-branch --base main --dry-run
 pr-split split feature-branch --base main --stack
 ```
 
-Without `--stack`, every sub-PR branch is cut from the merge base and targets the base branch, so a sub-PR that depends on code from another group only goes green once its dependency merges. With `--stack`, each dependent group's branch is cut from its parent group's branch and carries the parent's hunks for shared files, and its PR targets the parent's branch. Every PR shows only its own diff, compiles standalone, and GitHub retargets children automatically as parents merge.
+A group with a single parent has its branch cut from the parent group's branch, carries the parent's hunks for shared files, and targets the parent's branch, with or without `--stack`. Its PR shows only its own diff, compiles standalone, and GitHub retargets it automatically as the parent merges. A group with several parents is cut from the merge base, carries every ancestor's changes, and targets the base branch, so its diff also includes those ancestors' changes (its PR description lists them). Groups with no dependencies are cut from the merge base and target the base branch. `--stack` additionally registers the chains as native GitHub stacks.
 
 A new file larger than `--max-loc` cannot fit in any one sub-PR. With `--stack` it is cut into pieces between top-level definitions: Python files at top-level statements, and other languages at unindented lines after a blank line, outside brackets, strings and comments. Each piece is appended by a PR stacked on the one holding the piece before it. Every layer holds a valid prefix of the file, and the top of the chain holds the whole file. Without `--stack` a new file is never cut.
 
@@ -139,7 +143,7 @@ pr-split merge --notify https://hooks.slack.com/...
 pr-split execute
 ```
 
-Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags.
+Creates branches and PRs from a previously saved `--dry-run` plan. Uses the saved diff and merge base for consistency — safe even if the dev branch has changed since the dry run. Pass `--stack` or `--draft` to stack the PRs or open them as drafts even when the plan was saved without those flags. Pass `--yes` (`-y`) to skip the confirmation prompt, e.g. from a script or CI job.
 
 ### Interactive plan editing
 
@@ -148,6 +152,12 @@ After the plan is displayed, an interactive editor lets you adjust the plan befo
 ```
 edit> show pr-1          # inspect a group's assignments
 edit> move src/foo.py:2 pr-1 pr-2   # move a hunk between groups
+edit> movefile src/foo.py pr-1 pr-2 # move every hunk of a file
+edit> dep pr-3 pr-2      # make pr-3 depend on pr-2 (undep removes the edge)
+edit> title pr-3 feat: add the parser    # set the PR title
+edit> desc pr-3 Adds the parser and its tests.  # set the PR body text
+edit> new pr-9           # create an empty group to move hunks into
+edit> merge pr-1 pr-2    # fold pr-2 (hunks, parents, dependants) into pr-1
 edit> plan               # redisplay the plan table
 edit> done               # proceed (default — just press Enter)
 edit> abort              # cancel
@@ -248,7 +258,7 @@ Settings can be set via environment variables with the `PR_SPLIT_` prefix:
 | `PR_SPLIT_CHUNK_STRATEGY` | `dynamic_programming` | Large-diff chunking strategy |
 | `PR_SPLIT_PARTITION_STRATEGY` | `llm` if its provider is configured, else `graph` | Hunk-to-PR partition backend |
 | `PR_SPLIT_CP_SAT_TIMEOUT` | `15.0` | Maximum seconds to spend in the CP-SAT solver |
-| `PR_SPLIT_STACK` | `false` | Stack dependent PRs on their parent's branch |
+| `PR_SPLIT_STACK` | `false` | Register dependent PR chains as native GitHub stacks |
 | `PR_SPLIT_DRAFT` | `false` | Open every sub-PR as a draft |
 | `PR_SPLIT_WEBHOOK_URL` | (none) | Webhook URL for merge notifications |
 
@@ -310,7 +320,7 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"`.
 
 ### Local models
 
