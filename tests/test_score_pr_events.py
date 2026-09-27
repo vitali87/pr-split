@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -77,3 +79,113 @@ class TestNonPullRequestEvents:
         assert ["git", "fetch", "origin", "main"] in fetches
         assert ["git", "fetch", "origin", "refs/pull/7/head:pr-split/head-7"] in fetches
         assert _outputs(output_file)["total_loc"] == "1"
+
+
+class TestOversizedVerdictDoesNotDependOnThePlanner:
+    """A PR over max-loc is flagged whatever the planner produced."""
+
+    def _run_main(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        returncode: int,
+        plan: dict | None,
+    ) -> tuple[dict[str, str], str]:
+        output_file = tmp_path / "output.txt"
+        output_file.touch()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("BASE_BRANCH", "main")
+        monkeypatch.setenv("HEAD_BRANCH", "feature")
+        monkeypatch.setenv("PR_NUMBER", "7")
+        monkeypatch.setenv("MAX_LOC", "400")
+        monkeypatch.setenv("GITHUB_OUTPUT", str(output_file))
+        monkeypatch.setenv("RUNNER_TEMP", str(tmp_path))
+        module = _load_script()
+
+        def fake_planner(cmd: list[str], **kwargs: object) -> object:
+            if plan is not None:
+                (tmp_path / ".pr-split").mkdir(exist_ok=True)
+                (tmp_path / ".pr-split" / "plan.json").write_text(json.dumps(plan))
+            return subprocess.CompletedProcess(cmd, returncode, "", "boom")
+
+        with (
+            patch.object(module, "_run") as mock_run,
+            patch.object(module.subprocess, "run", side_effect=fake_planner),
+        ):
+            mock_run.return_value.stdout = "600\t300\tbig.py\n"
+            module.main()
+
+        outputs = _outputs(output_file)
+        return outputs, Path(outputs["comment_path"]).read_text()
+
+    def test_planner_failure_still_flags_an_oversized_pr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outputs, comment = self._run_main(tmp_path, monkeypatch, returncode=1, plan=None)
+        assert outputs["should_split"] == "true"
+        assert "**900 LOC**, over the **400 LOC** limit" in comment
+        assert "pr-split exited with an error" in comment
+
+    def test_zero_group_plan_still_flags_an_oversized_pr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outputs, comment = self._run_main(
+            tmp_path, monkeypatch, returncode=0, plan={"plan": {"groups": []}, "git_state": {}}
+        )
+        assert outputs["should_split"] == "true"
+        assert outputs["total_groups"] == "0"
+        assert "plan has 0 group(s)" in comment
+        assert "within acceptable size limits" not in comment
+
+    def test_single_group_plan_is_below_threshold_but_still_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        group = {"id": "pr-1", "title": "t", "estimated_loc": 900, "assignments": []}
+        outputs, comment = self._run_main(
+            tmp_path, monkeypatch, returncode=0, plan={"plan": {"groups": [group]}}
+        )
+        assert outputs["should_split"] == "true"
+        # The plan exists; it is only below the threshold, so its count is kept.
+        assert outputs["total_groups"] == "1"
+        assert "plan has 1 group(s), below the 2 needed" in comment
+        assert "no split plan could be generated" not in comment
+
+    def test_a_plan_at_the_threshold_is_suggested(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        groups = [
+            {
+                "id": "pr-1",
+                "title": "feat: core",
+                "estimated_loc": 500,
+                "estimated_added": 450,
+                "estimated_removed": 50,
+                "assignments": [{"file_path": "big.py"}],
+            },
+            {
+                "id": "pr-2",
+                "title": "feat: api",
+                "estimated_loc": 400,
+                "estimated_added": 150,
+                "estimated_removed": 250,
+                "depends_on": ["pr-1"],
+                "assignments": [{"file_path": "big.py"}],
+            },
+        ]
+        outputs, comment = self._run_main(
+            tmp_path, monkeypatch, returncode=0, plan={"plan": {"groups": groups}}
+        )
+        assert outputs["should_split"] == "true"
+        assert outputs["total_groups"] == "2"
+        # 100 LOC over the limit, and big.py is split across both groups.
+        assert outputs["objective"] == str(100 * 1000 + 1 * 50 + 2)
+        assert "could be split into **2 smaller PRs**" in comment
+        assert "| pr-1 | feat: core | +450/-50 | — | `big.py` |" in comment
+        assert "| pr-2 | feat: api | +150/-250 | pr-1 | `big.py` |" in comment
+
+    def test_missing_plan_file_still_flags_an_oversized_pr(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outputs, comment = self._run_main(tmp_path, monkeypatch, returncode=0, plan=None)
+        assert outputs["should_split"] == "true"
+        assert "wrote no plan file" in comment
