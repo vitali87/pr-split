@@ -9,7 +9,7 @@ from loguru import logger
 from unidiff import PatchSet
 
 from .. import logs
-from ..exceptions import DiffParseError, GitOperationError
+from ..exceptions import DiffParseError, ErrorMsg, GitOperationError
 from ..types_defs import DiffStats, FileSummary, HunkInfo
 from .new_file_split import split_new_file
 
@@ -23,6 +23,10 @@ from .new_file_split import split_new_file
 #                               reported under its new name would fail
 #   -U3 and fixed prefixes      override diff.context and diff.mnemonicPrefix,
 #                               which would shift hunk positions and paths
+#   --submodule=short           with diff.submodule=log|diff a gitlink change
+#                               has no "index ... 160000" header and would slip
+#                               past the submodule check in parse_diff (or show
+#                               up as a bogus vendor/<file> diff)
 DIFF_ARGS: tuple[str, ...] = (
     "--no-color",
     "--no-ext-diff",
@@ -31,6 +35,7 @@ DIFF_ARGS: tuple[str, ...] = (
     "-U3",
     "--src-prefix=a/",
     "--dst-prefix=b/",
+    "--submodule=short",
 )
 
 
@@ -39,19 +44,44 @@ def extract_diff(dev_branch: str, base_branch: str) -> str:
     # Capture bytes: text mode applies universal-newline translation, which
     # turns CRLF into LF and would make every sub-PR rewrite the file's
     # line endings.
-    result = subprocess.run(
-        # core.quotePath=false: otherwise git octal-escapes and quotes any
-        # non-ASCII path ("b/caf\303\251.txt"), which unidiff cannot parse for
-        # new/deleted files and mis-reports as a literal quoted path otherwise.
-        ["git", "-c", "core.quotePath=false", "diff", *DIFF_ARGS, f"{base_branch}...{dev_branch}"],
-        capture_output=True,
-    )
+    try:
+        result = subprocess.run(
+            # core.quotePath=false: otherwise git octal-escapes and quotes any
+            # non-ASCII path ("b/caf\303\251.txt"), which unidiff cannot parse for
+            # new/deleted files and mis-reports as a literal quoted path otherwise.
+            [
+                "git",
+                "-c",
+                "core.quotePath=false",
+                "diff",
+                *DIFF_ARGS,
+                f"{base_branch}...{dev_branch}",
+            ],
+            capture_output=True,
+        )
+    except FileNotFoundError as exc:
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="git")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.decode("utf-8", errors="replace").strip())
     # Git diffs any NUL-free file as text, so legacy latin-1 sources reach us
     # too; surrogateescape keeps their bytes intact so they round-trip when
     # the worker writes them back with the same error handler.
     return result.stdout.decode("utf-8", errors="surrogateescape")
+
+
+_GITLINK_MODE = "160000"
+
+
+def _submodule_paths(patch_set: PatchSet) -> list[str]:
+    """Files whose diff header carries the gitlink mode (a submodule pointer)."""
+    paths: list[str] = []
+    for patch_file in patch_set:
+        header = "\n".join(patch_file.patch_info or [])
+        if re.search(
+            rf"^index [0-9a-f]+\.\.[0-9a-f]+ {_GITLINK_MODE}$", header, re.M
+        ) or re.search(rf"^(?:new|deleted) file mode {_GITLINK_MODE}$", header, re.M):
+            paths.append(patch_file.path)
+    return paths
 
 
 _C_ESCAPES = {
@@ -152,6 +182,12 @@ def parse_diff(raw_diff: str, *, split_new_files_over: int | None = None) -> Par
                     file=patch_file.path, loc=patch_file.added, pieces=len(patch_file)
                 )
             )
+    # A submodule bump looks like a one-hunk text change ("-Subproject
+    # commit …"), so it would plan and validate fine and only fail with
+    # "bad object" while materializing, after the user confirmed.
+    submodules = _submodule_paths(patch_set)
+    if submodules:
+        raise DiffParseError(ErrorMsg.SUBMODULE_UNSUPPORTED(paths=", ".join(submodules)))
     return ParsedDiff(patch_set=patch_set, raw_diff=raw_diff)
 
 
@@ -192,6 +228,7 @@ class ParsedDiff:
                     is_deleted=pf.is_removed_file,
                     is_renamed=pf.is_rename,
                     hunk_count=len(pf),
+                    hunk_indices=list(range(len(pf))),
                 )
             )
         return DiffStats(

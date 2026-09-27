@@ -27,6 +27,7 @@ def _make_diff_stats() -> DiffStats:
                 is_deleted=False,
                 is_renamed=False,
                 hunk_count=2,
+                hunk_indices=[0, 1],
             ),
             FileSummary(
                 path="bar.py",
@@ -36,6 +37,7 @@ def _make_diff_stats() -> DiffStats:
                 is_deleted=False,
                 is_renamed=False,
                 hunk_count=1,
+                hunk_indices=[0],
             ),
         ],
     )
@@ -59,6 +61,17 @@ class TestBuildSystemPrompt:
         result = build_system_prompt(Priority.LOGICAL, 200)
         assert "LOGICAL" in result
         assert "200" in result
+
+    def test_min_loc_adds_a_size_floor_rule(self) -> None:
+        result = build_system_prompt(Priority.ORTHOGONAL, 400, min_loc=100)
+        assert "not be smaller than about 100 lines" in result
+        assert "within approximately 400 lines" in result
+
+    def test_no_min_loc_keeps_the_prompt_unchanged(self) -> None:
+        assert build_system_prompt(Priority.ORTHOGONAL, 400) == build_system_prompt(
+            Priority.ORTHOGONAL, 400, min_loc=None
+        )
+        assert "smaller than" not in build_system_prompt(Priority.ORTHOGONAL, 400)
 
 
 class TestBuildUserPrompt:
@@ -101,6 +114,7 @@ class TestBuildUserPrompt:
                     is_deleted=False,
                     is_renamed=False,
                     hunk_count=0,
+                    hunk_indices=[],
                 ),
             ],
         )
@@ -130,3 +144,28 @@ class TestBuildSystemPromptExtended:
     def test_returns_nonempty_string(self) -> None:
         result = build_system_prompt(Priority.ORTHOGONAL, 400)
         assert len(result) > 100
+
+
+class TestChunkSummaryIndices:
+    def test_later_chunk_lists_global_indices(self) -> None:
+        stats = DiffStats(
+            total_files=1,
+            total_added=1,
+            total_removed=0,
+            total_loc=1,
+            file_summaries=[
+                FileSummary(
+                    path="f.py",
+                    added=1,
+                    removed=0,
+                    is_new=False,
+                    is_deleted=False,
+                    is_renamed=False,
+                    hunk_count=2,
+                    hunk_indices=[1, 3],
+                )
+            ],
+        )
+        result = build_user_prompt(stats, "diff")
+        assert "indices 1, 3 (this chunk only)" in result
+        assert "indices 0..1" not in result

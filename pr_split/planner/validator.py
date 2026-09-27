@@ -13,15 +13,20 @@ from .symbols import symbol_dependencies
 
 
 def validate_no_binary_files(parsed_diff: ParsedDiff) -> None:
-    """Refuse diffs with binary files.
+    """Refuse diffs with binary files or hunk-less entries.
 
-    Binary patches carry no hunks, so coverage validation would pass
-    without any group claiming them and the change would silently be
-    dropped from every sub-PR.
+    Binary patches and mode-only changes carry no hunks, so coverage
+    validation would pass without any group claiming them and the change
+    would silently be dropped from every sub-PR.
     """
     binary = [pf.path for pf in parsed_diff.patch_set if pf.is_binary_file]
     if binary:
         raise PlanValidationError(ErrorMsg.BINARY_FILES_UNSUPPORTED(files=", ".join(binary)))
+    # Mode-only changes (chmod +x) and other hunk-less entries have the same
+    # failure mode: nothing for a group to claim, so the change vanishes.
+    hunkless = [pf.path for pf in parsed_diff.patch_set if len(pf) == 0]
+    if hunkless:
+        raise PlanValidationError(ErrorMsg.HUNKLESS_FILES_UNSUPPORTED(files=", ".join(hunkless)))
 
 
 def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
@@ -41,7 +46,14 @@ def validate_coverage(groups: list[Group], parsed_diff: ParsedDiff) -> None:
                 indices = assignment.hunk_indices
             for idx in indices:
                 key = (assignment.file_path, idx)
-                assigned.setdefault(key, []).append(group.id)
+                owners = assigned.setdefault(key, [])
+                if group.id in owners:
+                    # The same group claiming a hunk twice is a malformed
+                    # plan, not an overlap between groups.
+                    raise PlanValidationError(
+                        ErrorMsg.COVERAGE_DUPLICATE(file=key[0], index=key[1], group=group.id)
+                    )
+                owners.append(group.id)
 
     all_hunks = {(pf.path, i) for pf in parsed_diff.patch_set for i in range(len(pf))}
 

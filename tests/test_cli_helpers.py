@@ -725,6 +725,131 @@ class TestStackedTransitiveChain:
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1, 2]
 
 
+class TestParentPrFailureGating:
+    def _chain(self) -> tuple[list[Group], list[BranchRecord]]:
+        groups = [
+            _group("pr-1", "feat: a"),
+            _group("pr-2", "feat: b", ["pr-1"]),
+            _group("pr-3", "feat: c", ["pr-2"]),
+        ]
+        records = [
+            _branch_record("pr-1", "pr-split/ns/pr-1"),
+            BranchRecord(
+                group_id="pr-2",
+                branch_name="pr-split/ns/pr-2",
+                base_branch="pr-split/ns/pr-1",
+                commit_sha="abc123",
+            ),
+            BranchRecord(
+                group_id="pr-3",
+                branch_name="pr-split/ns/pr-3",
+                base_branch="pr-split/ns/pr-2",
+                commit_sha="abc123",
+            ),
+        ]
+        return groups, records
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_children_are_skipped_when_the_root_pr_fails(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-1":
+                raise GitOperationError("boom")
+            return (11, "https://github.com/pr/11")
+
+        mock_create.side_effect = create
+        with pytest.raises(PRCreationError) as excinfo:
+            _push_and_create_prs(groups, records)
+
+        assert excinfo.value.pr_records == []
+        assert [c.kwargs["head"] for c in mock_create.call_args_list] == ["pr-split/ns/pr-1"]
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_every_descendant_is_warned_even_when_listed_before_its_parent(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+        groups.reverse()
+        records.reverse()
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-1":
+                raise GitOperationError("boom")
+            return (11, "https://github.com/pr/11")
+
+        mock_create.side_effect = create
+        with patch("pr_split.cli.logger") as mock_logger, pytest.raises(PRCreationError):
+            _push_and_create_prs(groups, records)
+
+        warned = " ".join(str(c.args[0]) for c in mock_logger.warning.call_args_list)
+        assert "Skipping PR for pr-2" in warned
+        assert "Skipping PR for pr-3" in warned
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_only_the_failed_subtree_is_skipped(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        from pr_split.exceptions import PRCreationError
+
+        groups, records = self._chain()
+        groups.append(_group("pr-4", "feat: d"))
+        records.append(_branch_record("pr-4", "pr-split/ns/pr-4"))
+        numbers = iter(range(20, 30))
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            if head == "pr-split/ns/pr-2":
+                raise GitOperationError("boom")
+            n = next(numbers)
+            return (n, f"https://github.com/pr/{n}")
+
+        mock_create.side_effect = create
+        with pytest.raises(PRCreationError) as excinfo:
+            _push_and_create_prs(groups, records)
+
+        created = sorted(r.group_id for r in excinfo.value.pr_records)
+        assert created == ["pr-1", "pr-4"]
+        heads = {c.kwargs["head"] for c in mock_create.call_args_list}
+        assert "pr-split/ns/pr-3" not in heads
+
+    @patch("pr_split.cli.create_pr")
+    @patch("pr_split.cli.push_branch")
+    def test_parent_pr_is_opened_before_its_child(
+        self, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        groups, records = self._chain()
+        order: list[str] = []
+        numbers = iter(range(1, 10))
+
+        def create(
+            *, head: str, base: str, title: str, body: str, draft: bool = False
+        ) -> tuple[int, str]:
+            order.append(head)
+            n = next(numbers)
+            return (n, f"https://github.com/pr/{n}")
+
+        mock_create.side_effect = create
+        result = _push_and_create_prs(groups, records)
+
+        assert [r.group_id for r in result] == ["pr-1", "pr-2", "pr-3"]
+        assert order == ["pr-split/ns/pr-1", "pr-split/ns/pr-2", "pr-split/ns/pr-3"]
+
+
 class TestTransitivePushFailureGating:
     @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
     @patch("pr_split.cli.push_branch")
@@ -760,6 +885,22 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestPushPrunesFirst:
+    @patch("pr_split.cli.create_pr", return_value=(1, "https://github.com/pr/1"))
+    @patch("pr_split.cli.push_branch")
+    @patch("pr_split.cli.prune_remote_tracking_refs")
+    def test_tracking_refs_are_refreshed_before_any_push(
+        self, mock_prune: MagicMock, mock_push: MagicMock, mock_create: MagicMock
+    ) -> None:
+        order: list[str] = []
+        mock_prune.side_effect = lambda: order.append("prune")
+        mock_push.side_effect = lambda branch: order.append("push")
+        _push_and_create_prs(
+            [_group("pr-1", "feat: a")], [_branch_record("pr-1", "pr-split/ns/pr-1")]
+        )
+        assert order == ["prune", "push"]
 
 
 class TestWorktreeWritesPreserveCrlf:
@@ -892,3 +1033,221 @@ class TestOversizedGroupsReport:
 
         groups = [self._sized("pr-1", 876), self._sized("pr-2", 400)]
         assert _oversized_group_ids(groups, 400) == ["pr-1"]
+
+
+class TestRenderDagMultiParent:
+    def _diamond(self) -> list[Group]:
+        return [
+            _group("pr-1", "base"),
+            _group("pr-2", "left", depends_on=["pr-1"]),
+            _group("pr-3", "right", depends_on=["pr-1"]),
+            _group("pr-4", "merge", depends_on=["pr-2", "pr-3"]),
+            _group("pr-5", "after merge", depends_on=["pr-4"]),
+        ]
+
+    def test_markdown_renders_merge_node_and_subtree_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-4")
+        assert result.count("<-- this PR") == 1
+        assert result.count("pr-4: merge (also depends on: pr-2)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
+
+    def test_markdown_marks_descendant_of_merge_once(self) -> None:
+        result = _render_dag_markdown(self._diamond(), "pr-5")
+        assert result.count("<-- this PR") == 1
+
+    def test_tree_renders_merge_node_once(self) -> None:
+        result = _render_dag(self._diamond())
+        assert result.count("pr-4: merge (depends on: pr-2, pr-3)") == 1
+        assert result.count("pr-4: merge (see below)") == 1
+        assert result.count("pr-5: after merge") == 1
+
+    def test_stub_always_precedes_full_node(self) -> None:
+        # Traversal visits pr-4's branch before pr-2's even though pr-2 is the
+        # last-listed dependency of pr-5; the stub must still point downward.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-4", "short", depends_on=["pr-1"]),
+            _group("pr-6", "mid", depends_on=["pr-1"]),
+            _group("pr-2", "long", depends_on=["pr-6"]),
+            _group("pr-5", "merge", depends_on=["pr-2", "pr-4"]),
+        ]
+        for text, full_label in (
+            (_render_dag_markdown(groups, "pr-5"), "pr-5: merge (also depends on: pr-4)"),
+            (_render_dag(groups), "pr-5: merge (depends on: pr-2, pr-4)"),
+        ):
+            assert text.index("pr-5: merge (see below)") < text.index(full_label)
+            assert text.count("pr-5: merge (see below)") == 1
+            assert text.count(full_label) == 1
+
+    def test_unknown_dependency_does_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "ghost"]),
+        ]
+        text = _render_dag_markdown(groups, "pr-2")
+        assert "pr-2: child (also depends on: ghost)  <-- this PR" in text
+
+    def test_unreachable_parent_does_not_hide_node(self) -> None:
+        # pr-9 depends on an unknown group, so it is never visited; pr-2 must
+        # still be drawn in full (with its subtree and marker) under pr-1.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-9", "orphan", depends_on=["ghost"]),
+            _group("pr-2", "leaf", depends_on=["pr-1", "pr-9"]),
+            _group("pr-5", "after", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-2")
+        assert md.count("<-- this PR") == 1
+        assert "pr-2: leaf (also depends on: pr-9)  <-- this PR" in md
+        assert "pr-5: after" in md
+        assert "(see below)" not in md
+        tree = _render_dag(groups)
+        assert "pr-2: leaf (depends on: pr-1, pr-9)" in tree
+        assert "pr-5: after" in tree
+
+    def test_parent_still_being_walked_is_not_pending(self) -> None:
+        # pr-3 depends on pr-1 (its grandparent, mid-walk) and pr-2 (a sibling
+        # listed after it); it must be drawn in full under pr-2.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert "pr-3: merge (also depends on: pr-1)" in md
+        assert "pr-4: after  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-3: merge (depends on: pr-1, pr-2)" in tree
+        assert "pr-4: after" in tree
+
+    def test_topological_order_draws_merge_node_once(self) -> None:
+        # The natural planner order: pr-2 listed before pr-3. pr-3 is reached
+        # from pr-1 (still mid-walk) and from pr-2; it must be drawn once.
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "mid", depends_on=["pr-1"]),
+            _group("pr-3", "merge", depends_on=["pr-1", "pr-2"]),
+            _group("pr-4", "after", depends_on=["pr-3"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-4")
+        assert md.count("<-- this PR") == 1
+        assert md.count("pr-3: merge (see below)") == 1
+        assert md.count("pr-3: merge (also depends on:") == 1
+        assert md.count("pr-4: after") == 1
+        assert md.index("pr-3: merge (see below)") < md.index("pr-3: merge (also depends on:")
+        tree = _render_dag(groups)
+        assert tree.count("pr-3: merge (depends on: pr-1, pr-2)") == 1
+        assert tree.count("pr-3: merge (see below)") == 1
+        assert tree.count("pr-4: after") == 1
+
+    def test_duplicate_dependency_entries_do_not_hide_node(self) -> None:
+        groups = [
+            _group("pr-1", "root"),
+            _group("pr-2", "child", depends_on=["pr-1", "pr-1"]),
+            _group("pr-3", "leaf", depends_on=["pr-2"]),
+        ]
+        md = _render_dag_markdown(groups, "pr-3")
+        assert "pr-2: child" in md
+        assert "(see below)" not in md
+        assert "also depends on" not in md
+        assert "pr-3: leaf  <-- this PR" in md
+        tree = _render_dag(groups)
+        assert "pr-2: child (depends on: pr-1)" in tree
+        assert "pr-3: leaf" in tree
+
+
+class TestWorktreeAppliesFileModes:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.target_file_modes", return_value={"run.sh": 0o100755})
+    @patch("pr_split.cli.materialize_group_files", return_value={"run.sh": "x\n", "a.py": "y\n"})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_executable_bit_applied_only_where_diff_says(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_modes: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        import os
+        import stat
+        from pathlib import Path
+
+        modes: dict[str, int] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                modes[file_path] = stat.S_IMODE(os.stat(Path(cwd) / file_path).st_mode)
+            return "sha1"
+
+        mock_commit.side_effect = capture
+        _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert modes["run.sh"] & stat.S_IXUSR
+        assert not modes["a.py"] & stat.S_IXUSR
+
+
+class TestWorktreeMaterializesSymlinks:
+    def _run(
+        self, materialized: dict[str, str | None], modes: dict[str, int]
+    ) -> dict[str, object]:
+        import os
+        from pathlib import Path
+
+        seen: dict[str, object] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                p = Path(cwd) / file_path
+                seen[file_path] = (
+                    os.readlink(p) if p.is_symlink() else ("missing" if not p.exists() else "file")
+                )
+            return "sha1"
+
+        with (
+            patch("pr_split.cli.add_worktree"),
+            patch("pr_split.cli.remove_worktree"),
+            patch("pr_split.cli.materialize_group_files", return_value=materialized),
+            patch("pr_split.cli.target_file_modes", return_value=modes),
+            patch("pr_split.cli.commit_files_in_dir", side_effect=capture),
+        ):
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        return seen
+
+    def test_new_symlink_is_created_as_a_link(self) -> None:
+        seen = self._run({"link": "other.py\n", "other.py": "x\n"}, {"link": 0o120000})
+        assert seen["link"] == "other.py"
+        assert seen["other.py"] == "file"
+
+    def test_symlink_without_mode_info_stays_a_plain_file(self) -> None:
+        seen = self._run({"link": "other.py\n"}, {})
+        assert seen["link"] == "file"
+
+    def test_regular_file_converted_to_symlink(self) -> None:
+        import os
+        from pathlib import Path
+
+        seen: dict[str, object] = {}
+
+        def pre_populate(path: str, branch: str, start: str) -> None:
+            Path(path).mkdir(parents=True, exist_ok=True)
+            (Path(path) / "toref").write_text("old regular content\n")
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            p = Path(cwd) / "toref"
+            seen["toref"] = os.readlink(p) if p.is_symlink() else "file"
+            return "sha1"
+
+        with (
+            patch("pr_split.cli.add_worktree", side_effect=pre_populate),
+            patch("pr_split.cli.remove_worktree"),
+            patch("pr_split.cli.materialize_group_files", return_value={"toref": "a.py\n"}),
+            patch("pr_split.cli.target_file_modes", return_value={"toref": 0o120000}),
+            patch("pr_split.cli.commit_files_in_dir", side_effect=capture),
+        ):
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert seen["toref"] == "a.py"

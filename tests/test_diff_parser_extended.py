@@ -121,6 +121,7 @@ class TestExtractDiffSubprocess:
                 "-U3",
                 "--src-prefix=a/",
                 "--dst-prefix=b/",
+                "--submodule=short",
                 "main...feature",
             ],
             capture_output=True,
@@ -413,3 +414,126 @@ class TestQuotedPathsWithSpaces:
             [(modified, 1), (deleted, 1), ("plain name.md", 1), ('new "file".txt', 1)]
         )
         assert parsed.stats["total_files"] == 4
+
+
+SUBMODULE_DIFF = """\
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-x
++y
+diff --git a/vendor b/vendor
+index 0ebfaa8..2f687ea 160000
+--- a/vendor
++++ b/vendor
+@@ -1 +1 @@
+-Subproject commit 0ebfaa8000000000000000000000000000000000
++Subproject commit 2f687ea000000000000000000000000000000000
+"""
+
+NEW_SUBMODULE_DIFF = """\
+diff --git a/lib b/lib
+new file mode 160000
+index 0000000..2f687ea
+--- /dev/null
++++ b/lib
+@@ -0,0 +1 @@
++Subproject commit 2f687ea000000000000000000000000000000000
+"""
+
+
+DELETED_SUBMODULE_DIFF = """\
+diff --git a/vendor b/vendor
+deleted file mode 160000
+index d075b20..0000000
+--- a/vendor
++++ /dev/null
+@@ -1 +0,0 @@
+-Subproject commit d075b20000000000000000000000000000000000
+"""
+
+
+class TestSubmoduleChangesAreRejected:
+    def test_deleted_submodule_is_rejected(self) -> None:
+        from pr_split.exceptions import DiffParseError
+
+        with pytest.raises(DiffParseError, match="pointer bump at vendor"):
+            parse_diff(DELETED_SUBMODULE_DIFF)
+
+    def test_pointer_bump_is_rejected_by_name(self) -> None:
+        from pr_split.exceptions import DiffParseError
+
+        with pytest.raises(DiffParseError, match="pointer bump at vendor"):
+            parse_diff(SUBMODULE_DIFF)
+
+    def test_added_submodule_is_rejected(self) -> None:
+        from pr_split.exceptions import DiffParseError
+
+        with pytest.raises(DiffParseError, match="Submodule changes are not supported"):
+            parse_diff(NEW_SUBMODULE_DIFF)
+
+    def test_regular_files_with_similar_content_are_fine(self) -> None:
+        raw = (
+            "diff --git a/notes.txt b/notes.txt\n"
+            "index 0ebfaa8..2f687ea 100644\n"
+            "--- a/notes.txt\n"
+            "+++ b/notes.txt\n"
+            "@@ -1 +1 @@\n"
+            "-Subproject commit 0ebfaa8000000000000000000000000000000000\n"
+            "+Subproject commit 2f687ea000000000000000000000000000000000\n"
+        )
+        assert [pf.path for pf in parse_diff(raw).patch_set] == ["notes.txt"]
+
+    def test_real_submodule_bump_is_rejected_before_planning(self, tmp_path: Path) -> None:
+        from pr_split.exceptions import DiffParseError
+
+        def git(cwd: Path, *args: str) -> str:
+            return subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@x",
+                    "-c",
+                    "protocol.file.allow=always",
+                    *args,
+                ],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        git(sub, "init", "-q", "-b", "main")
+        (sub / "f").write_text("1\n")
+        git(sub, "add", "-A")
+        git(sub, "commit", "-qm", "one")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        git(repo, "init", "-q", "-b", "main")
+        (repo / "app.py").write_text("x\n")
+        git(repo, "add", "-A")
+        git(repo, "submodule", "add", "-q", str(sub), "vendor")
+        git(repo, "commit", "-qm", "base")
+        git(repo, "checkout", "-qb", "dev")
+        (sub / "f").write_text("2\n")
+        git(sub, "commit", "-qam", "two")
+        git(repo / "vendor", "pull", "-q", "origin", "main")
+        (repo / "app.py").write_text("y\n")
+        git(repo, "add", "-A")
+        git(repo, "commit", "-qm", "bump")
+
+        cwd = os.getcwd()
+        os.chdir(repo)
+        try:
+            for mode in ("short", "log", "diff"):
+                # A user-level diff.submodule setting must not hide the bump.
+                git(repo, "config", "diff.submodule", mode)
+                with pytest.raises(DiffParseError, match="vendor"):
+                    parse_diff(extract_diff("dev", "main"))
+        finally:
+            os.chdir(cwd)

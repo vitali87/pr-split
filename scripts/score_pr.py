@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from urllib.parse import quote
 
 
 def _run(cmd: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -24,11 +25,26 @@ def _set_output(name: str, value: str) -> None:
         f.write(f"{name}={value}\n")
 
 
-def _skip(reason: str) -> None:
+def _skip(reason: str, *, within_limits: bool = False) -> None:
     print(reason)
     _set_output("total_groups", "1")
     _set_output("objective", "0")
     _set_output("should_split", "false")
+    if within_limits:
+        # Emit a comment body so an earlier "please split" comment on this
+        # PR is refreshed once it shrinks under the threshold (the action
+        # only updates an existing marker comment when should_split is
+        # false; it never creates one).
+        _write_comment(
+            [
+                "<!-- pr-split-score -->",
+                "## pr-split analysis",
+                "",
+                reason,
+                "",
+                "This PR is within acceptable size limits.",
+            ]
+        )
 
 
 def _write_comment(lines: list[str]) -> None:
@@ -70,7 +86,8 @@ def _oversized_without_plan(
 
 
 def _md_escape(s: str) -> str:
-    return s.replace("|", "\\|")
+    # A table cell must stay on one line and must not contain a bare pipe.
+    return " ".join(s.splitlines()).replace("|", "\\|")
 
 
 def load_plan_groups(plan_path: str) -> list[dict]:
@@ -85,6 +102,20 @@ def load_plan_groups(plan_path: str) -> list[dict]:
     return plan.get("groups", [])
 
 
+def _saved_plan_path(dev_branch: str) -> str | None:
+    """The plan file ``pr-split split <dev_branch>`` saved, if any.
+
+    pr-split keeps one plan per dev branch under ``.pr-split/plans/``, named
+    by the branch percent-encoded (``pr_split.plan_store.plan_key``); older
+    versions wrote a single ``.pr-split/plan.json``.
+    """
+    per_branch = os.path.join(".pr-split", "plans", f"{quote(dev_branch, safe='')}.json")
+    for path in (per_branch, os.path.join(".pr-split", "plan.json")):
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _parse_int_env(name: str, default: int) -> int:
     raw = os.environ.get(name, str(default))
     try:
@@ -97,6 +128,10 @@ def _parse_int_env(name: str, default: int) -> int:
 def main() -> None:
     max_loc = _parse_int_env("MAX_LOC", 400)
     min_loc_raw = os.environ.get("MIN_LOC", "")
+    if min_loc_raw:
+        # Validate like MAX_LOC so a typo is reported as such instead of as
+        # a generic "pr-split failed to generate a plan".
+        min_loc_raw = str(_parse_int_env("MIN_LOC", 0))
     strategy = os.environ.get("PARTITION_STRATEGY", "graph")
     priority = os.environ.get("PRIORITY", "orthogonal")
     threshold = _parse_int_env("THRESHOLD_GROUPS", 2)
@@ -139,18 +174,24 @@ def main() -> None:
     _set_output("total_loc", str(total_loc))
 
     if total_loc <= max_loc:
-        _skip(f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.")
+        _skip(
+            f"PR has {total_loc} LOC — under the {max_loc} threshold, no split needed.",
+            within_limits=True,
+        )
         return
 
-    # Create local branch refs for pr-split
+    # Create local branch refs for pr-split. `split` needs the base as a local
+    # branch, but the head is passed as the fetched ref: materialising it as
+    # a branch named after head_branch is unsafe, since a fork PR opened from
+    # the fork's "main" has head_branch == base_branch and would clobber the
+    # base ref, leaving an empty diff.
     _run(["git", "branch", "-f", base_branch, f"origin/{base_branch}"])
-    _run(["git", "branch", "-f", head_branch, local_head])
 
     # Run pr-split in dry-run mode
     cmd = [
         "pr-split",
         "split",
-        head_branch,
+        local_head,
         "--base",
         base_branch,
         "--partition-strategy",
@@ -175,8 +216,8 @@ def main() -> None:
         )
         return
 
-    plan_path = ".pr-split/plan.json"
-    if not os.path.exists(plan_path):
+    plan_path = _saved_plan_path(local_head)
+    if plan_path is None:
         _oversized_without_plan(
             "no split plan could be generated: pr-split wrote no plan file.",
             total_loc,
@@ -240,7 +281,7 @@ def main() -> None:
     lines.append("|-------|-------|------|------------|-------|")
     for g in groups:
         files = ", ".join(f"`{_md_escape(a['file_path'])}`" for a in g.get("assignments", []))
-        deps = ", ".join(g.get("depends_on", [])) or "—"
+        deps = ", ".join(_md_escape(d) for d in g.get("depends_on", [])) or "—"
         diff_str = f"+{g.get('estimated_added', 0)}/-{g.get('estimated_removed', 0)}"
         title = _md_escape(g["title"])
         gid = _md_escape(g["id"])

@@ -7,6 +7,7 @@ _show_group_detail, _move_assignment, and split command argument validation.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -340,11 +341,100 @@ class TestBuildPrBodyOsError:
             _build_pr_body(group, [group])
 
 
+class TestPrTemplateEarlyValidation:
+    def _use_template(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+        template_file = tmp_path / "template.md"
+        template_file.write_text(text, encoding="utf-8")
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["{title.nope}", "{added[0]}", "{unknown}", "{title", "{0}"],
+    )
+    def test_bad_placeholders_are_friendly_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        from pr_split.cli import validate_pr_template
+
+        self._use_template(tmp_path, monkeypatch, text)
+        with pytest.raises(PRSplitError, match="Invalid PR template"):
+            validate_pr_template()
+        group = _group("pr-1", "t", files=["a.py"])
+        with pytest.raises(PRSplitError, match="Invalid PR template"):
+            _build_pr_body(group, [group])
+
+    def test_valid_template_passes_and_renders(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.cli import validate_pr_template
+
+        self._use_template(tmp_path, monkeypatch, "# {title}\n\n{files}\n\n{{literal}} {loc}")
+        validate_pr_template()
+        group = _group("pr-1", "t", files=["a.py"])
+        body = _build_pr_body(group, [group])
+        assert body.startswith("# t\n\n- `a.py`")
+        assert "{literal} 15" in body
+
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_inputs_reject_a_bad_template_before_planning(
+        self,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pr_split.cli import console
+
+        self._use_template(tmp_path, monkeypatch, "{title.nope}")
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _validate_inputs("feature", "main")
+        assert "Invalid PR template" in " ".join(capture.get().split())
+        # a dry run never opens PRs, so the template is not consulted
+        _validate_inputs("feature", "main", dry_run=True)
+
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_a_bad_template_before_creating_branches(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_commit: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._use_template(tmp_path, monkeypatch, "{added[0]}")
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "Invalid PR template" in " ".join(result.output.split())
+        mock_confirm.assert_not_called()
+        mock_create.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _send_webhook
 # ---------------------------------------------------------------------------
 class TestSendWebhook:
-    @patch("pr_split.cli.urllib.request.urlopen")
+    @patch("pr_split.cli._webhook_opener.open")
     def test_successful_webhook(self, mock_urlopen: MagicMock) -> None:
         mock_resp = MagicMock()
         mock_resp.read.return_value = b""
@@ -355,7 +445,7 @@ class TestSendWebhook:
         _send_webhook("https://example.com/hook", {"event": "test"})
         mock_urlopen.assert_called_once()
 
-    @patch("pr_split.cli.urllib.request.urlopen", side_effect=Exception("timeout"))
+    @patch("pr_split.cli._webhook_opener.open", side_effect=Exception("timeout"))
     def test_failed_webhook_logs_warning(self, mock_urlopen: MagicMock) -> None:
         # Should not raise
         _send_webhook("https://example.com/hook", {"event": "test"})
@@ -373,6 +463,26 @@ class TestShowGroupDetail:
     def test_known_group_renders(self) -> None:
         g = _group("pr-1", "root", files=["a.py"], depends_on=["pr-0"])
         _show_group_detail([g], "pr-1")
+
+    def test_assignment_type_is_printed_not_eaten_as_markup(self) -> None:
+        from pr_split.cli import console
+
+        g = _group("pr-1", "Support list[str] [WIP]", files=["a.py"])
+        g.description = "uses the [red] tag literally"
+        g.assignments.append(
+            GroupAssignment(
+                file_path="src/[id].py",
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=[0, 2],
+            )
+        )
+        with console.capture() as capture:
+            _show_group_detail([g], "pr-1")
+        out = capture.get()
+        assert "pr-1: Support list[str] [WIP]" in out
+        assert "Description: uses the [red] tag literally" in out
+        assert "a.py [whole_file] hunks: [all]" in out
+        assert "src/[id].py [partial_hunks] hunks: [0, 2]" in out
 
     def test_partial_hunks_rendering(self) -> None:
         g = Group(
@@ -395,6 +505,11 @@ class TestShowGroupDetail:
 # _interactive_edit
 # ---------------------------------------------------------------------------
 class TestInteractiveEditRecomputesLoc:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     @patch("pr_split.cli.recompute_estimated_loc")
     @patch("pr_split.cli._move_assignment", return_value=True)
     @patch("pr_split.cli.typer.prompt", side_effect=["move a.py:0 pr-1 pr-2", "done"])
@@ -697,6 +812,176 @@ class TestSplitCommandValidation:
         result = runner.invoke(app, ["split", "unknown-ref", "--dry-run"])
         assert result.exit_code != 0
 
+    @patch("pr_split.cli._resolve_fork_ref")
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_missing_plain_branch_reports_branch_not_found(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "nosuchbranch", "--dry-run"])
+        assert result.exit_code == 1
+        assert "Branch 'nosuchbranch' does not exist" in result.output
+        assert "GitHub CLI authentication failed" not in result.output
+        mock_auth.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    @patch("pr_split.cli._resolve_fork_ref", return_value=None)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_pr_number_is_never_taken_for_an_abbreviated_sha(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+    ) -> None:
+        # branch_exists says True because `git rev-parse 1006` resolves a
+        # commit whose hash starts with 1006; the argument is still PR #1006.
+        result = runner.invoke(app, ["split", "1006", "--dry-run"])
+        assert result.exit_code == 1
+        mock_resolve.assert_called_once_with("1006")
+        assert "Branch '1006' does not exist" in result.output
+
+    def test_full_ref_is_not_a_fork_ref(self) -> None:
+        from pr_split.cli import _is_fork_ref
+
+        # Documented escape hatch: a local branch literally named like a
+        # number is reachable through its full ref.
+        assert _is_fork_ref("refs/heads/1006") is False
+        assert _is_fork_ref("1006") is True
+        assert _is_fork_ref("#1006") is True
+
+    @patch.dict("os.environ", {"ANTHROPIC_API_KEY": "test-key"})
+    @patch("pr_split.cli.extract_diff", side_effect=RuntimeError("stop here"))
+    @patch("pr_split.cli._resolve_fork_ref", return_value=None)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_full_ref_escape_hatch_takes_the_branch_path(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+        mock_clean: MagicMock,
+        mock_resolve: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "refs/heads/1006", "--dry-run"])
+        mock_resolve.assert_not_called()
+        mock_extract.assert_called_once()
+        assert result.exit_code != 0  # stopped by the stubbed extract_diff
+
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    def test_split_fork_shaped_ref_still_checks_gh_auth(
+        self,
+        mock_be: MagicMock,
+        mock_auth: MagicMock,
+    ) -> None:
+        result = runner.invoke(app, ["split", "someone:feature", "--dry-run"])
+        assert result.exit_code == 1
+        assert "GitHub CLI authentication failed" in result.output
+        mock_auth.assert_called_once()
+
+
+class TestSplitValidatesSettingsBeforeCleanup:
+    @patch("pr_split.cli.extract_diff")
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_bad_settings_never_reach_the_destructive_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = [MagicMock()]
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        result = runner.invoke(
+            app,
+            ["split", "feature", "--min-loc", "500", "--max-loc", "400"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 1
+        assert "min_loc 500 must be less than max_loc 400" in " ".join(result.output.split())
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+        mock_extract.assert_not_called()
+
+
+class TestSplitDryRunWithExecutedPlan:
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_dry_run_refuses_instead_of_offering_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = []
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        result = runner.invoke(
+            app, ["split", "feature", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        assert "Run 'pr-split clean' first" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("pr_split.cli.extract_diff", side_effect=PRSplitError("stop here"))
+    @patch("pr_split.cli._cleanup_git_state", return_value=(1, 1))
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_real_split_still_offers_cleanup(
+        self,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+        mock_extract: MagicMock,
+    ) -> None:
+        existing = MagicMock()
+        existing.git_state.branches = []
+        existing.git_state.prs = [MagicMock()]
+        mock_load.return_value = existing
+
+        runner.invoke(app, ["split", "feature"], env={"ANTHROPIC_API_KEY": "sk-test"})
+
+        mock_confirm.assert_called_once()
+        mock_cleanup.assert_called_once_with(existing.git_state)
+
 
 # ---------------------------------------------------------------------------
 # execute command
@@ -724,10 +1009,27 @@ class TestExecuteCommand:
         mock_plan_file = MagicMock()
         mock_plan_file.git_state.branches = []
         mock_plan_file.git_state.prs = []
-        mock_plan_file.plan.raw_diff = ""
+        mock_plan_file.plan.raw_diff = None
         mock_load.return_value = mock_plan_file
         result = runner.invoke(app, ["execute"])
         assert result.exit_code != 0
+        assert "missing saved diff data" in result.output
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_empty_saved_diff_is_refused(
+        self, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = ""
+        mock_plan_file.plan.groups = []
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "Saved plan has an empty diff; nothing to execute" in result.output
 
     @patch("pr_split.cli.commit_exists", return_value=False)
     @patch("pr_split.cli.load_plan")
@@ -822,6 +1124,47 @@ class TestExecuteCommand:
         assert "Base 'origin/main' is not a local branch" in " ".join(result.output.split())
         mock_confirm.assert_not_called()
         mock_create.assert_not_called()
+
+    @patch("pr_split.cli.validate_coverage")
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_a_saved_submodule_plan(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_commit: MagicMock,
+        mock_validate: MagicMock,
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_plan_file.plan.stacked = False
+        mock_plan_file.plan.split_new_files_over = None
+        mock_plan_file.plan.raw_diff = (
+            "diff --git a/vendor b/vendor\n"
+            "index 0ebfaa8..2f687ea 160000\n"
+            "--- a/vendor\n"
+            "+++ b/vendor\n"
+            "@@ -1 +1 @@\n"
+            "-Subproject commit 0ebfaa8000000000000000000000000000000000\n"
+            "+Subproject commit 2f687ea000000000000000000000000000000000\n"
+        )
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert "Submodule changes are not supported (pointer bump at vendor)" in " ".join(
+            result.output.split()
+        )
+        mock_validate.assert_not_called()
 
     @patch("pr_split.cli.load_plan")
     @patch("pr_split.cli.plan_exists", return_value=True)
@@ -972,6 +1315,295 @@ class TestStatusCommand:
     def test_clean_no_plan(self, mock_pe: MagicMock) -> None:
         result = runner.invoke(app, ["clean"])
         assert result.exit_code == 0
+
+
+class TestRichEscapingOfPlanText:
+    def test_present_plan_keeps_brackets_in_title_and_paths(self) -> None:
+        from pr_split.cli import _present_plan, console
+
+        g = _group("pr-1", "Add [core] typing", files=["src/[id].py"])
+        # _render_dag captures on the same console, which would reset an
+        # enclosing capture; it has its own test below.
+        with patch("pr_split.cli._render_dag", return_value=""), console.capture() as capture:
+            _present_plan([g])
+        out = capture.get()
+        assert "Add [core] typing" in out
+        assert "src/[id].py" in out
+
+    def test_render_dag_keeps_brackets(self) -> None:
+        from pr_split.cli import _render_dag
+
+        root = _group("pr-1", "Root [v2]")
+        child = _group("pr-2", "Child [x]", depends_on=["pr-1"])
+        out = _render_dag([root, child])
+        assert "pr-1: Root [v2]" in out
+        assert "pr-2: Child [x] (depends on: pr-1)" in out
+
+    def test_move_messages_keep_bracketed_paths(self) -> None:
+        from pr_split.cli import console
+
+        g1 = _group("pr-1", "src", files=["src/[id].py"])
+        g2 = _group("pr-2", "dst")
+        pf = MagicMock()
+        pf.path = "src/[id].py"
+        pf.__len__ = MagicMock(return_value=2)
+        parsed = MagicMock()
+        parsed.patch_set = [pf]
+        with console.capture() as capture:
+            assert _move_assignment([g1, g2], parsed, "src/[id].py", 1, "pr-1", "pr-2")
+            assert not _move_assignment([g1, g2], parsed, "src/[id].py", 9, "pr-1", "pr-2")
+            assert not _move_assignment([g1, g2], parsed, "a.py", 0, "[pr-1]", "pr-2")
+            _show_group_detail([g1], "[pr-9]")
+        out = capture.get()
+        assert "Moved src/[id].py:1 from pr-1 to pr-2" in out
+        assert "Hunk src/[id].py:9 not found in pr-1." in out
+        assert "Group '[pr-1]' or 'pr-2' not found." in out
+        assert "Group '[pr-9]' not found." in out
+
+
+class TestRichEscapingOfStatusAndSummaries:
+    @patch("pr_split.cli.get_pr_state", return_value={"state": "OPEN", "reviewDecision": None})
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_status_table_keeps_bracketed_title(
+        self, mock_pe: MagicMock, mock_load: MagicMock, mock_state: MagicMock
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.schemas import BranchRecord, GitState, PlanFile, PRRecord, SplitPlan
+
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=[_group("pr-1", "Add [core] typing")],
+        )
+        git_state = GitState(
+            branches=[BranchRecord(group_id="pr-1", branch_name="b[1]", base_branch="main")],
+            prs=[PRRecord(group_id="pr-1", pr_number=7, pr_url="u")],
+        )
+        mock_load.return_value = PlanFile(plan=plan, git_state=git_state)
+        result = runner.invoke(app, ["status"])
+        assert result.exit_code == 0
+        assert "Add [core] typing" in result.output
+        assert "b[1]" in result.output
+
+    def test_error_echo_keeps_bracketed_path(self) -> None:
+        from pr_split.cli import _handle_loc_bound_warnings, console
+
+        # The strict path prints each warning in red (the non-strict path only logs).
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _handle_loc_bound_warnings(
+                ["Group 'pr-1' touches src/[id].py"], strict_loc_bounds=True
+            )
+        assert "src/[id].py" in capture.get()
+
+    def test_editor_same_group_message_keeps_bracketed_id(self) -> None:
+        from pr_split.cli import console
+
+        with console.capture() as capture:
+            assert not _move_assignment([], MagicMock(), "a.py", 0, "[pr-1]", "[pr-1]")
+        assert "Source and destination are the same ('[pr-1]')" in capture.get()
+
+
+class TestRichEscapingOfMergeSummary:
+    @patch("pr_split.cli.merge_pr")
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_summary_lines_keep_bracketed_group_ids(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+        mock_merge: MagicMock,
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.exceptions import GitOperationError
+        from pr_split.schemas import GitState, PlanFile, PRRecord, SplitPlan
+
+        groups = [_group("[pr-1]", "a"), _group("[pr-2]", "b"), _group("[pr-3]", "c")]
+        plan = SplitPlan(
+            dev_branch="feature",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            groups=groups,
+        )
+        prs = [PRRecord(group_id=g.id, pr_number=i + 1, pr_url="u") for i, g in enumerate(groups)]
+        mock_load.return_value = PlanFile(plan=plan, git_state=GitState(prs=prs))
+        states = {
+            1: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+            2: {"state": "OPEN", "isDraft": True, "reviewDecision": None},
+            3: {"state": "OPEN", "isDraft": False, "reviewDecision": None},
+        }
+        mock_state.side_effect = lambda n: states[n]
+
+        def merge(n: int, *, auto: bool = False) -> None:
+            if n == 3:
+                raise GitOperationError("conflict")
+
+        mock_merge.side_effect = merge
+
+        result = runner.invoke(app, ["merge"])
+
+        flat = " ".join(result.output.split())
+        assert "Merged (1): [pr-1]" in flat
+        assert "Skipped (1): [pr-2] (draft)" in flat
+        assert "Failed (1): [pr-3]" in flat
+
+
+class TestPrBodyFileListCap:
+    def test_long_file_lists_are_summarised(self) -> None:
+        from pr_split.cli import _PR_BODY_FILE_LIST_LIMIT, _build_pr_body
+
+        n = 2000
+        g = _group("pr-1", "mass rename", files=[f"pkg/mod_{i}/handler.py" for i in range(n)])
+        body = _build_pr_body(g, [g])
+        assert body.count("- `pkg/") == _PR_BODY_FILE_LIST_LIMIT
+        assert f"… and {n - _PR_BODY_FILE_LIST_LIMIT} more files" in body
+        assert len(body) < 65_536
+
+    def test_short_file_lists_are_complete(self) -> None:
+        from pr_split.cli import _build_pr_body
+
+        g = _group("pr-1", "t", files=["a.py", "b.py"])
+        body = _build_pr_body(g, [g])
+        assert "- `a.py`\n- `b.py`" in body
+        assert "more files" not in body
+
+
+class TestMissingCliToolsAreReportedFirst:
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    @patch("pr_split.cli.require_tools", return_value="git")
+    def test_split_reports_missing_git_before_anything_else(
+        self, mock_req: MagicMock, mock_be: MagicMock
+    ) -> None:
+        result = runner.invoke(app, ["split", "feature", "--dry-run"])
+        assert result.exit_code == 1
+        assert "'git' is not installed or not on PATH" in result.output
+        mock_be.assert_not_called()
+
+    @patch("pr_split.cli.require_tools")
+    def test_dry_run_does_not_require_gh(self, mock_req: MagicMock) -> None:
+        mock_req.return_value = None
+        with (
+            patch("pr_split.cli.branch_exists", return_value=True),
+            patch("pr_split.cli._validate_inputs", side_effect=typer.Exit(0)),
+        ):
+            runner.invoke(app, ["split", "feature", "--dry-run"])
+        assert [c.args for c in mock_req.call_args_list] == [("git",)]
+
+    @patch("pr_split.cli.get_pr_state")
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_merge_reports_missing_gh_instead_of_fetch_errors(
+        self,
+        mock_req: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_state: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=1, pr_url="u")]
+        mock_load.return_value = plan_file
+        result = runner.invoke(app, ["merge"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        assert "fetch error" not in result.output
+        mock_state.assert_not_called()
+
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_clean_reports_missing_gh_and_keeps_the_plan(
+        self,
+        mock_req: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        plan_file = MagicMock()
+        plan_file.git_state.prs = [PRRecord(group_id="pr-1", pr_number=1, pr_url="u")]
+        mock_load.return_value = plan_file
+        result = runner.invoke(app, ["clean"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+        assert mock_req.call_args.args == ("git", "gh")
+
+    @patch("pr_split.cli._cleanup_git_state")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.require_tools")
+    def test_resplit_in_dry_run_refuses_before_any_cleanup(
+        self,
+        mock_req: MagicMock,
+        mock_be: MagicMock,
+        mock_validate: MagicMock,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_confirm: MagicMock,
+        mock_cleanup: MagicMock,
+    ) -> None:
+        from pr_split.schemas import PRRecord
+
+        mock_req.side_effect = lambda *tools: "gh" if "gh" in tools else None
+        existing = MagicMock()
+        existing.git_state.branches = [MagicMock()]
+        existing.git_state.prs = [PRRecord(group_id="pr-1", pr_number=7, pr_url="u")]
+        mock_load.return_value = existing
+
+        result = runner.invoke(
+            app, ["split", "feature", "--dry-run"], env={"ANTHROPIC_API_KEY": "sk-test"}
+        )
+
+        assert result.exit_code == 1
+        # A dry run never cleans up, so it refuses before gh would be needed.
+        assert "--dry-run would overwrite" in result.output
+        mock_confirm.assert_not_called()
+        mock_cleanup.assert_not_called()
+
+    @patch("pr_split.cli.check_gh_auth", return_value=False)
+    @patch("pr_split.cli.branch_exists", return_value=False)
+    @patch("pr_split.cli.require_tools")
+    def test_dry_run_of_a_pr_number_still_needs_gh(
+        self, mock_req: MagicMock, mock_be: MagicMock, mock_auth: MagicMock
+    ) -> None:
+        mock_req.side_effect = lambda *tools: "gh" if "gh" in tools else None
+        result = runner.invoke(app, ["split", "#123", "--dry-run"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
+        assert "authentication failed" not in result.output
+        mock_auth.assert_not_called()
+
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    @patch("pr_split.cli.require_tools", return_value="gh")
+    def test_execute_reports_missing_gh(
+        self, mock_req: MagicMock, mock_pe: MagicMock, mock_load: MagicMock
+    ) -> None:
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "'gh' is not installed or not on PATH" in result.output
 
 
 class TestExecuteRetriesAfterFailedPush:
@@ -1561,6 +2193,11 @@ class TestDropEmptyGroups:
 
 
 class TestEditorEmptiedGroupEndToEnd:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     @patch("pr_split.cli.typer.prompt")
     def test_moving_the_last_hunk_out_yields_a_valid_one_group_plan(
         self, mock_prompt: MagicMock
@@ -1822,6 +2459,11 @@ class TestRetargetMergedBase:
 
 
 class TestEditorPlanCommands:
+    @pytest.fixture(autouse=True)
+    def _interactive_stdin(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The editor only prompts on a TTY; these tests drive it via typer.prompt.
+        monkeypatch.setattr("pr_split.cli._stdin_is_interactive", lambda: True)
+
     def _partial(self, file_path: str, indices: list[int]) -> GroupAssignment:
         return GroupAssignment(
             file_path=file_path,
@@ -1949,3 +2591,169 @@ class TestExecuteYes:
         mock_confirm.assert_not_called()
         mock_create.assert_called_once()
         assert "stop here" in result.output
+
+
+class TestDryRunWithClosedStdin:
+    """`split --dry-run < /dev/null` must save the plan, not abort.
+
+    The interactive editor is entered unconditionally; with a closed stdin
+    (scripts, CI) `typer.prompt` raises EOFError, which used to become
+    typer.Abort before the plan was ever saved.
+    """
+
+    @patch("pr_split.cli.save_plan")
+    @patch("pr_split.cli.merge_base", return_value="abc123")
+    @patch("pr_split.cli._present_plan")
+    @patch("pr_split.cli.validate_plan", return_value=[])
+    @patch("pr_split.cli.plan_split")
+    @patch("pr_split.cli.parse_diff")
+    @patch("pr_split.cli.extract_diff", return_value="diff --git a/a.py b/a.py\n")
+    @patch("pr_split.cli._validate_inputs")
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_closed_stdin_accepts_the_plan_and_saves_it(
+        self,
+        mock_plan_exists: MagicMock,
+        mock_branch_exists: MagicMock,
+        mock_validate_inputs: MagicMock,
+        mock_extract_diff: MagicMock,
+        mock_parse_diff: MagicMock,
+        mock_plan_split: MagicMock,
+        mock_validate_plan: MagicMock,
+        mock_present_plan: MagicMock,
+        mock_merge_base: MagicMock,
+        mock_save_plan: MagicMock,
+    ) -> None:
+        parsed_diff = MagicMock()
+        parsed_diff.stats = {
+            "total_files": 1,
+            "total_added": 10,
+            "total_removed": 5,
+            "total_loc": 15,
+        }
+        mock_parse_diff.return_value = parsed_diff
+        group = _group("pr-1", "feat: auth", files=["a.py"])
+        mock_plan_split.return_value = [group]
+
+        # No `input=` and no patched _interactive_edit: the editor really runs
+        # and hits EOF on the runner's empty stdin.
+        result = runner.invoke(
+            app,
+            ["split", "feature-branch", "--dry-run"],
+            env={"ANTHROPIC_API_KEY": "sk-test"},
+        )
+
+        assert result.exit_code == 0
+        assert "accepting the plan as-is" in result.output.replace("\n", " ")
+        mock_save_plan.assert_called_once()
+
+
+def _flat(output: str) -> str:
+    # Rich draws the error in a box that wraps text (and, on CI, colours it
+    # with ANSI codes); strip both and collapse whitespace so a phrase can be
+    # matched regardless of wrapping.
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return " ".join(re.sub(r"[│╭╮╰╯─]", " ", plain).split())
+
+
+class TestNotifyUrlValidation:
+    @pytest.mark.parametrize("bad", ["file:///tmp/wh.txt", "not-a-url", "ftp://x/y", "https://"])
+    def test_non_http_urls_are_rejected_before_anything_runs(self, bad: str) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge", "--notify", bad])
+        assert result.exit_code == 2
+        assert "must be an http(s) URL" in _flat(result.output)
+        mock_pe.assert_not_called()
+
+    def test_env_var_is_validated_too(self) -> None:
+        with patch("pr_split.cli.plan_exists") as mock_pe:
+            result = runner.invoke(app, ["merge"], env={"PR_SPLIT_WEBHOOK_URL": "file:///x"})
+        assert result.exit_code == 2
+        mock_pe.assert_not_called()
+
+    @patch("pr_split.cli.plan_exists", return_value=False)
+    def test_http_urls_pass(self, mock_pe: MagicMock) -> None:
+        result = runner.invoke(app, ["merge", "--notify", "https://hooks.example/abc"])
+        assert result.exit_code == 0
+        mock_pe.assert_called_once()
+
+
+class TestWebhookRedirects:
+    def _serve(self, handler_cls: type) -> tuple[object, int]:
+        import threading
+        from http.server import HTTPServer
+
+        server = HTTPServer(("127.0.0.1", 0), handler_cls)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return server, server.server_address[1]
+
+    def test_redirect_is_reported_instead_of_a_body_less_get(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        from pr_split.cli import _send_webhook
+
+        received: list[tuple[str, int]] = []
+
+        class Target(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                received.append(("GET", int(self.headers.get("Content-Length") or 0)))
+                self.send_response(200)
+                self.end_headers()
+
+            def do_POST(self) -> None:
+                received.append(("POST", int(self.headers.get("Content-Length") or 0)))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        target, target_port = self._serve(Target)
+
+        class Mover(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                self.send_response(301)
+                self.send_header("Location", f"http://127.0.0.1:{target_port}/hook")
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        mover, mover_port = self._serve(Mover)
+        try:
+            with patch("pr_split.cli.logger") as mock_logger:
+                _send_webhook(f"http://127.0.0.1:{mover_port}/old", {"event": "merge_complete"})
+        finally:
+            mover.shutdown()  # type: ignore[attr-defined]
+            target.shutdown()  # type: ignore[attr-defined]
+
+        assert received == []
+        warning = str(mock_logger.warning.call_args)
+        assert "redirected to" in warning and f"127.0.0.1:{target_port}/hook" in warning
+        mock_logger.info.assert_not_called()
+
+    def test_direct_post_still_delivers_the_payload(self) -> None:
+        from http.server import BaseHTTPRequestHandler
+
+        from pr_split.cli import _send_webhook
+
+        bodies: list[bytes] = []
+
+        class Sink(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                bodies.append(self.rfile.read(int(self.headers["Content-Length"])))
+                self.send_response(200)
+                self.end_headers()
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        sink, port = self._serve(Sink)
+        try:
+            with patch("pr_split.cli.logger") as mock_logger:
+                _send_webhook(f"http://127.0.0.1:{port}/hook", {"event": "merge_complete"})
+        finally:
+            sink.shutdown()  # type: ignore[attr-defined]
+
+        assert bodies == [b'{"event": "merge_complete"}']
+        mock_logger.warning.assert_not_called()

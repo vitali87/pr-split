@@ -162,6 +162,29 @@ class TestChunkHunksDynamicProgramming:
         assert [ref.file_path for ref in chunks[0]] == ["a.py"]
         assert [ref.file_path for ref in chunks[1]] == ["b.py", "b.py"]
 
+    def test_large_budget_still_keeps_files_whole_when_possible(self) -> None:
+        # At a realistic budget the slack term is hundreds of thousands of
+        # tokens; a fixed same-file penalty used to lose to it and b.py was
+        # cut in half although a two-chunk plan without any cut exists.
+        budget = 538_000
+        refs = [HunkRef("a.py", 0, 10_000)]
+        refs += [HunkRef("b.py", i, 50_000) for i in range(10)]
+        refs += [HunkRef("c.py", i, 50_000) for i in range(2)]
+        chunks = chunk_hunks_dynamic_programming(refs, budget)
+        assert len(chunks) == 2
+        for chunk in chunks:
+            assert sum(r.token_estimate for r in chunk) <= budget
+        # no file appears in more than one chunk
+        seen: dict[str, int] = {}
+        for idx, chunk in enumerate(chunks):
+            for ref in chunk:
+                assert seen.setdefault(ref.file_path, idx) == idx
+
+    def test_file_is_still_cut_when_it_cannot_fit_one_chunk(self) -> None:
+        refs = [HunkRef("big.py", i, 60) for i in range(3)]
+        chunks = chunk_hunks_dynamic_programming(refs, 100)
+        assert [len(c) for c in chunks] == [1, 1, 1]
+
     def test_greedy_helper_retains_previous_behavior(self) -> None:
         refs = [
             HunkRef("a.py", 0, 30),
@@ -362,3 +385,22 @@ class TestChunkerErrorsAreProjectErrors:
         for strategy in (ChunkStrategy.GREEDY, ChunkStrategy.DYNAMIC_PROGRAMMING):
             with pytest.raises(PRSplitError, match=r"a\.py\[0\].*exceeds budget 100"):
                 chunk_hunks(refs, 100, strategy)
+
+
+class TestChunkStatsKeepGlobalIndices:
+    def test_second_chunk_summary_uses_per_file_global_indices(self) -> None:
+        from pr_split.diff_ops.parser import parse_diff
+        from pr_split.planner.chunker import build_chunk_stats_from_hunks, build_hunk_sequence
+        from pr_split.planner.prompts import build_chunk_continuation_prompt
+
+        diff = "diff --git a/f.py b/f.py\n--- a/f.py\n+++ b/f.py\n" + "".join(
+            f"@@ -{10 * i + 1},1 +{10 * i + 1},2 @@\n x\n+y{i}\n" for i in range(4)
+        )
+        parsed = parse_diff(diff)
+        refs = build_hunk_sequence(parsed, 0.25)
+        second_chunk = refs[2:]
+        stats = build_chunk_stats_from_hunks(parsed, second_chunk)
+        assert stats["file_summaries"][0]["hunk_indices"] == [2, 3]
+        prompt = build_chunk_continuation_prompt(stats, "diff", 2, 2, "catalog")
+        assert "indices 2, 3 (this chunk only)" in prompt
+        assert "indices 0..1" not in prompt

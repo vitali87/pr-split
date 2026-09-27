@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Sequence
@@ -11,22 +12,92 @@ from .. import logs
 from ..constants import FORK_REF_PREFIX, PR_REF_PREFIX
 from ..exceptions import ErrorMsg, GitOperationError
 from ..types_defs import ForkPRInfo
+from .branches import run_git
 
 
 def _run_gh(*args: str) -> str:
-    result = subprocess.run(
-        ["gh", *args],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["gh", *args],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as exc:
+        # Callers only expect GitOperationError; a missing binary must not
+        # escape as a raw traceback (or make check_gh_auth raise).
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="gh")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
     return result.stdout.strip()
 
 
-def check_gh_auth() -> bool:
+PR_BODY_MAX_CHARS = 65_536
+_PR_BODY_TRUNCATION_NOTE = "\n\n_(body truncated: GitHub's limit is 65,536 characters)_"
+
+
+def _truncate_pr_body(body: str) -> str:
+    """Keep the body under GitHub's hard limit so PR creation cannot fail on it.
+
+    The cut lands on a line boundary and closes an open code fence (the
+    dependency graph is the last section of every generated body), so the
+    truncation note renders as a note rather than as code text.
+    """
+    if len(body) <= PR_BODY_MAX_CHARS:
+        return body
+    fence_close = "\n```"
+    keep = PR_BODY_MAX_CHARS - len(_PR_BODY_TRUNCATION_NOTE) - len(fence_close)
+    cut = body[:keep]
+    newline = cut.rfind("\n")
+    if newline > 0:
+        cut = cut[:newline]
+    if cut.count("```") % 2 == 1:
+        cut += fence_close
+    return cut + _PR_BODY_TRUNCATION_NOTE
+
+
+# Matches the host of an https/ssh/git URL or an scp-like ``user@host:path``.
+# Local paths and file:// URLs deliberately do not match: they have no host
+# for gh to authenticate against. A dot is required only in the bare
+# ``host:path`` form, where it separates real hosts from Windows drives and
+# relative paths; scheme and ``user@`` forms accept single-label hosts
+# (``git@ghe:org/repo``), which gh itself supports.
+_REMOTE_HOST_RE = re.compile(
+    r"^(?:"
+    r"(?:https?|ssh|git|git\+ssh|ssh\+git)://(?:[^@/]+@)?(?P<scheme_host>[^.:/@][^:/@]*)"
+    r"|[^@/:]+@(?P<scp_host>[^.:/@][^:/@]*)"
+    r"|(?P<bare_host>[^.:/@][^:/@]*\.[^:/@]+)"
+    r")(?::\d+)?[:/]"
+)
+
+
+def gh_host() -> str:
+    """The GitHub host pr-split talks to, resolved the way gh does.
+
+    gh targets the host of the repository's remote and only treats GH_HOST
+    as an override, so an enterprise-only checkout must be checked against
+    its own host, not github.com.
+    """
+    override = os.environ.get("GH_HOST")
+    if override:
+        return override.lower()
     try:
-        _run_gh("auth", "status")
+        remote = run_git("remote", "get-url", "origin")
+    except GitOperationError:
+        return "github.com"
+    match = _REMOTE_HOST_RE.match(remote.strip())
+    if not match:
+        return "github.com"
+    host = match.group("scheme_host") or match.group("scp_host") or match.group("bare_host")
+    # gh lowercases hosts it parses from remotes; `--hostname` is case-sensitive.
+    return host.lower()
+
+
+def check_gh_auth() -> bool:
+    # Without --hostname, `gh auth status` exits 1 when *any* configured
+    # host is unauthenticated (a stale enterprise token), even though every
+    # call pr-split makes targets one host.
+    try:
+        _run_gh("auth", "status", "--hostname", gh_host())
     except GitOperationError:
         return False
     return True
@@ -77,6 +148,7 @@ def find_open_pr(branch: str) -> tuple[int, str] | None:
 def create_pr(
     head: str, base: str, title: str, body: str, *, draft: bool = False
 ) -> tuple[int, str]:
+    body = _truncate_pr_body(body)
     args = [
         "pr",
         "create",
@@ -146,6 +218,26 @@ def merge_pr(pr_number: int, *, auto: bool = False) -> None:
         args.append("--auto")
     _run_gh(*args)
     logger.info(f"{'Queued' if auto else 'Merged'} PR #{pr_number}")
+
+
+_STACKED_PR_EDIT_REFUSED = "part of a stack"
+
+
+def retarget_pr(pr_number: int, base: str) -> bool:
+    """Point a stacked child PR at ``base`` once its parent has merged.
+
+    Returns False when GitHub refuses because the PR is in a native stack;
+    GitHub retargets those itself when the parent PR merges.
+    """
+    try:
+        set_pr_base(pr_number, base)
+    except GitOperationError as exc:
+        if _STACKED_PR_EDIT_REFUSED in str(exc).lower():
+            logger.info(logs.PR_RETARGET_NATIVE_STACK.format(number=pr_number))
+            return False
+        raise
+    logger.info(logs.PR_RETARGETED.format(number=pr_number, base=base))
+    return True
 
 
 def close_pr(pr_number: int) -> None:
@@ -264,7 +356,7 @@ def fetch_fork_branch(user: str, branch: str) -> ForkPRInfo:
     logger.info(logs.FETCHING_FORK_BRANCH.format(branch=branch, fork=fork_full_name))
 
     try:
-        run_git("fetch", clone_url, f"{branch}:{local_ref}")
+        run_git("fetch", clone_url, f"+{branch}:{local_ref}")
     except GitOperationError as exc:
         raise GitOperationError(
             ErrorMsg.FORK_FETCH_FAILED(user=user, branch=branch, detail=str(exc))

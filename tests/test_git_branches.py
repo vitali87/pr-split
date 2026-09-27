@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ import pytest
 from pr_split.constants import PLAN_DIR
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
+    _no_hooks_dir,
     add_worktree,
     adopt_remote_branch,
     branch_exists,
@@ -18,6 +20,7 @@ from pr_split.git_ops.branches import (
     derive_split_namespace,
     diff_base_ref,
     is_worktree_clean,
+    local_branch_exists,
     merge_base,
     push_branch,
     remove_worktree,
@@ -181,14 +184,18 @@ class TestDeleteBranch:
         delete_branch("pr-split/pr-1")
         mock_git.assert_called_once_with("branch", "-D", "pr-split/pr-1")
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_with_remote(self, mock_git: MagicMock) -> None:
+    def test_with_remote(self, mock_git: MagicMock, mock_forget: MagicMock) -> None:
         mock_git.return_value = ""
         delete_branch("pr-split/pr-1", remote=True)
         assert mock_git.call_count == 2
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_local_failure_still_deletes_remote(self, mock_git: MagicMock) -> None:
+    def test_local_failure_still_deletes_remote(
+        self, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = [GitOperationError("checked out"), ""]
         with pytest.raises(GitOperationError, match="checked out"):
             delete_branch("pr-split/pr-1", remote=True)
@@ -201,15 +208,21 @@ class TestDeleteBranch:
             delete_branch("pr-split/pr-1")
         mock_git.assert_called_once()
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_branch_already_deleted_locally_counts_as_deleted(self, mock_git: MagicMock) -> None:
+    def test_branch_already_deleted_locally_counts_as_deleted(
+        self, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         # `pr-split merge` deletes the local branch; cleanup must not fail on it.
         mock_git.side_effect = [GitOperationError("error: branch 'pr-split/pr-1' not found."), ""]
         delete_branch("pr-split/pr-1", remote=True)
         mock_git.assert_any_call("push", "origin", "--delete", "pr-split/pr-1")
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_branch_already_deleted_on_origin_counts_as_deleted(self, mock_git: MagicMock) -> None:
+    def test_branch_already_deleted_on_origin_counts_as_deleted(
+        self, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = [
             "",
             GitOperationError(
@@ -218,8 +231,11 @@ class TestDeleteBranch:
         ]
         delete_branch("pr-split/pr-1", remote=True)
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_branch_gone_everywhere_counts_as_deleted(self, mock_git: MagicMock) -> None:
+    def test_branch_gone_everywhere_counts_as_deleted(
+        self, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = [
             GitOperationError("error: branch 'pr-split/pr-1' not found."),
             GitOperationError(
@@ -233,8 +249,11 @@ class TestDeleteBranch:
         mock_git.side_effect = GitOperationError("error: branch 'pr-split/pr-1' not found.")
         delete_branch("pr-split/pr-1")
 
+    @patch("pr_split.git_ops.branches.forget_remote_tracking_ref")
     @patch("pr_split.git_ops.branches.run_git")
-    def test_other_remote_failure_still_raises(self, mock_git: MagicMock) -> None:
+    def test_other_remote_failure_still_raises(
+        self, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = ["", GitOperationError("fatal: could not read from remote")]
         with pytest.raises(GitOperationError, match="could not read from remote"):
             delete_branch("pr-split/pr-1", remote=True)
@@ -323,28 +342,44 @@ class TestRunGitInDir:
 
 
 class TestAddWorktree:
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=False)
-    def test_adds_worktree(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=False)
+    def test_adds_worktree(
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.return_value = ""
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
-        mock_git.assert_called_once_with(
-            "worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123"
-        )
+        args = mock_git.call_args.args
+        assert args[0] == "-c" and args[1].startswith("core.hooksPath=")
+        assert args[2:] == ("worktree", "add", "-b", "pr-split/ns/pr-1", "/tmp/wt", "abc123")
+        mock_forget.assert_called_once_with("/tmp/wt", "pr-split/ns/pr-1")
 
+    def test_hooks_dir_is_private_and_empty(self) -> None:
+        path = Path(_no_hooks_dir())
+        assert path.is_dir()
+        assert list(path.iterdir()) == []
+        # A fixed shared path would let another local user plant hooks there.
+        assert path.stat().st_mode & 0o077 == 0
+
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=True)
     def test_deletes_existing_branch_first(
-        self, mock_exists: MagicMock, mock_git: MagicMock
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
     ) -> None:
         mock_git.side_effect = ["oldsha", "", ""]
         add_worktree("/tmp/wt", "pr-split/ns/pr-1", "abc123")
         assert mock_git.call_count == 3
+        mock_git.assert_any_call("rev-parse", "refs/heads/pr-split/ns/pr-1")
         mock_git.assert_any_call("branch", "-D", "pr-split/ns/pr-1")
 
+    @patch("pr_split.git_ops.branches._forget_stale_worktrees")
     @patch("pr_split.git_ops.branches.run_git")
-    @patch("pr_split.git_ops.branches.branch_exists", return_value=True)
-    def test_restores_branch_on_failure(self, mock_exists: MagicMock, mock_git: MagicMock) -> None:
+    @patch("pr_split.git_ops.branches.local_branch_exists", return_value=True)
+    def test_restores_branch_on_failure(
+        self, mock_exists: MagicMock, mock_git: MagicMock, mock_forget: MagicMock
+    ) -> None:
         mock_git.side_effect = [
             "oldsha",
             "",
@@ -370,7 +405,7 @@ class TestCommitFilesInDir:
         mock_git.side_effect = ["", "", "abc123"]
         sha = commit_files_in_dir("/tmp/wt", ["file.py"], "test commit")
         assert sha == "abc123"
-        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "-A", "--", "file.py")
+        assert mock_git.call_args_list[0].args == ("/tmp/wt", "add", "-A", "-f", "--", "file.py")
 
     @patch("pr_split.git_ops.branches.run_git_in_dir")
     def test_commit_with_author(self, mock_git: MagicMock) -> None:
@@ -383,6 +418,150 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestAddWorktreeStaleEntries:
+    def _repo(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        return repo
+
+    def test_killed_run_with_directory_still_on_disk_can_be_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = tmp_path / "run1" / "g2"
+        first.parent.mkdir()
+        add_worktree(str(first), "pr-split/ns/g2", "main")
+        # A SIGKILL leaves the old temporary worktree directory in place and
+        # the next run uses a fresh temporary directory.
+        assert first.exists()
+
+        second = tmp_path / "run2" / "g2"
+        second.parent.mkdir()
+        add_worktree(str(second), "pr-split/ns/g2", "main")
+
+        assert (second / ".git").exists()
+        assert not first.exists()
+
+    def test_registration_locked_by_an_interrupted_add_is_cleared(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = tmp_path / "run1" / "g4"
+        first.parent.mkdir()
+        add_worktree(str(first), "pr-split/ns/g4", "main")
+        # git leaves this lock in place when a `worktree add` is killed.
+        subprocess.run(
+            ["git", "worktree", "lock", "--reason", "initializing", str(first)],
+            cwd=repo,
+            check=True,
+        )
+
+        second = tmp_path / "run2" / "g4"
+        second.parent.mkdir()
+        add_worktree(str(second), "pr-split/ns/g4", "main")
+
+        assert (second / ".git").exists()
+
+    def test_killed_run_whose_directory_vanished_can_be_rerun(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import shutil
+
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        first = str(tmp_path / "wt1")
+        add_worktree(first, "pr-split/ns/g2", "main")
+        shutil.rmtree(first)
+
+        add_worktree(str(tmp_path / "wt2"), "pr-split/ns/g2", "main")
+
+        assert (tmp_path / "wt2" / ".git").exists()
+
+    def test_symlinked_path_is_matched_by_realpath(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        real = tmp_path / "real"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        add_worktree(str(link / "wt"), "pr-split/ns/g3", "main")
+
+        add_worktree(str(link / "wt"), "pr-split/ns/g3", "main")
+
+        assert (real / "wt" / ".git").exists()
+
+    def test_other_live_worktrees_are_left_alone(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        other = tmp_path / "other"
+        add_worktree(str(other), "pr-split/ns/other", "main")
+
+        add_worktree(str(tmp_path / "mine"), "pr-split/ns/mine", "main")
+
+        assert (other / ".git").exists()
+        assert (repo / ".git").exists()
+
+    def test_registered_path_that_still_exists_is_replaced(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        path = str(tmp_path / "wt")
+        add_worktree(path, "pr-split/ns/g1", "main")
+
+        add_worktree(path, "pr-split/ns/g1", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+    def test_tag_with_the_branch_name_does_not_confuse_the_check(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "tag", "pr-split/ns/g5"], cwd=repo, check=True)
+        assert branch_exists("pr-split/ns/g5")
+        assert not local_branch_exists("pr-split/ns/g5")
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g5", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+
+class TestRequireTools:
+    def test_returns_first_missing_tool(self) -> None:
+        from pr_split.git_ops.branches import require_tools
+
+        with patch(
+            "pr_split.git_ops.branches.shutil.which",
+            side_effect=lambda t: None if t == "gh" else "/usr/bin/x",
+        ):
+            assert require_tools("git", "gh") == "gh"
+            assert require_tools("git") is None
 
 
 class TestGitLocaleIsPinned:
@@ -415,6 +594,162 @@ class TestGitLocaleIsPinned:
         monkeypatch.setenv("LANGUAGE", "de")
         # never existed: must be treated as already deleted, not as an error
         delete_branch("pr-split/ns/never")
+
+
+class TestStaleRemoteTrackingRefs:
+    def _repo_with_origin(self, tmp_path: Path) -> Path:
+        origin = tmp_path / "origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(origin)], check=True)
+        repo = tmp_path / "repo"
+        subprocess.run(["git", "clone", "-q", str(origin), str(repo)], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "base",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "push", "-q", "-u", "origin", "HEAD:main"], cwd=repo, check=True)
+        return repo
+
+    def test_reused_branch_name_pushes_again_after_remote_deletion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.branches import prune_remote_tracking_refs, push_branch
+
+        repo = self._repo_with_origin(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "branch", "pr-split/ns/pr-1"], cwd=repo, check=True)
+        push_branch("pr-split/ns/pr-1")
+        # Simulate `gh pr merge --delete-branch` / GitHub deleting the head
+        # branch behind our back: the remote branch goes away but the local
+        # tracking ref still points at the old head.
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/heads/pr-split/ns/pr-1"],
+            cwd=tmp_path / "origin.git",
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "v2",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "branch", "-f", "pr-split/ns/pr-1", "HEAD"], cwd=repo, check=True)
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/ns/pr-1")
+
+        prune_remote_tracking_refs()
+        push_branch("pr-split/ns/pr-1")
+
+    def test_prune_keeps_the_lease_against_third_party_pushes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.branches import prune_remote_tracking_refs, push_branch
+
+        repo = self._repo_with_origin(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "branch", "pr-split/ns/pr-9"], cwd=repo, check=True)
+        push_branch("pr-split/ns/pr-9")
+        # A reviewer pushes a fixup to the split branch from another clone.
+        other = tmp_path / "other"
+        subprocess.run(
+            ["git", "clone", "-q", str(tmp_path / "origin.git"), str(other)], check=True
+        )
+        subprocess.run(["git", "checkout", "-q", "pr-split/ns/pr-9"], cwd=other, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=r",
+                "-c",
+                "user.email=r@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "fixup",
+            ],
+            cwd=other,
+            check=True,
+        )
+        subprocess.run(["git", "push", "-q", "origin", "pr-split/ns/pr-9"], cwd=other, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@x",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "resplit",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        subprocess.run(["git", "branch", "-f", "pr-split/ns/pr-9", "HEAD"], cwd=repo, check=True)
+
+        prune_remote_tracking_refs()
+
+        # The lease must still protect the reviewer's commit.
+        with pytest.raises(GitOperationError, match="stale info"):
+            push_branch("pr-split/ns/pr-9")
+
+    def test_remote_delete_drops_the_tracking_ref(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.branches import push_branch
+
+        repo = self._repo_with_origin(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "branch", "pr-split/ns/pr-2"], cwd=repo, check=True)
+        push_branch("pr-split/ns/pr-2")
+        assert branch_exists("refs/remotes/origin/pr-split/ns/pr-2")
+
+        delete_branch("pr-split/ns/pr-2", remote=True)
+
+        assert not branch_exists("refs/remotes/origin/pr-split/ns/pr-2")
+
+    def test_already_deleted_remote_still_drops_the_tracking_ref(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.branches import push_branch
+
+        repo = self._repo_with_origin(tmp_path)
+        monkeypatch.chdir(repo)
+        subprocess.run(["git", "branch", "pr-split/ns/pr-3"], cwd=repo, check=True)
+        push_branch("pr-split/ns/pr-3")
+        subprocess.run(
+            ["git", "update-ref", "-d", "refs/heads/pr-split/ns/pr-3"],
+            cwd=tmp_path / "origin.git",
+            check=True,
+        )
+
+        delete_branch("pr-split/ns/pr-3", remote=True)
+
+        assert not branch_exists("refs/remotes/origin/pr-split/ns/pr-3")
 
 
 class TestIsWorktreeCleanIgnoresPlanDir:
@@ -512,6 +847,85 @@ class TestCommitsSkipHooks:
         assert log.strip() == "feat: a"
 
 
+class TestIgnoredPathsAreStillCommitted:
+    def test_file_tracked_on_dev_despite_gitignore_is_committed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        (repo / "build").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        (repo / ".gitignore").write_text("build/\n")
+        (repo / "build" / "out.txt").write_text("artifact\n")
+
+        commit_files_in_dir(str(repo), [".gitignore", "build/out.txt"], "feat: artifact")
+
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.split()
+        assert "build/out.txt" in tracked
+
+    def test_deleted_files_are_still_staged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        (repo / "a.py").write_text("x\n")
+        commit_files_in_dir(str(repo), ["a.py"], "add")
+        (repo / "a.py").unlink()
+
+        commit_files_in_dir(str(repo), ["a.py"], "remove")
+
+        tracked = subprocess.run(
+            ["git", "ls-files"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.split()
+        assert tracked == []
+
+
+class TestWorktreeAddSkipsHooks:
+    def test_failing_post_checkout_hook_does_not_block_worktree_creation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "base"], cwd=repo, check=True
+        )
+        hook = repo / ".git" / "hooks" / "post-checkout"
+        hook.write_text("#!/bin/sh\necho 'post-checkout failing' >&2\nexit 1\n")
+        hook.chmod(0o755)
+        monkeypatch.chdir(repo)
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g1", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+    def test_hooks_path_from_config_is_also_bypassed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _git_identity(monkeypatch)
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        subprocess.run(
+            ["git", "commit", "-q", "--allow-empty", "-m", "base"], cwd=repo, check=True
+        )
+        hooks = tmp_path / "myhooks"
+        hooks.mkdir()
+        (hooks / "post-checkout").write_text("#!/bin/sh\nexit 1\n")
+        (hooks / "post-checkout").chmod(0o755)
+        subprocess.run(["git", "config", "core.hooksPath", str(hooks)], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+
+        add_worktree(str(tmp_path / "wt"), "pr-split/ns/g2", "main")
+
+        assert (tmp_path / "wt" / ".git").exists()
+
+
 class TestCommitExists:
     @patch("pr_split.git_ops.branches.run_git", return_value="")
     def test_true_when_object_resolves(self, mock_git: MagicMock) -> None:
@@ -574,3 +988,29 @@ class TestAdoptRemoteBranch:
         before = run_git("rev-parse", "refs/heads/feat/move-op")
         assert adopt_remote_branch("feat/move-op") is False
         assert run_git("rev-parse", "refs/heads/feat/move-op") == before
+
+
+class TestDeriveSplitNamespaceRefSafety:
+    def test_fork_namespace_includes_user(self) -> None:
+        assert derive_split_namespace("user:feat/x") == "user-feat-x"
+        assert derive_split_namespace("user:feat/x") != derive_split_namespace("feat/x")
+
+    def test_all_invalid_characters_fall_back_to_hash(self) -> None:
+        result = derive_split_namespace("---")
+        assert re.fullmatch(r"[0-9a-f]{8}", result)
+        assert derive_split_namespace("---") == result
+        assert derive_split_namespace("user:---") == "user"
+
+    def test_double_dots_and_edge_dots_are_removed(self) -> None:
+        result = derive_split_namespace(".feat..x.")
+        assert ".." not in result
+        assert not result.startswith(".")
+        assert not result.endswith(".")
+
+    def test_namespace_is_a_valid_ref_component(self, tmp_path: Path) -> None:
+        subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+        for arg in ("---", "user:---", ".feat..x.", "#42", "a b/c", "weird@chars!"):
+            ref = f"refs/heads/pr-split/{derive_split_namespace(arg)}/pr-1"
+            subprocess.run(
+                ["git", "check-ref-format", ref], cwd=tmp_path, check=True, capture_output=True
+            )

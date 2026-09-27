@@ -15,9 +15,11 @@ class ErrorMsg(StrEnum):
     )
     DIRTY_WORKTREE = "Working tree has uncommitted changes; commit or stash first"
     GH_AUTH_FAILED = "GitHub CLI authentication failed; run 'gh auth login'"
+    TOOL_NOT_FOUND = "'{tool}' is not installed or not on PATH"
     CYCLE_DETECTED = "Dependency cycle detected in split plan"
     COVERAGE_GAP = "Hunk {file}[{index}] not assigned to any group"
     COVERAGE_OVERLAP = "Hunk {file}[{index}] assigned to multiple groups: {groups}"
+    COVERAGE_DUPLICATE = "Hunk {file}[{index}] listed more than once in group '{group}'"
     UNKNOWN_HUNK = "Hunk {file}[{index}] assigned to group '{group}' does not exist in the diff"
     UNKNOWN_FILE = "File '{file}' assigned to group '{group}' does not exist in the diff"
     UNKNOWN_DEPENDENCY = "Group '{group}' depends on unknown group '{dep}'"
@@ -30,6 +32,8 @@ class ErrorMsg(StrEnum):
     LOC_MISMATCH = "Total LOC {actual} does not match diff LOC {expected}"
     MERGE_CONFLICT = "Groups '{a}' and '{b}' modify overlapping regions in '{file}'"
     NO_PLAN = "No split plan found; run 'pr-split split' first"
+    NO_CHANGES = "No changes between '{base}' and '{dev}'; nothing to split"
+    PLAN_HAS_NO_CHANGES = "Saved plan has an empty diff; nothing to execute"
     PLAN_AMBIGUOUS = (
         "Several split plans are saved ({branches}); pick one with"
         " 'pr-split --branch <dev-branch> <command>'"
@@ -117,15 +121,28 @@ class ErrorMsg(StrEnum):
     HUNK_TOO_LARGE = "Hunk {file}[{index}] has ~{tokens} estimated tokens, exceeds budget {budget}"
     MIN_LOC_GE_MAX_LOC = "min_loc {min_loc} must be less than max_loc {max_loc}"
     LOC_BOUNDS_STRICT_FAILED = "Plan violates configured LOC bounds"
+    CP_SAT_TIMED_OUT = (
+        "CP-SAT found no hunk assignment within {timeout:g}s ({units} units); "
+        "raise --cp-sat-timeout or use --partition-strategy graph"
+    )
+    CP_SAT_INFEASIBLE = "CP-SAT partitioning failed to find a feasible hunk assignment"
     BINARY_FILES_UNSUPPORTED = (
         "Diff contains binary files, which cannot be split into hunks: {files}."
         " Commit them separately and re-run"
+    )
+    HUNKLESS_FILES_UNSUPPORTED = (
+        "Diff contains files with no text hunks (mode-only or empty changes), which"
+        " cannot be assigned to a sub-PR: {files}. Commit them separately and re-run"
     )
     GH_STACK_MISSING = (
         "The gh-stack extension is required for stacked PRs;"
         " run 'gh extension install github/gh-stack'"
     )
     STACK_LINK_FAILED = "Failed to link stack for PRs {prs}: {detail}"
+    SUBMODULE_UNSUPPORTED = (
+        "Submodule changes are not supported (pointer bump at {paths}); "
+        "split them out of the branch first"
+    )
 
     def __call__(self, **kwargs: object) -> str:
         return self.value.format(**kwargs) if kwargs else self.value

@@ -160,3 +160,137 @@ class TestCreatePrDraft:
         mock_gh.return_value = "https://github.com/org/repo/pull/7"
         create_pr("head", "main", "Title", "Body")
         assert "--draft" not in mock_gh.call_args.args
+
+
+class TestCheckGhAuthHost:
+    @patch("pr_split.git_ops.prs.run_git", return_value="git@github.com:org/repo.git")
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_checks_only_the_target_host(
+        self, mock_gh: MagicMock, mock_git: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        assert check_gh_auth() is True
+        mock_gh.assert_called_once_with("auth", "status", "--hostname", "github.com")
+
+    @pytest.mark.parametrize(
+        ("remote", "host"),
+        [
+            ("https://ghe.example.com/org/repo.git", "ghe.example.com"),
+            ("ssh://git@ghe.example.com:2222/org/repo.git", "ghe.example.com"),
+            ("git@ghe.example.com:org/repo.git", "ghe.example.com"),
+            ("https://user:tok@ghe.example.com/org/repo", "ghe.example.com"),
+            ("git@github.com:org/repo.git", "github.com"),
+            # gh lowercases remote hosts; `--hostname` is case-sensitive.
+            ("https://GHE.Example.COM/org/repo.git", "ghe.example.com"),
+            # Local remotes have no host to authenticate against.
+            ("../other", "github.com"),
+            ("/srv/repo.git", "github.com"),
+            ("file:///srv/repo.git", "github.com"),
+            # Single-label GHE hosts are valid in scheme and scp forms.
+            ("git@ghe:org/repo.git", "ghe"),
+            ("ssh://git@ghe/org/repo.git", "ghe"),
+            # Bare scp form still needs a dot to rule out local paths.
+            ("ghe.example.com:org/repo.git", "ghe.example.com"),
+        ],
+    )
+    def test_host_is_derived_from_the_origin_remote(
+        self, monkeypatch: pytest.MonkeyPatch, remote: str, host: str
+    ) -> None:
+        from pr_split.git_ops.prs import gh_host
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        with patch("pr_split.git_ops.prs.run_git", return_value=remote):
+            assert gh_host() == host
+
+    def test_no_remote_falls_back_to_github(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pr_split.git_ops.prs import gh_host
+
+        monkeypatch.delenv("GH_HOST", raising=False)
+        with patch("pr_split.git_ops.prs.run_git", side_effect=GitOperationError("no origin")):
+            assert gh_host() == "github.com"
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_honours_gh_host(self, mock_gh: MagicMock, monkeypatch: pytest.MonkeyPatch) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        monkeypatch.setenv("GH_HOST", "GHE.example.com")
+        with patch("pr_split.git_ops.prs.run_git") as mock_git:
+            check_gh_auth()
+        mock_gh.assert_called_once_with("auth", "status", "--hostname", "ghe.example.com")
+        mock_git.assert_not_called()
+
+    @patch("pr_split.git_ops.prs._run_gh", side_effect=GitOperationError("not logged in"))
+    def test_unauthenticated_target_host_is_false(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import check_gh_auth
+
+        assert check_gh_auth() is False
+
+
+class TestRetargetPr:
+    @patch("pr_split.git_ops.prs._run_gh", return_value="")
+    def test_edits_the_base(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        assert retarget_pr(7, "main") is True
+        mock_gh.assert_called_once_with("pr", "edit", "7", "--base", "main")
+
+    @patch(
+        "pr_split.git_ops.prs._run_gh",
+        side_effect=GitOperationError(
+            "Cannot change the base branch because the pull request is part of a stack"
+        ),
+    )
+    def test_native_stack_refusal_is_tolerated(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        assert retarget_pr(7, "main") is False
+
+    @patch("pr_split.git_ops.prs._run_gh", side_effect=GitOperationError("rate limited"))
+    def test_other_failures_raise(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import retarget_pr
+
+        with pytest.raises(GitOperationError, match="rate limited"):
+            retarget_pr(7, "main")
+
+
+class TestCreatePrBodyLimit:
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_oversized_body_is_truncated_below_the_limit(self, mock_gh: MagicMock) -> None:
+        from pr_split.git_ops.prs import PR_BODY_MAX_CHARS
+
+        create_pr(head="h", base="b", title="t", body="x" * 100_000)
+        args = mock_gh.call_args[0]
+        sent = args[args.index("--body") + 1]
+        assert len(sent) <= PR_BODY_MAX_CHARS
+        assert sent.endswith("_(body truncated: GitHub's limit is 65,536 characters)_")
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_truncation_closes_an_open_code_fence_on_a_line_boundary(
+        self, mock_gh: MagicMock
+    ) -> None:
+        from pr_split.git_ops.prs import PR_BODY_MAX_CHARS
+
+        lines = "\n".join(f"pr-{i}: group {i}" for i in range(6000))
+        body = f"intro\n\n```\n{lines}\n```"
+        create_pr(head="h", base="b", title="t", body=body)
+        args = mock_gh.call_args[0]
+        sent = args[args.index("--body") + 1]
+        assert len(sent) <= PR_BODY_MAX_CHARS
+        assert sent.count("```") % 2 == 0
+        assert sent.endswith("```\n\n_(body truncated: GitHub's limit is 65,536 characters)_")
+        # cut on a line boundary: the line before the closing fence is intact
+        before_close = sent.rsplit("\n```", 1)[0]
+        last_line = before_close.rsplit("\n", 1)[-1]
+        assert last_line.startswith("pr-")
+        assert (
+            last_line
+            == f"{last_line.split(':')[0]}: group {last_line.split('-')[1].split(':')[0]}"
+        )
+
+    @patch("pr_split.git_ops.prs._run_gh", return_value="https://github.com/o/r/pull/9")
+    def test_normal_body_is_sent_verbatim(self, mock_gh: MagicMock) -> None:
+        create_pr(head="h", base="b", title="t", body="hello")
+        args = mock_gh.call_args[0]
+        assert args[args.index("--body") + 1] == "hello"

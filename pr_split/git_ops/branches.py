@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import atexit
+import contextlib
+import functools
+import hashlib
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 import time
 
 from loguru import logger
 
 from .. import logs
 from ..constants import PLAN_DIR
-from ..exceptions import GitOperationError
+from ..exceptions import ErrorMsg, GitOperationError
 
 
 def _git_env() -> dict[str, str]:
@@ -18,29 +24,36 @@ def _git_env() -> dict[str, str]:
     return {**os.environ, "LC_ALL": "C", "LANGUAGE": "C"}
 
 
-def run_git(*args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        env=_git_env(),
-    )
+def _git(args: tuple[str, ...], cwd: str | None = None) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            env=_git_env(),
+        )
+    except FileNotFoundError as exc:
+        raise GitOperationError(ErrorMsg.TOOL_NOT_FOUND(tool="git")) from exc
     if result.returncode != 0:
         raise GitOperationError(result.stderr.strip())
     return result.stdout.strip()
+
+
+def run_git(*args: str) -> str:
+    return _git(args)
 
 
 def run_git_in_dir(cwd: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        capture_output=True,
-        text=True,
-        cwd=cwd,
-        env=_git_env(),
-    )
-    if result.returncode != 0:
-        raise GitOperationError(result.stderr.strip())
-    return result.stdout.strip()
+    return _git(args, cwd=cwd)
+
+
+def require_tools(*tools: str) -> str | None:
+    """Return the first of ``tools`` that is not on PATH, or None."""
+    for tool in tools:
+        if shutil.which(tool) is None:
+            return tool
+    return None
 
 
 def commit_exists(ref: str) -> bool:
@@ -171,8 +184,34 @@ def delete_branch(branch: str, *, remote: bool = False) -> None:
             if _REMOTE_REF_MISSING not in str(exc):
                 raise
             logger.info(logs.BRANCH_ALREADY_GONE.format(branch=branch, where=" on origin"))
+        # Either way the remote branch is gone; drop the local tracking ref
+        # too, or the next `push --force-with-lease` of a reused branch name
+        # is rejected as "stale info" against a ref origin no longer has.
+        forget_remote_tracking_ref(branch)
     if local_error is not None:
         raise local_error
+
+
+def forget_remote_tracking_ref(branch: str) -> None:
+    with contextlib.suppress(GitOperationError):
+        run_git("update-ref", "-d", f"refs/remotes/origin/{branch}")
+
+
+def prune_remote_tracking_refs() -> None:
+    """Drop tracking refs whose remote branch no longer exists.
+
+    Split branch names are reused across runs; after a merge or `clean` the
+    remote branch is gone but `refs/remotes/origin/pr-split/...` may still
+    point at the old head, and every `push --force-with-lease` would be
+    rejected as stale. Only *gone* refs are dropped (`git remote prune`, no
+    fetch): refreshing the refs that still exist would make the lease
+    compare against origin's current tip and silently force over commits
+    someone else pushed to a reused branch.
+    """
+    try:
+        run_git("remote", "prune", "origin")
+    except GitOperationError as exc:
+        logger.warning(logs.PRUNE_FAILED.format(error=exc))
 
 
 def merge_base(ref_a: str, ref_b: str) -> str:
@@ -218,22 +257,114 @@ def diff_base_ref(base: str) -> str:
 
 
 def derive_split_namespace(dev_branch_arg: str) -> str:
-    raw = dev_branch_arg.split(":", 1)[1] if ":" in dev_branch_arg else dev_branch_arg.lstrip("#")
+    """Derive the branch namespace for a split from its dev-branch argument.
+
+    The result must be a valid git ref component and distinct per source:
+    ``user:branch`` keeps the user so a fork branch cannot collide with a
+    local branch of the same name, ``..`` is never emitted, and an argument
+    that sanitises to nothing falls back to a short hash rather than an
+    empty component (``pr-split//pr-1`` is not a valid ref).
+    """
+    if ":" in dev_branch_arg:
+        user, branch = dev_branch_arg.split(":", 1)
+        raw = f"{user}-{branch}"
+    else:
+        raw = dev_branch_arg.lstrip("#")
     sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", raw)
-    return sanitized.strip("-")
+    sanitized = re.sub(r"\.{2,}", "-", sanitized).strip("-.")
+    if not sanitized:
+        return hashlib.sha1(dev_branch_arg.encode("utf-8")).hexdigest()[:8]
+    return sanitized
+
+
+def local_branch_exists(branch: str) -> bool:
+    """True only for a local branch head (``branch_exists`` also matches tags/SHAs)."""
+    return branch_exists(f"refs/heads/{branch}")
+
+
+def _registered_worktrees() -> list[tuple[str, str | None]]:
+    """(realpath, branch ref or None) for every registered worktree, main first."""
+    try:
+        listing = run_git("worktree", "list", "--porcelain")
+    except GitOperationError:
+        return []
+    entries: list[tuple[str, str | None]] = []
+    path: str | None = None
+    branch: str | None = None
+    for line in [*listing.splitlines(), ""]:
+        if line.startswith("worktree "):
+            path = line[len("worktree ") :]
+        elif line.startswith("branch "):
+            branch = line[len("branch ") :]
+        elif not line and path is not None:
+            entries.append((os.path.realpath(path), branch))
+            path, branch = None, None
+    return entries
+
+
+def _forget_stale_worktrees(path: str, branch_name: str) -> None:
+    """Drop worktree registrations a killed run left behind.
+
+    ``git branch -D`` refuses a branch that a registered worktree still has
+    checked out. A run killed mid-way leaves its temporary worktree (and its
+    registration) in place, so the next run could never reuse the branch
+    without a manual ``git worktree prune``/``remove``. Registrations that
+    hold this branch, or sit at the requested path, are removed; the main
+    worktree is never touched.
+    """
+    run_git("worktree", "prune")
+    entries = _registered_worktrees()
+    if not entries:
+        return
+    main_path = entries[0][0]
+    wanted_path = os.path.realpath(path)
+    wanted_ref = f"refs/heads/{branch_name}"
+    for registered_path, ref in entries[1:]:
+        if registered_path == main_path:
+            continue
+        if ref == wanted_ref or registered_path == wanted_path:
+            # Double --force also overrides the "initializing" lock a run
+            # killed in the middle of `git worktree add` leaves behind.
+            run_git("worktree", "remove", "--force", "--force", registered_path)
 
 
 def add_worktree(path: str, branch_name: str, start_point: str) -> None:
+    _forget_stale_worktrees(path, branch_name)
     prev_sha: str | None = None
-    if branch_exists(branch_name):
-        prev_sha = run_git("rev-parse", branch_name)
+    if local_branch_exists(branch_name):
+        prev_sha = run_git("rev-parse", f"refs/heads/{branch_name}")
         run_git("branch", "-D", branch_name)
     try:
-        run_git("worktree", "add", "-b", branch_name, path, start_point)
+        # A repository post-checkout hook (husky, lint-staged installers)
+        # runs inside the throwaway worktree, where it has no toolchain and
+        # can only fail; pointing hooksPath at an empty directory for this
+        # one command disables it.
+        run_git(
+            "-c",
+            f"core.hooksPath={_no_hooks_dir()}",
+            "worktree",
+            "add",
+            "-b",
+            branch_name,
+            path,
+            start_point,
+        )
     except GitOperationError:
         if prev_sha is not None:
             run_git("branch", branch_name, prev_sha)
         raise
+
+
+@functools.cache
+def _no_hooks_dir() -> str:
+    """An empty directory to use as core.hooksPath (no hooks run).
+
+    mkdtemp creates it private to this user, so nobody else can plant hooks
+    in it the way they could in a fixed, shared path under the temp dir.
+    """
+    path = tempfile.mkdtemp(prefix="pr-split-no-hooks-")
+    atexit.register(shutil.rmtree, path, ignore_errors=True)
+    return path
 
 
 def remove_worktree(path: str) -> None:
@@ -245,7 +376,11 @@ def commit_files_in_dir(
 ) -> str:
     if not file_paths:
         raise GitOperationError("commit_files_in_dir called with no file paths")
-    run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
+    # -f: the dev branch may track a file that matches .gitignore (added
+    # with `git add -f`); the diff materialises it, and without -f `git add`
+    # refuses the path and the whole group fails. The path list is explicit,
+    # so -f cannot pull in anything unintended; -A still stages deletions.
+    run_git_in_dir(cwd, "add", "-A", "-f", "--", *file_paths)
     author_args = ("--author", author) if author else ()
     # The content is a subset of commits already accepted on the dev
     # branch; a pre-commit/commit-msg hook (husky, pre-commit, lint-staged)

@@ -121,7 +121,31 @@ class TestValidateCoverage:
                 7,
             ),
         ]
-        with pytest.raises(PlanValidationError, match="multiple groups"):
+        with pytest.raises(PlanValidationError, match="multiple groups: g1, g2"):
+            validate_coverage(groups, parsed)
+
+    def test_same_group_listing_hunk_twice_is_reported_as_duplicate(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group(
+                "g1",
+                [_ga("a.py", PARTIAL, [0]), _ga("a.py", WHOLE, [])],
+                3,
+            ),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError) as exc_info:
+            validate_coverage(groups, parsed)
+        assert str(exc_info.value) == "Hunk a.py[0] listed more than once in group 'g1'"
+        assert "multiple groups" not in str(exc_info.value)
+
+    def test_repeated_index_in_one_assignment_is_reported_as_duplicate(self) -> None:
+        parsed = parse_diff(SAMPLE_DIFF)
+        groups = [
+            _make_group("g1", [_ga("a.py", PARTIAL, [0, 0])], 3),
+            _make_group("g2", [_ga("b.py", WHOLE, [0])], 4),
+        ]
+        with pytest.raises(PlanValidationError, match=r"more than once in group 'g1'"):
             validate_coverage(groups, parsed)
 
 
@@ -275,3 +299,29 @@ class TestValidateCoverageWholeFileExpansion:
             _make_group("g2", [_ga("b.py", WHOLE, [0]), _ga("a.py", PARTIAL, [99])], 4),
         ]
         validate_no_conflicts(groups, PlanDAG(groups), {"a.py": 1, "b.py": 1})
+
+
+MODE_ONLY_DIFF = """\
+diff --git a/run.sh b/run.sh
+old mode 100644
+new mode 100755
+diff --git a/a.py b/a.py
+--- a/a.py
++++ b/a.py
+@@ -1 +1 @@
+-x
++y
+"""
+
+
+class TestValidateNoHunklessFiles:
+    def test_mode_only_change_raises(self) -> None:
+        parsed = parse_diff(MODE_ONLY_DIFF)
+        with pytest.raises(PlanValidationError, match=r"no text hunks.*run\.sh"):
+            validate_no_binary_files(parsed)
+
+    def test_validate_plan_rejects_mode_only_even_when_text_hunks_are_covered(self) -> None:
+        parsed = parse_diff(MODE_ONLY_DIFF)
+        groups = [_make_group("g1", [_ga("a.py", WHOLE, [0])], 2)]
+        with pytest.raises(PlanValidationError, match="no text hunks"):
+            validate_plan(groups, parsed, PlanDAG(groups), max_loc=400)

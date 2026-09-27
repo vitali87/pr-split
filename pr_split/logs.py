@@ -103,6 +103,7 @@ LOCAL_SERVER_OFF_MACHINE = (
     " the diff will be sent to that host"
 )
 LLM_OUTPUT_INCOMPLETE = "LLM output incomplete (status: {status}, reason: {reason})"
+LLM_UNEXPECTED_STOP = "LLM stopped with stop_reason={stop_reason} (keys in tool input: {keys})"
 CHUNK_RETRY = "Chunk {index}/{total} failed (attempt {attempt}), retrying: {error}"
 INVALID_HUNK_INDEX = (
     "Group '{group}': invalid hunk index {index} for {file} (max: {max}), skipping"
@@ -144,6 +145,9 @@ MERGE_NODE_NOT_STACKED = (
 PR_SKIPPED_BASE_NOT_PUSHED = (
     "Skipping PR for group '{group}': its base branch '{base}' was not pushed"
 )
+PR_SKIPPED_BASE_PR_FAILED = (
+    "Skipping PR for {group}: no PR could be opened for its base branch {base}"
+)
 CP_SAT_NOT_OPTIMAL = (
     "CP-SAT stopped at the {timeout:g}s limit with a feasible but unproven-optimal plan "
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
@@ -162,3 +166,11 @@ SYMBOL_ORDER_VIOLATION = (
     " its sub-PR will not compile or import on its own"
 )
 ADOPTED_REMOTE_BRANCH = "Created local branch {branch} from {remote_ref}"
+PRUNE_FAILED = (
+    "Could not prune origin's tracking refs before pushing ({error}); "
+    "a reused branch name may be rejected as stale"
+)
+PR_RETARGETED = "Retargeted PR #{number} at {base} before merging"
+PR_RETARGET_NATIVE_STACK = (
+    "PR #{number} is in a native stack; GitHub retargets it when its parent merges"
+)

@@ -181,9 +181,12 @@ def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOut
             if isinstance(block, BetaToolUseBlock) and isinstance(block.input, dict):
                 keys = list(block.input.keys())
                 break
-        logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
         if stop_reason == "max_tokens":
+            logger.warning(logs.LLM_OUTPUT_TRUNCATED.format(stop_reason=stop_reason, keys=keys))
             raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail=f"stop_reason={stop_reason}"))
+        # Any other stop reason is not a truncation; if a tool block is
+        # present the plan is complete, otherwise the loop below reports it.
+        logger.debug(logs.LLM_UNEXPECTED_STOP.format(stop_reason=stop_reason, keys=keys))
     for block in response.content:
         if isinstance(block, BetaToolUseBlock) and block.name == SPLIT_TOOL_NAME:
             return RawToolOutput(groups=_extract_raw_output(block.input))
@@ -203,6 +206,10 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     except openai.APIError as exc:
         raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
     status = getattr(response, "status", None)
+    if status == "failed":
+        error = getattr(response, "error", None)
+        detail = getattr(error, "message", None) or getattr(error, "code", None) or "unknown error"
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"response failed: {detail}"))
     if status == "incomplete":
         details = getattr(response, "incomplete_details", None)
         reason = getattr(details, "reason", None) or "unknown"
@@ -685,7 +692,7 @@ def _plan_split_with_llm(
 ) -> list[Group]:
     diff_stats = parsed_diff.stats
 
-    system = build_system_prompt(settings.priority, settings.max_loc)
+    system = build_system_prompt(settings.priority, settings.max_loc, settings.min_loc)
     user = build_user_prompt(diff_stats, parsed_diff.labeled_diff)
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
