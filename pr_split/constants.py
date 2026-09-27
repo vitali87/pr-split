@@ -22,6 +22,11 @@ class PartitionStrategy(StrEnum):
     CP_SAT = "cp_sat"
 
 
+# Recorded as a plan's partition strategy when the diff fit within --max-loc
+# and was kept as one group without running any backend.
+NO_BACKEND_STRATEGY = "none"
+
+
 class LocViolationType(StrEnum):
     BELOW_MIN = "below_min"
     ABOVE_MAX = "above_max"
@@ -36,6 +41,9 @@ class PRState(StrEnum):
 class Provider(StrEnum):
     ANTHROPIC = "anthropic"
     OPENAI = "openai"
+    # The locally installed Claude Code CLI (`claude -p`), which uses its own
+    # login instead of an API key.
+    CLAUDE_CLI = "claude-cli"
     # Any OpenAI-compatible chat-completions server on this machine or network
     # (Ollama, llama.cpp, vLLM, LM Studio); no API key and no cloud call.
     LOCAL = "local"

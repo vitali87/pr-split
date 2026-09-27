@@ -68,17 +68,21 @@ CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
 PR_CLOSED = "Closed PR #{number}"
 PR_ALREADY_DONE = "PR #{number} is already {state}, nothing to close"
+ADOPTED_PR_KEPT = "PR #{number} was adopted, not opened by pr-split; leaving it open"
+ADOPTED_BRANCH_KEPT = "Branch {branch} was adopted, not created by pr-split; keeping it"
 CLEAN_COMPLETE = "Cleanup complete: {branches} branches, {prs} PRs"
 CLEAN_INCOMPLETE = (
     "Some PRs or branches could not be cleaned up; the plan file was kept"
     " so 'pr-split clean' can be re-run"
 )
 FETCHING_FORK_PR = "Fetching PR #{number} from fork {fork}"
+FETCHING_SAME_REPO_PR = "Fetching PR #{number} (same-repository branch {branch})"
 FETCHING_FORK_BRANCH = "Fetching branch {branch} from fork {fork}"
 AUTHOR_PRESERVED = "Preserving author: {author}"
 COUNTING_TOKENS = "Counting input tokens ({model})"
 TOKEN_COUNT = "Token count: {tokens} (limit: {limit})"
 PLANNING_WITH_BACKEND = "Planning split with backend '{backend}'"
+DIFF_WITHIN_MAX_LOC = "Diff is {loc} LOC, within --max-loc {max_loc}; keeping it as a single PR"
 CHUNK_STRATEGY_SELECTED = "Using chunking strategy '{strategy}'"
 DIFF_TOO_LARGE = (
     "Diff exceeds context window ({tokens} tokens > {limit} limit), switching to chunked mode"
@@ -132,7 +136,7 @@ REFINEMENT_NO_IMPROVEMENT = (
 )
 STACK_LINKED = "Linked stack for PRs {prs}"
 MERGE_NODE_NOT_STACKED = (
-    "Group '{group}' depends on multiple groups; native stacks are linear, so its"
+    "Group '{group}' depends on multiple groups; a PR can target only one branch, so its"
     " branch and PR target the base branch directly, carrying every ancestor's"
     " changes until those PRs merge"
 )
@@ -144,3 +148,12 @@ CP_SAT_NOT_OPTIMAL = (
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
 PUSH_RETRY = "Push of {branch} failed (attempt {attempt}): {error}; retrying"
+SYMBOL_EDGE_SKIPPED = (
+    "Group '{user}' uses {names} from group '{definer}', but depending on it would"
+    " create a cycle; the edge was not added"
+)
+SYMBOL_ORDER_VIOLATION = (
+    "Group '{user}' uses {names} defined in group '{definer}', which it does not build on;"
+    " its sub-PR will not compile or import on its own"
+)
+ADOPTED_REMOTE_BRANCH = "Created local branch {branch} from {remote_ref}"
