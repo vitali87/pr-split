@@ -7,7 +7,6 @@ import subprocess
 from loguru import logger
 
 from .. import logs
-from ..constants import BRANCH_PREFIX
 from ..exceptions import GitOperationError
 
 
@@ -42,6 +41,15 @@ def run_git_in_dir(cwd: str, *args: str) -> str:
     return result.stdout.strip()
 
 
+def commit_exists(ref: str) -> bool:
+    """True if ``ref`` resolves to a commit object in this repository."""
+    try:
+        run_git("cat-file", "-e", f"{ref}^{{commit}}")
+    except GitOperationError:
+        return False
+    return True
+
+
 def branch_exists(branch: str) -> bool:
     try:
         run_git("rev-parse", "--verify", branch)
@@ -50,28 +58,31 @@ def branch_exists(branch: str) -> bool:
     return True
 
 
+def adopt_remote_branch(branch: str) -> bool:
+    """Create local ``branch`` from its remote-tracking ref when that is unambiguous.
+
+    A fresh clone or worktree has ``origin/<branch>`` but no local branch;
+    like ``git checkout <branch>``, adopt the single remote that has it and
+    track it, so ``diff_base_ref`` keeps an adopted base fresh from that
+    remote. Returns True when a local branch was created.
+    """
+    if branch_exists(f"refs/heads/{branch}"):
+        return False
+    try:
+        listing = run_git("for-each-ref", "--format=%(refname:short)", f"refs/remotes/*/{branch}")
+    except GitOperationError:
+        return False
+    candidates = [ref for ref in listing.splitlines() if ref.split("/", 1)[1:] == [branch]]
+    if len(candidates) != 1:
+        return False
+    run_git("branch", "--track", branch, candidates[0])
+    logger.info(logs.ADOPTED_REMOTE_BRANCH.format(branch=branch, remote_ref=candidates[0]))
+    return True
+
+
 def is_worktree_clean() -> bool:
     output = run_git("status", "--porcelain")
     return all(line.startswith("??") for line in output.splitlines())
-
-
-def checkout_new_branch(name: str, start_point: str) -> None:
-    run_git("checkout", "-b", name, start_point)
-
-
-def checkout_branch(name: str) -> None:
-    run_git("checkout", name)
-
-
-def commit_files(file_paths: list[str], message: str, *, author: str | None = None) -> str:
-    run_git("add", "--", *file_paths)
-    author_args = ("--author", author) if author else ()
-    try:
-        run_git("commit", "-m", message, *author_args)
-    except GitOperationError:
-        run_git("add", "-u")
-        run_git("commit", "-m", message, *author_args)
-    return run_git("rev-parse", "HEAD")
 
 
 def push_branch(branch: str) -> None:
@@ -118,20 +129,48 @@ def merge_base(ref_a: str, ref_b: str) -> str:
     return run_git("merge-base", ref_a, ref_b)
 
 
+def _branch_config(branch: str, key: str) -> str:
+    try:
+        return run_git("config", "--get", f"branch.{branch}.{key}")
+    except GitOperationError:
+        return ""
+
+
+def diff_base_ref(base: str) -> str:
+    """The ref to diff against for a split whose sub-PRs target ``base``.
+
+    Sub-PRs are opened against the remote's copy of ``base``, but the local
+    branch may lag behind it; diffing against the stale local ref would
+    present every upstream commit since as branch work. So when ``base``
+    tracks a remote branch, fetch it and return the remote-tracking ref
+    (e.g. ``origin/main``). A failed fetch (offline) falls back to the
+    tracking ref as last fetched; a branch with no upstream is used as is.
+    """
+    remote = _branch_config(base, "remote")
+    merge_ref = _branch_config(base, "merge")
+    if not remote or remote == "." or not merge_ref.startswith("refs/heads/"):
+        return base
+    tracking = f"refs/remotes/{remote}/{merge_ref.removeprefix('refs/heads/')}"
+    try:
+        run_git("fetch", "--quiet", remote, merge_ref)
+    except GitOperationError as exc:
+        logger.warning(logs.BASE_FETCH_FAILED.format(remote=remote, base=base, detail=exc))
+    if not commit_exists(tracking):
+        return base
+    upstream = tracking.removeprefix("refs/remotes/")
+    counts = run_git("rev-list", "--left-right", "--count", f"{base}...{tracking}").split()
+    ahead, behind = int(counts[0]), int(counts[1])
+    if behind:
+        logger.warning(logs.LOCAL_BASE_BEHIND.format(base=base, upstream=upstream, count=behind))
+    if ahead:
+        logger.warning(logs.LOCAL_BASE_AHEAD.format(base=base, upstream=upstream, count=ahead))
+    return upstream
+
+
 def derive_split_namespace(dev_branch_arg: str) -> str:
     raw = dev_branch_arg.split(":", 1)[1] if ":" in dev_branch_arg else dev_branch_arg.lstrip("#")
     sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", raw)
     return sanitized.strip("-")
-
-
-def create_group_branch(group_id: str, base: str, namespace: str) -> str:
-    branch_name = f"{BRANCH_PREFIX}{namespace}/{group_id}"
-    logger.info(logs.CREATING_BRANCH.format(branch=branch_name, base=base))
-    if branch_exists(branch_name):
-        checkout_branch(base)
-        run_git("branch", "-D", branch_name)
-    checkout_new_branch(branch_name, base)
-    return branch_name
 
 
 def add_worktree(path: str, branch_name: str, start_point: str) -> None:
@@ -158,5 +197,9 @@ def commit_files_in_dir(
         raise GitOperationError("commit_files_in_dir called with no file paths")
     run_git_in_dir(cwd, "add", "-A", "--", *file_paths)
     author_args = ("--author", author) if author else ()
-    run_git_in_dir(cwd, "commit", "-m", message, *author_args)
+    # The content is a subset of commits already accepted on the dev
+    # branch; a pre-commit/commit-msg hook (husky, pre-commit, lint-staged)
+    # run inside the throwaway worktree has no node_modules/venv and can
+    # only fail, so skip it.
+    run_git_in_dir(cwd, "commit", "--no-verify", "-m", message, *author_args)
     return run_git_in_dir(cwd, "rev-parse", "HEAD")
