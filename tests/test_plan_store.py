@@ -146,3 +146,32 @@ class TestPlanStoreCorruptFiles:
         (tmp_path / ".pr-split" / "plan.json").mkdir()
         with pytest.raises(PRSplitError, match="Cannot load split plan"):
             load_plan()
+
+
+class TestPlanStoreSurrogates:
+    def test_raw_diff_with_undecodable_bytes_round_trips(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.constants import Priority
+        from pr_split.plan_store import load_plan, save_plan
+        from pr_split.schemas import PlanFile, SplitPlan
+
+        monkeypatch.chdir(tmp_path)
+        raw = b"--- a/x\n+++ b/x\n@@ -1 +1 @@\n-caf\xe9\n+caf\xe9!\n".decode(
+            "utf-8", errors="surrogateescape"
+        )
+        plan = SplitPlan(
+            dev_branch="dev",
+            base_branch="main",
+            max_loc=400,
+            priority=Priority.ORTHOGONAL,
+            raw_diff=raw,
+        )
+        save_plan(PlanFile(plan=plan))
+
+        loaded = load_plan()
+
+        assert loaded.plan.raw_diff == raw
+        assert loaded.plan.raw_diff.encode("utf-8", errors="surrogateescape").endswith(
+            b"+caf\xe9!\n"
+        )

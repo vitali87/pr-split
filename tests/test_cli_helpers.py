@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -291,6 +292,51 @@ class TestCreateBranchesAndCommitsFailureCleanup:
         assert deleted == {"pr-split/ns/pr-1"}
 
 
+class TestCreateBranchesAndCommitsUnstackedDag:
+    """Without --stack, dependency edges still decide branch start points and PR bases."""
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_dependant_builds_on_and_targets_its_parent(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        groups = [_group("pr-1", "feat: base"), _group("pr-2", "feat: top", ["pr-1"])]
+        records = _create_branches_and_commits(groups, MagicMock(), "main", "base_sha", "ns")
+
+        start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
+        assert start_points == {
+            "pr-split/ns/pr-1": "base_sha",
+            "pr-split/ns/pr-2": "pr-split/ns/pr-1",
+        }
+        assert {r.group_id: r.base_branch for r in records} == {
+            "pr-1": "main",
+            "pr-2": "pr-split/ns/pr-1",
+        }
+
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_independent_groups_all_target_the_base(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        groups = [_group("pr-1", "a"), _group("pr-2", "b")]
+        records = _create_branches_and_commits(groups, MagicMock(), "main", "base_sha", "ns")
+
+        assert {call.args[2] for call in mock_add.call_args_list} == {"base_sha"}
+        assert {r.base_branch for r in records} == {"main"}
+
+
 class TestCreateBranchesAndCommitsStacked:
     def _stacked_groups(self) -> list[Group]:
         return [_group("pr-2", "feat: base"), _group("pr-3", "feat: top", ["pr-2"])]
@@ -330,6 +376,7 @@ class TestCreateBranchesAndCommitsStacked:
         bases = {r.group_id: r.base_branch for r in records}
         assert bases == {"pr-2": "main", "pr-3": "pr-split/ns/pr-2"}
 
+    @pytest.mark.parametrize("stacked", [True, False])
     @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
     @patch("pr_split.cli.materialize_group_files", return_value={})
     @patch("pr_split.cli.remove_worktree")
@@ -340,20 +387,30 @@ class TestCreateBranchesAndCommitsStacked:
         mock_remove: MagicMock,
         mock_mat: MagicMock,
         mock_commit: MagicMock,
+        stacked: bool,
     ) -> None:
         groups = [
             _group("pr-1", "a"),
             _group("pr-2", "b"),
             _group("pr-3", "c", ["pr-1", "pr-2"]),
         ]
+        for path, group in zip(("a.py", "b.py", "c.py"), groups, strict=True):
+            group.assignments = [
+                GroupAssignment(file_path=path, assignment_type=AssignmentType.WHOLE_FILE)
+            ]
         records = _create_branches_and_commits(
-            groups, MagicMock(), "main", "base_sha", "ns", stacked=True
+            groups, MagicMock(), "main", "base_sha", "ns", stacked=stacked
         )
         bases = {r.group_id: r.base_branch for r in records}
         assert bases["pr-3"] == "main"
         start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
         assert start_points["pr-split/ns/pr-3"] == "base_sha"
+        # Built from the merge base, the merge node must carry both parents' files.
+        merge_calls = [call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"]
+        carried = {a.file_path for a in merge_calls[0].args[1].assignments}
+        assert carried == {"a.py", "b.py", "c.py"}
 
+    @pytest.mark.parametrize("stacked", [True, False])
     @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
     @patch("pr_split.cli.materialize_group_files", return_value={})
     @patch("pr_split.cli.remove_worktree")
@@ -364,6 +421,7 @@ class TestCreateBranchesAndCommitsStacked:
         mock_remove: MagicMock,
         mock_mat: MagicMock,
         mock_commit: MagicMock,
+        stacked: bool,
     ) -> None:
         parent = _group("pr-2", "feat: base")
         parent.assignments = [
@@ -382,29 +440,11 @@ class TestCreateBranchesAndCommitsStacked:
             )
         ]
         _create_branches_and_commits(
-            [parent, child], MagicMock(), "main", "base_sha", "ns", stacked=True
+            [parent, child], MagicMock(), "main", "base_sha", "ns", stacked=stacked
         )
         child_calls = [call for call in mock_mat.call_args_list if call.args[1].id == "pr-3"]
         assert child_calls[0].args[1].assignments[0].hunk_indices == [0, 1]
         assert child_calls[0].args[2] == "base_sha"
-
-    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
-    @patch("pr_split.cli.materialize_group_files", return_value={})
-    @patch("pr_split.cli.remove_worktree")
-    @patch("pr_split.cli.add_worktree")
-    def test_flat_mode_unchanged(
-        self,
-        mock_add: MagicMock,
-        mock_remove: MagicMock,
-        mock_mat: MagicMock,
-        mock_commit: MagicMock,
-    ) -> None:
-        records = _create_branches_and_commits(
-            self._stacked_groups(), MagicMock(), "main", "base_sha", "ns"
-        )
-        start_points = {call.args[1]: call.args[2] for call in mock_add.call_args_list}
-        assert set(start_points.values()) == {"base_sha"}
-        assert {r.base_branch for r in records} == {"main"}
 
 
 class TestLinkStacks:
@@ -696,3 +736,135 @@ class TestTransitivePushFailureGating:
         with pytest.raises(PRSplitError):
             _push_and_create_prs(groups, records)
         assert mock_create.call_count == 0
+
+
+class TestWorktreeWritesPreserveCrlf:
+    @patch("pr_split.cli.commit_files_in_dir", return_value="sha1")
+    @patch("pr_split.cli.materialize_group_files", return_value={"c.txt": "a\r\nb\r\n"})
+    @patch("pr_split.cli.remove_worktree")
+    @patch("pr_split.cli.add_worktree")
+    def test_crlf_content_written_verbatim(
+        self,
+        mock_add: MagicMock,
+        mock_remove: MagicMock,
+        mock_mat: MagicMock,
+        mock_commit: MagicMock,
+    ) -> None:
+        written: dict[str, bytes] = {}
+
+        def capture(cwd: str, file_paths: list[str], message: str, **kwargs: object) -> str:
+            for file_path in file_paths:
+                written[file_path] = (Path(cwd) / file_path).read_bytes()
+            return "sha1"
+
+        mock_commit.side_effect = capture
+        # On POSIX write_text only translates "\n" (a no-op), so also assert the
+        # newline="" argument that keeps CRLF intact on Windows.
+        with patch.object(Path, "write_text", autospec=True, side_effect=Path.write_text) as wt:
+            _create_branches_and_commits([_group("pr-1", "t")], MagicMock(), "main", "sha", "ns")
+        assert written["c.txt"] == b"a\r\nb\r\n"
+        content_writes = [c for c in wt.call_args_list if c.args[1] == "a\r\nb\r\n"]
+        assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)
+
+
+class TestPlanProvenance:
+    def _plan(self, **fields: object) -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import SplitPlan
+
+        return SplitPlan(
+            dev_branch="f", base_branch="main", max_loc=400, priority=Priority.ORTHOGONAL, **fields
+        )
+
+    def test_llm_plan_names_provider_and_model_and_warns(self) -> None:
+        from pr_split.cli import _plan_provenance
+
+        line = _plan_provenance(
+            self._plan(partition_strategy="llm", provider="anthropic", model="claude-x")
+        )
+        assert "Planned with llm (anthropic claude-x)" in line
+        assert "may give a different plan" in line
+
+    def test_graph_plan_does_not_warn(self) -> None:
+        from pr_split.cli import _plan_provenance
+
+        line = _plan_provenance(self._plan(partition_strategy="graph"))
+        assert "Planned with graph" in line
+        assert "different plan" not in line
+
+    def test_a_diff_within_max_loc_says_no_backend_ran(self) -> None:
+        from pr_split.cli import _plan_provenance
+        from pr_split.constants import NO_BACKEND_STRATEGY
+
+        line = _plan_provenance(self._plan(partition_strategy=NO_BACKEND_STRATEGY))
+        assert "no backend ran" in line
+        assert "different plan" not in line
+
+    def test_old_plans_without_provenance_still_load(self) -> None:
+        plan = self._plan()
+        assert plan.partition_strategy is None and plan.model is None
+
+
+class TestOversizedGroupsReport:
+    def _sized(self, gid: str, loc: int) -> Group:
+        group = _group(gid, gid)
+        group.estimated_loc = loc
+        return group
+
+    def test_summary_names_count_limit_and_largest(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 120), self._sized("pr-3", 401)]
+        with console.capture() as capture:
+            _report_oversized_groups(groups, 400, {})
+        out = " ".join(capture.get().split())
+        assert "2 of 3 groups exceed --max-loc 400 (largest: pr-1 at 876 LOC)" in out
+
+    def test_single_hunk_group_is_named_as_irreducible(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        big_file = self._sized("pr-1", 734)
+        big_file.assignments = [
+            GroupAssignment(
+                file_path="tests/test_big.py",
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=[0],
+            )
+        ]
+        with console.capture() as capture:
+            _report_oversized_groups([big_file], 400, {"tests/test_big.py": 1})
+        out = " ".join(capture.get().split())
+        assert "pr-1 hold a single hunk each and cannot be split below the limit" in out
+
+    def test_whole_file_assignments_count_the_hunks_they_cover(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        # WHOLE_FILE may list no indices: count what it covers in the parsed diff.
+        new_file = self._sized("pr-1", 734)
+        new_file.assignments = [
+            GroupAssignment(file_path="big.py", assignment_type=AssignmentType.WHOLE_FILE)
+        ]
+        edited = self._sized("pr-2", 600)
+        edited.assignments = [
+            GroupAssignment(
+                file_path="multi.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[0]
+            )
+        ]
+        with console.capture() as capture:
+            _report_oversized_groups([new_file, edited], 400, {"big.py": 1, "multi.py": 3})
+        out = " ".join(capture.get().split())
+        assert "pr-1 hold a single hunk each" in out
+        assert "pr-2 hold" not in out and "pr-1, pr-2" not in out
+
+    def test_nothing_printed_within_the_limit(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        with console.capture() as capture:
+            _report_oversized_groups([self._sized("pr-1", 400)], 400, {})
+        assert capture.get() == ""
+
+    def test_oversized_ids_are_recorded(self) -> None:
+        from pr_split.cli import _oversized_group_ids
+
+        groups = [self._sized("pr-1", 876), self._sized("pr-2", 400)]
+        assert _oversized_group_ids(groups, 400) == ["pr-1"]

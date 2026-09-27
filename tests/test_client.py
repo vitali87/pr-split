@@ -10,6 +10,7 @@ from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import ErrorMsg, LLMError, PRSplitError
+from pr_split.graph import PlanDAG
 from pr_split.planner.client import (
     RawToolOutput,
     _call_anthropic,
@@ -29,6 +30,7 @@ from pr_split.planner.client import (
     plan_split,
 )
 from pr_split.planner.prompts import SPLIT_TOOL_NAME
+from pr_split.planner.validator import validate_plan
 from pr_split.schemas import Group, GroupAssignment
 
 
@@ -290,8 +292,10 @@ diff --git a/a.py b/a.py
 new file mode 100644
 --- /dev/null
 +++ b/a.py
-@@ -0,0 +1 @@
+@@ -0,0 +1,3 @@
 +x
++y
++z
 """
         )
         mock_partition.return_value = [Group(id="pr-1", title="t", description="d")]
@@ -312,10 +316,33 @@ new file mode 100644
         settings = Settings(
             provider=Provider.ANTHROPIC,
             partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=2,
         )
         groups = plan_split(parsed, settings)
         assert len(groups) == 1
         mock_partition.assert_called_once()
+
+    @pytest.mark.parametrize("strategy", list(PartitionStrategy))
+    @patch("pr_split.planner.client._plan_split_with_llm")
+    @patch("pr_split.planner.client.partition_diff")
+    def test_diff_within_max_loc_is_one_group_without_a_backend(
+        self,
+        mock_partition: MagicMock,
+        mock_llm: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        strategy: PartitionStrategy,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-rejected-by-the-server")
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(provider=Provider.ANTHROPIC, partition_strategy=strategy)
+
+        groups = plan_split(parsed, settings)
+
+        mock_llm.assert_not_called()
+        mock_partition.assert_not_called()
+        assert [g.id for g in groups] == ["pr-1"]
+        assert groups[0].estimated_loc == parsed.stats["total_loc"]
+        assert validate_plan(groups, parsed, PlanDAG(groups), settings.max_loc) == []
 
     def test_unsupported_partition_strategy_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -1357,3 +1384,76 @@ class TestMergeChunkGroupsSameFile:
         later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
         (merged,) = _merge_chunk_groups([first], [later])
         assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]
+
+
+class TestSurrogateSafePrompts:
+    @patch("pr_split.planner.client._call_anthropic")
+    def test_call_llm_replaces_surrogates_before_the_request(self, mock_call: MagicMock) -> None:
+        from pr_split.planner.client import _call_llm
+
+        user = b"diff caf\xe9".decode("utf-8", errors="surrogateescape")
+        _call_llm("sys", user, settings=_make_settings())
+        sent_user = mock_call.call_args.args[1]
+        assert "\udce9" not in sent_user
+        assert sent_user == "diff caf\ufffd"
+        sent_user.encode("utf-8")  # must be JSON-serialisable
+
+    @patch("pr_split.planner.client._count_tokens_anthropic", return_value=3)
+    def test_count_tokens_replaces_surrogates(self, mock_count: MagicMock) -> None:
+        from pr_split.planner.client import _count_tokens
+
+        user = b"caf\xe9".decode("utf-8", errors="surrogateescape")
+        assert _count_tokens("sys", user, settings=_make_settings()) == 3
+        mock_count.call_args.args[1].encode("utf-8")
+
+
+class TestClaudeCliProvider:
+    def _completed(self, returncode: int, stdout: str, stderr: str = "") -> object:
+        import subprocess
+
+        return subprocess.CompletedProcess(["claude"], returncode, stdout, stderr)
+
+    def test_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        settings = Settings(provider=Provider.CLAUDE_CLI, partition_strategy=PartitionStrategy.LLM)
+        assert settings.api_key == ""
+        assert settings.model == ""
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_structured_output_is_the_plan(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(
+            0, json.dumps({"result": "", "structured_output": {"groups": _SAMPLE_RAW_GROUPS}})
+        )
+        settings = _make_settings(Provider.CLAUDE_CLI)
+
+        result = _call_llm("the system prompt", "the diff", settings=settings)
+
+        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert cmd[cmd.index("--system-prompt") + 1] == "the system prompt"
+        assert "--json-schema" in cmd
+        assert "--model" not in cmd
+        assert mock_run.call_args.kwargs["input"] == "the diff"
+
+    @patch("pr_split.planner.client.subprocess.run", side_effect=FileNotFoundError())
+    def test_missing_cli_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        with pytest.raises(LLMError, match="Claude Code CLI"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_nonzero_exit_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(1, "", "Not logged in")
+        with pytest.raises(LLMError, match="Not logged in"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_missing_structured_output_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(0, json.dumps({"result": "I cannot do that"}))
+        with pytest.raises(LLMError, match="no structured output"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    def test_tokens_are_estimated_locally(self) -> None:
+        assert (
+            _count_tokens("system", "user text", settings=_make_settings(Provider.CLAUDE_CLI)) > 0
+        )
