@@ -4,12 +4,14 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import anthropic
 import pytest
 
 from pr_split.config import Settings
 from pr_split.constants import AssignmentType, PartitionStrategy, Provider
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import ErrorMsg, LLMError, PRSplitError
+from pr_split.graph import PlanDAG
 from pr_split.planner.client import (
     RawToolOutput,
     _call_anthropic,
@@ -29,6 +31,7 @@ from pr_split.planner.client import (
     plan_split,
 )
 from pr_split.planner.prompts import SPLIT_TOOL_NAME
+from pr_split.planner.validator import validate_plan
 from pr_split.schemas import Group, GroupAssignment
 
 
@@ -165,6 +168,53 @@ class TestParseGroupsEdgeCases:
         raw = RawToolOutput(groups=[])
         assert _parse_groups(raw) == []
 
+    @pytest.mark.parametrize(
+        ("entry", "detail"),
+        [
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "depends_on": [],
+                    "assignments": [],
+                    "estimated_loc": 1,
+                },
+                "KeyError",
+            ),
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "description": "d",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "whole", "hunk_indices": []}
+                    ],
+                    "estimated_loc": 1,
+                },
+                "ValueError",
+            ),
+            (
+                {
+                    "id": "pr-1",
+                    "title": "t",
+                    "description": "d",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "whole_file", "hunk_indices": "0"}
+                    ],
+                    "estimated_loc": 1,
+                },
+                "ValidationError",
+            ),
+        ],
+        ids=["missing-key", "bad-enum", "wrong-type"],
+    )
+    def test_malformed_entry_raises_llm_error(self, entry: dict, detail: str) -> None:
+        raw = RawToolOutput(groups=[entry])
+        with pytest.raises(LLMError, match=f"Failed to parse LLM response: {detail}"):
+            _parse_groups(raw)
+
     def test_preserves_estimated_loc(self) -> None:
         raw = RawToolOutput(
             groups=[
@@ -243,8 +293,10 @@ diff --git a/a.py b/a.py
 new file mode 100644
 --- /dev/null
 +++ b/a.py
-@@ -0,0 +1 @@
+@@ -0,0 +1,3 @@
 +x
++y
++z
 """
         )
         mock_partition.return_value = [Group(id="pr-1", title="t", description="d")]
@@ -265,10 +317,33 @@ new file mode 100644
         settings = Settings(
             provider=Provider.ANTHROPIC,
             partition_strategy=PartitionStrategy.GRAPH,
+            max_loc=2,
         )
         groups = plan_split(parsed, settings)
         assert len(groups) == 1
         mock_partition.assert_called_once()
+
+    @pytest.mark.parametrize("strategy", list(PartitionStrategy))
+    @patch("pr_split.planner.client._plan_split_with_llm")
+    @patch("pr_split.planner.client.partition_diff")
+    def test_diff_within_max_loc_is_one_group_without_a_backend(
+        self,
+        mock_partition: MagicMock,
+        mock_llm: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        strategy: PartitionStrategy,
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-rejected-by-the-server")
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(provider=Provider.ANTHROPIC, partition_strategy=strategy)
+
+        groups = plan_split(parsed, settings)
+
+        mock_llm.assert_not_called()
+        mock_partition.assert_not_called()
+        assert [g.id for g in groups] == ["pr-1"]
+        assert groups[0].estimated_loc == parsed.stats["total_loc"]
+        assert validate_plan(groups, parsed, PlanDAG(groups), settings.max_loc) == []
 
     def test_unsupported_partition_strategy_raises(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
@@ -464,6 +539,147 @@ class TestRefinePlanWithLlm:
         assert len(result) == 2
         mock_call_llm.assert_called_once()
 
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_falls_back_on_malformed_response(
+        self, mock_call_llm, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=3,
+        )
+        # Missing 'description' used to escape as KeyError and abort the split.
+        mock_call_llm.return_value = RawToolOutput(
+            groups=[{"id": "pr-1", "title": "t", "depends_on": [], "assignments": []}]
+        )
+        groups = _undersized_groups()
+        result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+        assert result == groups
+        mock_call_llm.assert_called_once()
+
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_that_drops_hunks_is_rejected(
+        self, mock_call_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=2,
+        )
+        # Only a.py survives: b.py's hunk is gone from the plan.
+        mock_call_llm.return_value = RawToolOutput(
+            groups=[
+                {
+                    "id": "pr-1",
+                    "title": "feat: add a",
+                    "description": "Only a",
+                    "depends_on": [],
+                    "assignments": [
+                        {"file_path": "a.py", "assignment_type": "whole_file", "hunk_indices": [0]}
+                    ],
+                    "estimated_loc": 3,
+                }
+            ]
+        )
+
+        groups = _undersized_groups()
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+
+        assert result is groups
+        assert [g.id for g in result] == ["pr-1", "pr-2"]
+        mock_call_llm.assert_called_once()
+        warning = mock_logger.warning.call_args[0][0]
+        assert "produced an invalid plan" in warning
+        assert "b.py[0] not assigned to any group" in warning
+
+    @pytest.mark.parametrize(
+        ("ids", "deps", "reason"),
+        [
+            (["pr-1", "pr-2"], [["pr-2"], ["pr-1"]], "cycle"),
+            (["pr-1", "pr-2"], [[], ["pr-9"]], "unknown group 'pr-9'"),
+            (["pr-1", "pr-1"], [[], []], "used more than once"),
+        ],
+        ids=["cycle", "unknown-dependency", "duplicate-id"],
+    )
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_with_a_broken_dependency_graph_is_rejected(
+        self,
+        mock_call_llm: MagicMock,
+        monkeypatch: pytest.MonkeyPatch,
+        ids: list[str],
+        deps: list[list[str]],
+        reason: str,
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=2,
+        )
+        mock_call_llm.return_value = RawToolOutput(
+            groups=[
+                {
+                    "id": gid,
+                    "title": f"feat: {path}",
+                    "description": path,
+                    "depends_on": dep,
+                    "assignments": [
+                        {"file_path": path, "assignment_type": "whole_file", "hunk_indices": [0]}
+                    ],
+                    "estimated_loc": 3,
+                }
+                for gid, dep, path in zip(ids, deps, ["a.py", "b.py"], strict=True)
+            ]
+        )
+
+        groups = _undersized_groups()
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+
+        assert result is groups
+        warning = mock_logger.warning.call_args[0][0]
+        assert "produced an invalid plan" in warning
+        assert reason in warning
+
+    @patch("pr_split.planner.client._call_llm")
+    def test_refinement_that_does_not_improve_is_rejected(
+        self, mock_call_llm: MagicMock, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = Settings(
+            partition_strategy=PartitionStrategy.GRAPH,
+            min_loc=5,
+            max_loc=10,
+            max_refinement_iterations=3,
+        )
+        # Same two undersized groups handed straight back.
+        mock_call_llm.return_value = RawToolOutput(
+            groups=_groups_to_raw_dicts(_undersized_groups())  # type: ignore[typeddict-item]
+        )
+
+        groups = _undersized_groups()
+        with patch("pr_split.planner.client.logger") as mock_logger:
+            result = _refine_plan_with_llm(groups, parsed, settings, system="system")
+
+        assert result is groups
+        mock_call_llm.assert_called_once()
+        warning = mock_logger.warning.call_args[0][0]
+        assert "did not reduce violations (2 -> 2)" in warning
+
     def test_no_refinement_when_min_loc_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -546,6 +762,26 @@ class TestCountTokensAnthropic:
         result = _count_tokens_anthropic("sys", "usr", settings=settings)
         assert result == 42
         mock_client.messages.count_tokens.assert_called_once()
+
+    @patch("pr_split.planner.client.anthropic.Anthropic")
+    def test_api_failure_is_an_llm_error(self, mock_cls: MagicMock) -> None:
+        mock_client = mock_cls.return_value
+        mock_client.messages.count_tokens.side_effect = anthropic.APIConnectionError(
+            request=MagicMock()
+        )
+        settings = _make_settings(Provider.ANTHROPIC)
+        with pytest.raises(LLMError, match="Could not count prompt tokens"):
+            _count_tokens_anthropic("sys", "usr", settings=settings)
+
+    @patch("pr_split.planner.client.anthropic.Anthropic")
+    def test_rejected_key_names_the_variable(self, mock_cls: MagicMock) -> None:
+        response = MagicMock(status_code=401, headers={})
+        mock_cls.return_value.messages.count_tokens.side_effect = anthropic.AuthenticationError(
+            "API key is invalid.", response=response, body=None
+        )
+        settings = _make_settings(Provider.ANTHROPIC)
+        with pytest.raises(LLMError, match="ANTHROPIC_API_KEY was rejected"):
+            _count_tokens_anthropic("sys", "usr", settings=settings)
 
 
 # ---------------------------------------------------------------------------
@@ -988,6 +1224,41 @@ class TestPlanSplitWithLlm:
         mock_chunked.assert_called_once()
 
 
+class TestChunkedPlanningSkipsRefinement:
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.planner.client._plan_split_chunked")
+    @patch("pr_split.planner.client._count_tokens", return_value=10**9)
+    def test_no_refinement_call_after_chunking(
+        self, mock_count: MagicMock, mock_chunked: MagicMock, mock_call: MagicMock
+    ) -> None:
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = _make_settings(
+            Provider.ANTHROPIC, max_refinement_iterations=2, min_loc=50, max_loc=100
+        )
+        oversized = Group(id="pr-1", title="t", description="d", estimated_loc=500)
+        mock_chunked.return_value = [oversized]
+
+        result = _plan_split_with_llm(parsed, settings)
+
+        assert result == [oversized]
+        mock_call.assert_not_called()
+
+    @patch("pr_split.planner.client._refine_plan_with_llm")
+    @patch("pr_split.planner.client._call_llm")
+    @patch("pr_split.planner.client._count_tokens", return_value=1)
+    def test_single_shot_planning_still_refines(
+        self, mock_count: MagicMock, mock_call: MagicMock, mock_refine: MagicMock
+    ) -> None:
+        parsed = parse_diff(_TWO_FILE_DIFF)
+        settings = _make_settings(Provider.ANTHROPIC, max_refinement_iterations=2)
+        mock_call.return_value = {"groups": []}
+        mock_refine.return_value = []
+
+        _plan_split_with_llm(parsed, settings)
+
+        mock_refine.assert_called_once()
+
+
 class TestOpenAIIncompleteResponse:
     @patch("pr_split.planner.client.openai.OpenAI")
     def test_incomplete_status_raises(self, mock_cls: MagicMock) -> None:
@@ -1064,3 +1335,178 @@ class TestOpenAIFailedResponse:
         )
         with pytest.raises(LLMError, match="response failed: rate_limit_exceeded"):
             _call_openai("sys", "usr", settings=_make_settings(Provider.OPENAI))
+
+
+class TestMergeChunkGroupsSameFile:
+    def test_same_file_in_later_chunk_is_merged_into_one_assignment(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="f.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[1],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].hunk_indices == [0, 1]
+        assert merged.assignments[0].assignment_type == AssignmentType.PARTIAL_HUNKS
+
+    def test_whole_file_wins_when_merging(self) -> None:
+        partial = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.PARTIAL_HUNKS, hunk_indices=[0]
+        )
+        whole = GroupAssignment(
+            file_path="f.py", assignment_type=AssignmentType.WHOLE_FILE, hunk_indices=[]
+        )
+        first = Group(id="pr-1", title="t", description="d", assignments=[partial])
+        later = Group(id="pr-1", title="t", description="d", assignments=[whole])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert len(merged.assignments) == 1
+        assert merged.assignments[0].assignment_type == AssignmentType.WHOLE_FILE
+        assert merged.assignments[0].hunk_indices == [0]
+
+    def test_other_files_untouched(self) -> None:
+        first = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="a.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[0],
+                )
+            ],
+        )
+        later = Group(
+            id="pr-1",
+            title="t",
+            description="d",
+            assignments=[
+                GroupAssignment(
+                    file_path="b.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[2],
+                )
+            ],
+        )
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("a.py", [0]),
+            ("b.py", [2]),
+        ]
+
+    def test_pre_existing_duplicates_in_accumulated_group_are_kept(self) -> None:
+        def _pa(path: str, hunks: list[int]) -> GroupAssignment:
+            return GroupAssignment(
+                file_path=path,
+                assignment_type=AssignmentType.PARTIAL_HUNKS,
+                hunk_indices=hunks,
+            )
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("g.py", [0])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [
+            ("f.py", [0, 1]),
+            ("g.py", [0]),
+        ]
+
+        first = Group(
+            id="pr-1", title="t", description="d", assignments=[_pa("f.py", [0]), _pa("f.py", [1])]
+        )
+        later = Group(id="pr-1", title="t", description="d", assignments=[_pa("f.py", [2])])
+        (merged,) = _merge_chunk_groups([first], [later])
+        assert [(a.file_path, a.hunk_indices) for a in merged.assignments] == [("f.py", [0, 1, 2])]
+
+
+class TestSurrogateSafePrompts:
+    @patch("pr_split.planner.client._call_anthropic")
+    def test_call_llm_replaces_surrogates_before_the_request(self, mock_call: MagicMock) -> None:
+        from pr_split.planner.client import _call_llm
+
+        user = b"diff caf\xe9".decode("utf-8", errors="surrogateescape")
+        _call_llm("sys", user, settings=_make_settings())
+        sent_user = mock_call.call_args.args[1]
+        assert "\udce9" not in sent_user
+        assert sent_user == "diff caf\ufffd"
+        sent_user.encode("utf-8")  # must be JSON-serialisable
+
+    @patch("pr_split.planner.client._count_tokens_anthropic", return_value=3)
+    def test_count_tokens_replaces_surrogates(self, mock_count: MagicMock) -> None:
+        from pr_split.planner.client import _count_tokens
+
+        user = b"caf\xe9".decode("utf-8", errors="surrogateescape")
+        assert _count_tokens("sys", user, settings=_make_settings()) == 3
+        mock_count.call_args.args[1].encode("utf-8")
+
+
+class TestClaudeCliProvider:
+    def _completed(self, returncode: int, stdout: str, stderr: str = "") -> object:
+        import subprocess
+
+        return subprocess.CompletedProcess(["claude"], returncode, stdout, stderr)
+
+    def test_needs_no_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        settings = Settings(provider=Provider.CLAUDE_CLI, partition_strategy=PartitionStrategy.LLM)
+        assert settings.api_key == ""
+        assert settings.model == ""
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_structured_output_is_the_plan(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(
+            0, json.dumps({"result": "", "structured_output": {"groups": _SAMPLE_RAW_GROUPS}})
+        )
+        settings = _make_settings(Provider.CLAUDE_CLI)
+
+        result = _call_llm("the system prompt", "the diff", settings=settings)
+
+        assert result["groups"] == _SAMPLE_RAW_GROUPS
+        cmd = mock_run.call_args.args[0]
+        assert cmd[:2] == ["claude", "-p"]
+        assert cmd[cmd.index("--system-prompt") + 1] == "the system prompt"
+        assert "--json-schema" in cmd
+        assert "--model" not in cmd
+        assert mock_run.call_args.kwargs["input"] == "the diff"
+
+    @patch("pr_split.planner.client.subprocess.run", side_effect=FileNotFoundError())
+    def test_missing_cli_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        with pytest.raises(LLMError, match="Claude Code CLI"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_nonzero_exit_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(1, "", "Not logged in")
+        with pytest.raises(LLMError, match="Not logged in"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    @patch("pr_split.planner.client.subprocess.run")
+    def test_missing_structured_output_is_an_llm_error(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = self._completed(0, json.dumps({"result": "I cannot do that"}))
+        with pytest.raises(LLMError, match="no structured output"):
+            _call_llm("s", "u", settings=_make_settings(Provider.CLAUDE_CLI))
+
+    def test_tokens_are_estimated_locally(self) -> None:
+        assert (
+            _count_tokens("system", "user text", settings=_make_settings(Provider.CLAUDE_CLI)) > 0
+        )
