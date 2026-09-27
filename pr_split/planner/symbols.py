@@ -90,3 +90,15 @@ def symbol_dependencies(
                 if definer is not None and definer != group.id and name not in own:
                     uses[group.id][definer].add(name)
     return {user: dict(definers) for user, definers in uses.items()}
+
+
+def names_in(lines: list[str]) -> tuple[frozenset[str], frozenset[str]]:
+    """(names these lines define, identifiers they use), for unit-level affinity."""
+    defined = _definitions(lines)
+    used = {
+        name
+        for line in lines
+        for name in _IDENTIFIER.findall(line)
+        if len(name) >= _MIN_NAME_LENGTH and name not in _IGNORED
+    }
+    return frozenset(defined), frozenset(used - defined)
