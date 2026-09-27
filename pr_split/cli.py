@@ -1972,10 +1972,11 @@ def execute(
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
 
-    if plan.stacked:
-        # A kept layer's branch sits on its ancestors' current commits; rebuilding
-        # an ancestor would rewrite the base under the kept layer's open PR, which
-        # would then show the ancestor's changes again. Their PRs are still opened.
+    # Any plan with dependency edges is laid out along its DAG (stacked or not),
+    # so a kept layer's branch sits on its ancestors' current commits; rebuilding
+    # an ancestor would rewrite the base under the kept layer's open PR, which
+    # would then show the ancestor's changes again. Their PRs are still opened.
+    if plan.stacked or any(g.depends_on for g in plan.groups):
         for gid in list(kept_branches):
             for ancestor in dag.ancestors(gid):
                 if ancestor in recorded:

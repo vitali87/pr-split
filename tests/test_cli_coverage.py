@@ -1143,7 +1143,8 @@ class TestExecuteRetriesAfterFailedPush:
         stacked: bool,
     ) -> None:
         """pr-2's PR opened but its parent pr-1's did not: rebuilding pr-1 would
-        rewrite the base under pr-2's open PR, so a stacked resume keeps it."""
+        rewrite the base under pr-2's open PR, so the resume keeps it. A plan
+        with dependencies is laid out along its DAG with or without --stack."""
         plan_file = self._plan_with_one_of_two_prs(["pr-2"])
         plan_file.plan.groups[1].depends_on = ["pr-1"]
         plan_file.plan.stacked = stacked
@@ -1153,7 +1154,7 @@ class TestExecuteRetriesAfterFailedPush:
 
         assert result.exit_code == 0, result.output
         kept = set(mock_create.call_args.kwargs["keep"])
-        assert kept == ({"pr-1", "pr-2"} if stacked else {"pr-2"})
+        assert kept == {"pr-1", "pr-2"}
         # pr-1 still gets its PR opened.
         assert set(mock_push.call_args.kwargs["existing_prs"]) == {"pr-2"}
 
