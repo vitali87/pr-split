@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from pr_split.constants import PLAN_DIR
 from pr_split.exceptions import GitOperationError
 from pr_split.git_ops.branches import (
     add_worktree,
@@ -200,6 +201,44 @@ class TestDeleteBranch:
             delete_branch("pr-split/pr-1")
         mock_git.assert_called_once()
 
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_already_deleted_locally_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        # `pr-split merge` deletes the local branch; cleanup must not fail on it.
+        mock_git.side_effect = [GitOperationError("error: branch 'pr-split/pr-1' not found."), ""]
+        delete_branch("pr-split/pr-1", remote=True)
+        mock_git.assert_any_call("push", "origin", "--delete", "pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_already_deleted_on_origin_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            "",
+            GitOperationError(
+                "error: unable to delete 'pr-split/pr-1': remote ref does not exist"
+            ),
+        ]
+        delete_branch("pr-split/pr-1", remote=True)
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_branch_gone_everywhere_counts_as_deleted(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = [
+            GitOperationError("error: branch 'pr-split/pr-1' not found."),
+            GitOperationError(
+                "error: unable to delete 'pr-split/pr-1': remote ref does not exist"
+            ),
+        ]
+        delete_branch("pr-split/pr-1", remote=True)
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_missing_local_branch_without_remote_is_fine(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = GitOperationError("error: branch 'pr-split/pr-1' not found.")
+        delete_branch("pr-split/pr-1")
+
+    @patch("pr_split.git_ops.branches.run_git")
+    def test_other_remote_failure_still_raises(self, mock_git: MagicMock) -> None:
+        mock_git.side_effect = ["", GitOperationError("fatal: could not read from remote")]
+        with pytest.raises(GitOperationError, match="could not read from remote"):
+            delete_branch("pr-split/pr-1", remote=True)
+
 
 class TestDeriveSplitNamespace:
     def test_simple_branch(self) -> None:
@@ -344,6 +383,85 @@ class TestCommitFilesInDir:
     def test_empty_file_paths_raises(self) -> None:
         with pytest.raises(GitOperationError, match="no file paths"):
             commit_files_in_dir("/tmp/wt", [], "msg")
+
+
+class TestGitLocaleIsPinned:
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_run_git_forces_the_c_locale(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="", stderr=""
+        )
+        run_git("status")
+        env = mock_run.call_args.kwargs["env"]
+        assert env["LC_ALL"] == "C"
+        assert env["LANGUAGE"] == "C"
+
+    @patch("pr_split.git_ops.branches.subprocess.run")
+    def test_run_git_in_dir_forces_the_c_locale(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = subprocess.CompletedProcess(
+            args=["git"], returncode=0, stdout="", stderr=""
+        )
+        run_git_in_dir("/tmp", "status")
+        assert mock_run.call_args.kwargs["env"]["LC_ALL"] == "C"
+
+    def test_localised_git_still_reports_already_deleted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        monkeypatch.chdir(repo)
+        monkeypatch.setenv("LC_ALL", "de_DE.UTF-8")
+        monkeypatch.setenv("LANGUAGE", "de")
+        # never existed: must be treated as already deleted, not as an error
+        delete_branch("pr-split/ns/never")
+
+
+class TestIsWorktreeCleanIgnoresPlanDir:
+    """The check must not trip on pr-split's own `.pr-split/plan.json`."""
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        env = {
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.com",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.com",
+        }
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+        (tmp_path / "src.py").write_text("x = 1\n")
+        plan = tmp_path / PLAN_DIR / "plan.json"
+        plan.parent.mkdir()
+        plan.write_text("{}\n")
+        subprocess.run(["git", "-C", str(tmp_path), "add", "-A"], check=True)
+        subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "init"], check=True)
+        monkeypatch.chdir(tmp_path)
+        return tmp_path
+
+    def test_modified_tracked_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        assert is_worktree_clean() is True
+
+    def test_staged_plan_is_ignored(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        subprocess.run(["git", "add", "-A"], check=True)
+        assert is_worktree_clean() is True
+
+    def test_plan_dir_is_ignored_from_a_subdirectory(
+        self, repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        sub = repo / "pkg"
+        sub.mkdir()
+        monkeypatch.chdir(sub)
+        assert is_worktree_clean() is True
+
+    def test_other_modifications_still_count(self, repo: Path) -> None:
+        (repo / PLAN_DIR / "plan.json").write_text('{"groups": []}\n')
+        (repo / "src.py").write_text("x = 2\n")
+        assert is_worktree_clean() is False
 
 
 def _git_identity(monkeypatch: pytest.MonkeyPatch) -> None:

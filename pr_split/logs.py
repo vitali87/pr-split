@@ -66,6 +66,7 @@ SAVING_PLAN = "Saving plan to {path}"
 PLAN_LOADED = "Loaded plan with {count} groups from {path}"
 CLEANING_BRANCHES = "Cleaning up pr-split branches"
 BRANCH_DELETED = "Deleted branch {branch}"
+BRANCH_ALREADY_GONE = "Branch {branch} was already deleted{where}"
 PR_CLOSED = "Closed PR #{number}"
 PR_ALREADY_DONE = "PR #{number} is already {state}, nothing to close"
 ADOPTED_PR_KEPT = "PR #{number} was adopted, not opened by pr-split; leaving it open"
@@ -148,6 +149,10 @@ CP_SAT_NOT_OPTIMAL = (
     "({units} units, {groups} groups); raise --cp-sat-timeout for a better partition"
 )
 PUSH_RETRY = "Push of {branch} failed (attempt {attempt}): {error}; retrying"
+BASE_ALREADY_MERGED = (
+    "The split's base branch {base} has already merged; run 'pr-split retarget' to move"
+    " the split onto the new base before merging"
+)
 SYMBOL_EDGE_SKIPPED = (
     "Group '{user}' uses {names} from group '{definer}', but depending on it would"
     " create a cycle; the edge was not added"
