@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import time
 
 from loguru import logger
 
@@ -93,9 +94,50 @@ def is_worktree_clean() -> bool:
     return all(line.startswith("??") for line in output.splitlines())
 
 
+# Server-side failures GitHub reports for a push that can succeed on retry.
+_TRANSIENT_PUSH_ERRORS = (
+    "fatal error in commit_refs",
+    "the remote end hung up unexpectedly",
+    "internal server error",
+    "http 500",
+    "http 502",
+    "http 503",
+    "connection reset",
+    "operation timed out",
+)
+_PUSH_ATTEMPTS = 3
+_PUSH_RETRY_DELAY = 2.0
+
+
+def _remote_has_local_head(branch: str) -> bool:
+    try:
+        remote = run_git("ls-remote", "origin", f"refs/heads/{branch}").split()
+        return bool(remote) and remote[0] == run_git("rev-parse", branch)
+    except GitOperationError:
+        return False
+
+
 def push_branch(branch: str) -> None:
     logger.info(logs.PUSHING_BRANCH.format(branch=branch))
-    run_git("push", "--force-with-lease", "-u", "origin", branch)
+    retried = False
+    for attempt in range(1, _PUSH_ATTEMPTS + 1):
+        try:
+            run_git("push", "--force-with-lease", "-u", "origin", branch)
+            return
+        except GitOperationError as exc:
+            transient = any(marker in str(exc).lower() for marker in _TRANSIENT_PUSH_ERRORS)
+            # A push reported as failed (hung-up remote, timeout) may still have
+            # landed; the retry is then rejected as a stale lease although the
+            # branch is already on the remote.
+            if retried and not transient and _remote_has_local_head(branch):
+                return
+            if not transient or attempt == _PUSH_ATTEMPTS:
+                raise
+            retried = True
+            logger.warning(
+                logs.PUSH_RETRY.format(branch=branch, attempt=attempt, error=str(exc).strip())
+            )
+            time.sleep(_PUSH_RETRY_DELAY * attempt)
 
 
 _LOCAL_BRANCH_MISSING = "not found"
