@@ -108,6 +108,91 @@ class TestPlanStoreJson:
         assert raw["plan"]["strict_loc_bounds"] is True
 
 
+class TestPlanStoreCorruptFiles:
+    @pytest.mark.parametrize(
+        "content",
+        [
+            pytest.param("", id="empty"),
+            pytest.param("{not json", id="not-json"),
+            pytest.param('{"plan": {"dev_branch": "x"}}', id="missing-fields"),
+            pytest.param('{"plan": {"groups": []}, "git_state": {}}', id="old-schema"),
+        ],
+    )
+    def test_unreadable_plan_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        plan_dir = tmp_path / ".pr-split"
+        plan_dir.mkdir()
+        (plan_dir / "plan.json").write_text(content)
+        with pytest.raises(PRSplitError, match="Cannot load split plan") as excinfo:
+            load_plan()
+        assert "pr-split split" in str(excinfo.value)
+
+    def test_invalid_utf8_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").write_bytes(b'{"plan": "\xff\xfe"}')
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
+    def test_read_error_raises_pr_split_error(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".pr-split").mkdir()
+        (tmp_path / ".pr-split" / "plan.json").mkdir()
+        with pytest.raises(PRSplitError, match="Cannot load split plan"):
+            load_plan()
+
+
+class TestPlanPathsResolveAgainstTheRepoRoot:
+    def _repo(self, tmp_path: Path) -> Path:
+        import subprocess
+
+        repo = tmp_path / "repo"
+        (repo / "src").mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=repo, check=True)
+        return repo
+
+    def test_plan_saved_from_a_subdirectory_is_found_from_the_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.plan_store import plan_path
+
+        repo = self._repo(tmp_path)
+        monkeypatch.chdir(repo / "src")
+        save_plan(_make_plan_file())
+        assert (repo / ".pr-split" / "plan.json").exists()
+        assert not (repo / "src" / ".pr-split").exists()
+        assert plan_path() == (repo / ".pr-split" / "plan.json").resolve()
+
+        monkeypatch.chdir(repo)
+        assert plan_exists()
+        assert load_plan().plan.dev_branch == "feat/big"
+
+    def test_outside_a_repository_the_cwd_is_used(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.plan_store import plan_path
+
+        monkeypatch.chdir(tmp_path)
+        assert plan_path() == tmp_path / ".pr-split" / "plan.json"
+
+    def test_template_is_read_from_the_repo_root(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.cli import _pr_template_path
+
+        repo = self._repo(tmp_path)
+        (repo / ".pr-split").mkdir()
+        (repo / ".pr-split" / "template.md").write_text("# {title}")
+        monkeypatch.chdir(repo / "src")
+        assert _pr_template_path().read_text() == "# {title}"
+
+
 class TestPlanStoreSurrogates:
     def test_raw_diff_with_undecodable_bytes_round_trips(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
