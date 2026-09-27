@@ -30,6 +30,7 @@ from .constants import (
     DEFAULT_MAX_REFINEMENT_ITERATIONS,
     DEFAULT_MIN_LOC,
     DEFAULT_STRICT_LOC_BOUNDS,
+    NO_BACKEND_STRATEGY,
     PLAN_DIR,
     PLAN_FILE,
     AssignmentType,
@@ -221,6 +222,21 @@ def _handle_loc_bound_warnings(warnings: list[str], *, strict_loc_bounds: bool) 
 
     for warning in warnings:
         logger.warning(warning)
+
+
+def _plan_provenance(plan: SplitPlan) -> str:
+    """One line naming how the plan was made; llm and cp_sat plans vary run to run."""
+    how = plan.partition_strategy or "unknown"
+    if plan.provider:
+        how += f" ({plan.provider}{' ' + plan.model if plan.model else ''})"
+    if plan.partition_strategy == NO_BACKEND_STRATEGY:
+        return "[dim]Kept as one group: the diff is within --max-loc, so no backend ran.[/dim]"
+    note = (
+        ""
+        if plan.partition_strategy == PartitionStrategy.GRAPH.value
+        else "; re-running may give a different plan, so keep the saved plan file"
+    )
+    return f"[dim]Planned with {escape(how)}{note}.[/dim]"
 
 
 def _oversized_group_ids(groups: list[Group], max_loc: int) -> list[str]:
@@ -1378,6 +1394,8 @@ def split(
 
     merge_base_ref = merge_base(diff_base, dev_branch)
 
+    backend_ran = parsed_diff.stats["total_loc"] > settings.max_loc
+    llm_ran = backend_ran and settings.partition_strategy is PartitionStrategy.LLM
     split_plan = SplitPlan(
         dev_branch=dev_branch,
         base_branch=base,
@@ -1393,8 +1411,16 @@ def split(
         merge_base_sha=merge_base_ref,
         dev_branch_arg=dev_branch_arg,
         raw_diff=raw_diff,
+        # A diff within --max-loc is kept as one group without any backend.
+        partition_strategy=(
+            settings.partition_strategy.value if backend_ran else NO_BACKEND_STRATEGY
+        ),
+        chunk_strategy=settings.chunk_strategy.value,
+        provider=settings.provider.value if llm_ran else None,
+        model=settings.model if llm_ran else None,
         oversized_groups=_oversized_group_ids(groups, settings.max_loc),
     )
+    console.print(_plan_provenance(split_plan))
 
     if dry_run:
         save_plan(PlanFile(plan=split_plan, git_state=GitState(branches=[], prs=[])))

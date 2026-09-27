@@ -741,6 +741,44 @@ class TestWorktreeWritesPreserveCrlf:
         assert content_writes and all(c.kwargs.get("newline") == "" for c in content_writes)
 
 
+class TestPlanProvenance:
+    def _plan(self, **fields: object) -> object:
+        from pr_split.constants import Priority
+        from pr_split.schemas import SplitPlan
+
+        return SplitPlan(
+            dev_branch="f", base_branch="main", max_loc=400, priority=Priority.ORTHOGONAL, **fields
+        )
+
+    def test_llm_plan_names_provider_and_model_and_warns(self) -> None:
+        from pr_split.cli import _plan_provenance
+
+        line = _plan_provenance(
+            self._plan(partition_strategy="llm", provider="anthropic", model="claude-x")
+        )
+        assert "Planned with llm (anthropic claude-x)" in line
+        assert "may give a different plan" in line
+
+    def test_graph_plan_does_not_warn(self) -> None:
+        from pr_split.cli import _plan_provenance
+
+        line = _plan_provenance(self._plan(partition_strategy="graph"))
+        assert "Planned with graph" in line
+        assert "different plan" not in line
+
+    def test_a_diff_within_max_loc_says_no_backend_ran(self) -> None:
+        from pr_split.cli import _plan_provenance
+        from pr_split.constants import NO_BACKEND_STRATEGY
+
+        line = _plan_provenance(self._plan(partition_strategy=NO_BACKEND_STRATEGY))
+        assert "no backend ran" in line
+        assert "different plan" not in line
+
+    def test_old_plans_without_provenance_still_load(self) -> None:
+        plan = self._plan()
+        assert plan.partition_strategy is None and plan.model is None
+
+
 class TestOversizedGroupsReport:
     def _sized(self, gid: str, loc: int) -> Group:
         group = _group(gid, gid)
