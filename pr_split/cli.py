@@ -1619,6 +1619,8 @@ def adopt(
     if len(set(branches)) != len(branches):
         console.print("[red]Each branch may appear only once.[/red]")
         raise typer.Exit(1)
+    # The adopted stack's plan is filed under its top branch, like a split's dev branch.
+    select_plan(branches[-1])
     if plan_exists():
         existing = _load_plan_or_exit()
         if existing.git_state.branches or existing.git_state.prs:
