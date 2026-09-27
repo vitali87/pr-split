@@ -1175,6 +1175,11 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
             )
 
 
+def _is_fork_ref(dev_branch: str) -> bool:
+    """True for the PR-number (`#42`) and `user:branch` argument forms."""
+    return dev_branch.lstrip("#").isdigit() or ":" in dev_branch
+
+
 def _split_settings(
     partition_strategy: PartitionStrategy | None,
     build: Callable[[PartitionStrategy], Settings],
@@ -1201,11 +1206,6 @@ def _split_settings(
         )
         logger.warning(logs.LLM_UNAVAILABLE_USING_GRAPH.format(reason=reason))
         return settings
-
-
-def _is_fork_ref(dev_branch: str) -> bool:
-    """True for the PR-number (`#42`) and `user:branch` argument forms."""
-    return dev_branch.lstrip("#").isdigit() or ":" in dev_branch
 
 
 def _resolve_fork_ref(dev_branch: str) -> ForkPRInfo | None:
