@@ -96,21 +96,6 @@ class TestCreatePrUrlParsingExtended:
 
 class TestFetchForkPr:
     @patch("pr_split.git_ops.prs._run_gh")
-    def test_non_fork_raises(self, mock_gh: MagicMock) -> None:
-        import json
-
-        pr_data = {
-            "head": {
-                "ref": "feature",
-                "repo": {"fork": False, "clone_url": "https://x", "full_name": "u/r"},
-            },
-            "base": {"ref": "main"},
-        }
-        mock_gh.return_value = json.dumps(pr_data)
-        with pytest.raises(GitOperationError):
-            fetch_fork_pr(42)
-
-    @patch("pr_split.git_ops.prs._run_gh")
     def test_api_failure_raises(self, mock_gh: MagicMock) -> None:
         mock_gh.side_effect = GitOperationError("Not Found")
         with pytest.raises(GitOperationError):

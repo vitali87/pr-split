@@ -54,6 +54,9 @@ class SplitPlan(BaseModel):
     max_loc: int
     strict_loc_bounds: bool = False
     stacked: bool = False
+    # --max-loc when the split cut oversized new files into pieces (stacked
+    # splits only); raw_diff must be re-parsed with it to match the hunk indices.
+    split_new_files_over: int | None = None
     draft: bool = False
     priority: Priority
     groups: list[Group] = Field(default_factory=list)
@@ -61,6 +64,8 @@ class SplitPlan(BaseModel):
     merge_base_sha: str | None = None
     dev_branch_arg: str | None = None
     raw_diff: str | None = None
+    # Groups whose LOC exceeded max_loc when the plan was saved.
+    oversized_groups: list[str] = Field(default_factory=list)
 
 
 class BranchRecord(BaseModel):

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import subprocess
 from typing import TypedDict
+from urllib.parse import urlsplit
 
 import anthropic
 import openai
 import tiktoken
 from anthropic.types.beta import BetaToolUseBlock
 from loguru import logger
+from openai.types.chat import ChatCompletionFunctionToolParam
 
 from .. import logs
 from ..config import Settings
@@ -42,6 +46,7 @@ from .prompts import (
     build_system_prompt,
     build_user_prompt,
 )
+from .repair import repair_plan
 from .scoring import score_plan
 from .validator import detect_loc_bound_violations, validate_coverage, validate_no_conflicts
 
@@ -49,6 +54,15 @@ _ANTHROPIC_TOOL_DEF = anthropic.types.ToolParam(
     name=SPLIT_TOOL_NAME,
     description="Propose a plan to split the diff into groups",
     input_schema=SPLIT_TOOL_SCHEMA,
+)
+
+_CHAT_TOOL_DEF = ChatCompletionFunctionToolParam(
+    type="function",
+    function={
+        "name": SPLIT_TOOL_NAME,
+        "description": "Propose a plan to split the diff into groups",
+        "parameters": SPLIT_TOOL_SCHEMA,
+    },
 )
 
 _OPENAI_TOOL_DEF = {
@@ -108,12 +122,28 @@ def _count_tokens_openai(texts: list[str], *, model: str) -> int:
     return sum(len(enc.encode(t)) for t in texts)
 
 
+def _utf8_safe(text: str) -> str:
+    """Replace surrogate-escaped bytes so the text can be sent as JSON.
+
+    Diff text keeps undecodable bytes as surrogates so files round-trip on
+    disk; the HTTP clients encode request bodies as strict UTF-8, so the
+    prompt copy gets U+FFFD instead.
+    """
+    return text.encode("utf-8", errors="surrogateescape").decode("utf-8", errors="replace")
+
+
 def _count_tokens(system: str, user: str, *, settings: Settings) -> int:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _count_tokens_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _count_tokens_openai([system, user], model=settings.model)
+        case Provider.CLAUDE_CLI | Provider.LOCAL:
+            # Neither the CLI nor a local server has a count endpoint, and
+            # tokenizers differ per model; this estimate only decides whether
+            # to chunk.
+            return _count_tokens_openai([system, user], model="")
 
 
 def _call_anthropic(system: str, user: str, *, settings: Settings) -> RawToolOutput:
@@ -182,12 +212,174 @@ def _call_openai(system: str, user: str, *, settings: Settings) -> RawToolOutput
     raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no function_call in response output"))
 
 
+_CLAUDE_CLI_TIMEOUT_SECONDS = 1800
+
+
+def _call_claude_cli(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    """Plan through `claude -p`, which uses the CLI's login instead of an API key.
+
+    The schema-validated result comes back under ``structured_output``; the
+    diff goes in on stdin because it can exceed the argument-length limit.
+    """
+    cmd = [
+        "claude",
+        "-p",
+        "--output-format",
+        "json",
+        "--json-schema",
+        json.dumps(SPLIT_TOOL_SCHEMA),
+        "--system-prompt",
+        system,
+        "--no-session-persistence",
+        "--permission-mode",
+        "dontAsk",
+        "--allowedTools",
+        "",
+    ]
+    if settings.model:
+        cmd += ["--model", settings.model]
+    try:
+        result = subprocess.run(
+            cmd,
+            input=user,
+            capture_output=True,
+            text=True,
+            timeout=_CLAUDE_CLI_TIMEOUT_SECONDS,
+        )
+    except FileNotFoundError as exc:
+        raise LLMError(ErrorMsg.CLAUDE_CLI_NOT_FOUND()) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p timed out after {exc.timeout}s")
+        ) from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()[:500]
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p failed: {detail}"))
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p output: {exc}")) from exc
+    structured = data.get("structured_output") if isinstance(data, dict) else None
+    if not isinstance(structured, dict):
+        detail = str(data.get("result", ""))[:300] if isinstance(data, dict) else ""
+        raise LLMError(
+            ErrorMsg.LLM_PARSE_ERROR(detail=f"claude -p returned no structured output {detail}")
+        )
+    return RawToolOutput(groups=_extract_raw_output(structured))
+
+
+_LOCAL_TIMEOUT_SECONDS = 1800
+
+
+def _json_from_text(text: str) -> dict[str, object] | None:
+    """Pull the plan object out of a text reply, fenced or bare.
+
+    Small local models often answer with the tool arguments as plain JSON
+    instead of a tool call, even when the call is forced.
+    """
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(text[start : end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # Some models write the call itself: {"name": ..., "arguments": {...}}.
+    for key in ("arguments", "parameters"):
+        inner = parsed.get(key)
+        if "groups" not in parsed and isinstance(inner, dict):
+            return inner
+    return parsed
+
+
+_warned_remote_hosts: set[str] = set()
+
+
+def _is_loopback(host: str) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _warn_if_off_machine(base_url: str) -> None:
+    """The local provider promises the diff stays on this machine; say so when it will not."""
+    host = urlsplit(base_url).hostname or ""
+    if not _is_loopback(host) and host not in _warned_remote_hosts:
+        _warned_remote_hosts.add(host)
+        logger.warning(logs.LOCAL_SERVER_OFF_MACHINE.format(host=host or base_url))
+
+
+def _call_local(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    """Plan through an OpenAI-compatible chat-completions server (Ollama, llama.cpp, vLLM).
+
+    Temperature 0 keeps the plan repeatable for the same diff.
+    """
+    _warn_if_off_machine(settings.local_base_url)
+    client = openai.OpenAI(
+        base_url=settings.local_base_url,
+        api_key=settings.api_key,
+        timeout=_LOCAL_TIMEOUT_SECONDS,
+    )
+    try:
+        response = client.chat.completions.create(
+            model=settings.model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            tools=[_CHAT_TOOL_DEF],
+            tool_choice={"type": "function", "function": {"name": SPLIT_TOOL_NAME}},
+            temperature=0,
+            max_tokens=settings.max_output_tokens,
+        )
+    except openai.APIConnectionError as exc:
+        raise LLMError(
+            ErrorMsg.LOCAL_SERVER_UNREACHABLE(url=settings.local_base_url, detail=exc)
+        ) from exc
+    except openai.APIError as exc:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail=str(exc))) from exc
+    if not response.choices:
+        raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no choices in response"))
+    choice = response.choices[0]
+    if choice.finish_reason == "length":
+        logger.warning(
+            logs.LLM_OUTPUT_INCOMPLETE.format(status="incomplete", reason=choice.finish_reason)
+        )
+        raise LLMError(ErrorMsg.LLM_OUTPUT_TRUNCATED(detail="finish_reason=length"))
+    message = choice.message
+    for call in message.tool_calls or []:
+        function = getattr(call, "function", None)
+        if function is None or function.name != SPLIT_TOOL_NAME:
+            continue
+        try:
+            parsed = json.loads(function.arguments)
+        except json.JSONDecodeError as exc:
+            raise LLMError(
+                ErrorMsg.LLM_PARSE_ERROR(detail=f"failed to parse tool arguments: {exc}")
+            ) from exc
+        return RawToolOutput(groups=_extract_raw_output(parsed))
+    parsed_text = _json_from_text(message.content or "")
+    if parsed_text is not None:
+        return RawToolOutput(groups=_extract_raw_output(parsed_text))
+    raise LLMError(ErrorMsg.LLM_PARSE_ERROR(detail="no tool call or JSON plan in response"))
+
+
 def _call_llm(system: str, user: str, *, settings: Settings) -> RawToolOutput:
+    system, user = _utf8_safe(system), _utf8_safe(user)
     match settings.provider:
         case Provider.ANTHROPIC:
             return _call_anthropic(system, user, settings=settings)
         case Provider.OPENAI:
             return _call_openai(system, user, settings=settings)
+        case Provider.CLAUDE_CLI:
+            return _call_claude_cli(system, user, settings=settings)
+        case Provider.LOCAL:
+            return _call_local(system, user, settings=settings)
 
 
 def _call_chunk_with_retry(
@@ -299,7 +491,18 @@ def _plan_split_chunked(
 ) -> list[Group]:
     overhead = _count_tokens(system, ".", settings=settings)
     chunk_limit = int(settings.max_context_tokens * CHUNK_TARGET_RATIO)
-    diff_budget = chunk_limit - overhead - MAX_OUTPUT_TOKENS
+    diff_budget = chunk_limit - overhead - settings.max_output_tokens
+    if diff_budget <= 0:
+        # Otherwise the chunker reports the first hunk as too large, which
+        # hides that the configured window leaves no room for any diff.
+        raise PRSplitError(
+            ErrorMsg.NO_DIFF_BUDGET(
+                budget=diff_budget,
+                context=settings.max_context_tokens,
+                output=settings.max_output_tokens,
+                overhead=overhead,
+            )
+        )
     diff_chars = len(parsed_diff.raw_diff)
     token_ratio = (full_token_count - overhead) / diff_chars if diff_chars > 0 else 0.25
 
@@ -365,8 +568,7 @@ def _plan_split_chunked(
     auto_assigned = assign_uncovered_hunks(accumulated, parsed_diff)
     if auto_assigned:
         logger.warning(logs.UNCOVERED_HUNKS_FIXED.format(count=auto_assigned))
-    recompute_estimated_loc(accumulated, parsed_diff)
-    return accumulated
+    return repair_plan(accumulated, parsed_diff)
 
 
 def _groups_to_raw_dicts(groups: list[Group]) -> list[dict[str, object]]:
@@ -480,7 +682,7 @@ def _plan_split_with_llm(
 
     logger.info(logs.COUNTING_TOKENS.format(model=settings.model))
     token_count = _count_tokens(system, user, settings=settings)
-    effective_limit = settings.max_context_tokens - MAX_OUTPUT_TOKENS
+    effective_limit = settings.max_context_tokens - settings.max_output_tokens
     logger.info(logs.TOKEN_COUNT.format(tokens=token_count, limit=effective_limit))
 
     if token_count > effective_limit:
@@ -498,24 +700,51 @@ def _plan_split_with_llm(
 
     logger.info(logs.SENDING_TO_LLM.format(model=settings.model))
     raw = _call_llm(system=system, user=user, settings=settings)
-    groups = _parse_groups(raw)
-    recompute_estimated_loc(groups, parsed_diff)
+    groups = repair_plan(_parse_groups(raw), parsed_diff)
     logger.info(logs.LLM_RESPONSE_RECEIVED.format(count=len(groups)))
     return _refine_plan_with_llm(groups, parsed_diff, settings, system)
+
+
+def _single_group_plan(parsed_diff: ParsedDiff) -> list[Group]:
+    """One group holding every hunk: the plan for a diff that needs no split."""
+    group = Group(
+        id="pr-1",
+        title="review all changes",
+        description="The whole diff fits within --max-loc, so it is kept as a single PR.",
+        assignments=[
+            GroupAssignment(
+                file_path=pf.path,
+                assignment_type=AssignmentType.WHOLE_FILE,
+                hunk_indices=list(range(len(pf))),
+            )
+            for pf in parsed_diff.patch_set
+        ],
+    )
+    recompute_estimated_loc([group], parsed_diff)
+    return [group]
 
 
 def plan_split(
     parsed_diff: ParsedDiff,
     settings: Settings,
 ) -> list[Group]:
+    if settings.partition_strategy not in (
+        PartitionStrategy.LLM,
+        PartitionStrategy.GRAPH,
+        PartitionStrategy.CP_SAT,
+    ):
+        raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
+    total_loc = parsed_diff.stats["total_loc"]
+    if total_loc <= settings.max_loc:
+        # Nothing to split: no backend (and no LLM call) is needed.
+        logger.info(logs.DIFF_WITHIN_MAX_LOC.format(loc=total_loc, max_loc=settings.max_loc))
+        return _single_group_plan(parsed_diff)
+
     logger.info(logs.PLANNING_WITH_BACKEND.format(backend=settings.partition_strategy))
-    match settings.partition_strategy:
-        case PartitionStrategy.LLM:
-            groups = _plan_split_with_llm(parsed_diff, settings)
-        case PartitionStrategy.GRAPH | PartitionStrategy.CP_SAT:
-            groups = partition_diff(parsed_diff, settings)
-        case _:
-            raise PRSplitError(f"Unsupported partition strategy '{settings.partition_strategy}'")
+    if settings.partition_strategy is PartitionStrategy.LLM:
+        groups = _plan_split_with_llm(parsed_diff, settings)
+    else:
+        groups = partition_diff(parsed_diff, settings)
 
     metrics = score_plan(groups, settings.max_loc, settings.min_loc)
     logger.info(
