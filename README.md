@@ -24,21 +24,23 @@ Vibe coding with AI assistants can produce massive PRs that no one wants to revi
 
 ## How it works
 
-`pr-split` takes a large pull request (local branch, fork PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
+`pr-split` takes a large pull request (local branch, PR number, or `user:branch`), sends the diff to an LLM for analysis, and produces a split plan: a set of smaller, focused PRs arranged in a dependency DAG. Each sub-PR gets its own branch, commit, and GitHub PR targeting the correct base.
 
 <img src="pr-split.png" alt="pr-split system design" width="100%">
 
 ## Installation
 
+pr-split is not published on PyPI; install it from this repository.
+
 ```bash
 # With uv (recommended)
-uv tool install pr-split
+uv tool install "git+https://github.com/vitali87/pr-split"
 
 # With pip
-pip install pr-split
+pip install "git+https://github.com/vitali87/pr-split"
 
 # With the optional CP-SAT partitioning backend
-uv tool install "pr-split[cp-sat]"
+uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"
 ```
 
 ## Prerequisites
@@ -56,7 +58,9 @@ uv tool install "pr-split[cp-sat]"
 pr-split split feature-branch --base main
 ```
 
-### Split a fork PR by number
+### Split a PR by number
+
+Works for same-repo and fork PRs: the PR's head (`refs/pull/<N>/head`) is fetched from the repository `gh` resolves, through `origin` when that is the same repository, and its base branch is used.
 
 ```bash
 pr-split split '#42' --base main
@@ -310,7 +314,7 @@ jobs:
 - **Chunking**: for diffs that exceed the model context window, `dynamic_programming` chooses chunk boundaries to avoid splitting the same file when possible. `greedy` keeps the previous first-fit behavior.
 - **Partitioning**: `llm` preserves the original semantic planner, `graph` uses deterministic affinity-based grouping, and `cp_sat` uses an optimization model to balance group count, LOC, and cohesion.
 
-The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat]"`.
+The `cp_sat` backend requires the optional [`ortools`](https://developers.google.com/optimization) package. Install it via the `cp-sat` extra: `uv tool install "pr-split[cp-sat] @ git+https://github.com/vitali87/pr-split"`.
 
 ### Local models
 
