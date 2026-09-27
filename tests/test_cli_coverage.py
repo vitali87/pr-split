@@ -341,6 +341,95 @@ class TestBuildPrBodyOsError:
             _build_pr_body(group, [group])
 
 
+class TestPrTemplateEarlyValidation:
+    def _use_template(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+        template_file = tmp_path / "template.md"
+        template_file.write_text(text, encoding="utf-8")
+        monkeypatch.setattr("pr_split.cli._pr_template_path", lambda: template_file)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["{title.nope}", "{added[0]}", "{unknown}", "{title", "{0}"],
+    )
+    def test_bad_placeholders_are_friendly_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, text: str
+    ) -> None:
+        from pr_split.cli import validate_pr_template
+
+        self._use_template(tmp_path, monkeypatch, text)
+        with pytest.raises(PRSplitError, match="Invalid PR template"):
+            validate_pr_template()
+        group = _group("pr-1", "t", files=["a.py"])
+        with pytest.raises(PRSplitError, match="Invalid PR template"):
+            _build_pr_body(group, [group])
+
+    def test_valid_template_passes_and_renders(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pr_split.cli import validate_pr_template
+
+        self._use_template(tmp_path, monkeypatch, "# {title}\n\n{files}\n\n{{literal}} {loc}")
+        validate_pr_template()
+        group = _group("pr-1", "t", files=["a.py"])
+        body = _build_pr_body(group, [group])
+        assert body.startswith("# t\n\n- `a.py`")
+        assert "{literal} 15" in body
+
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    def test_split_inputs_reject_a_bad_template_before_planning(
+        self,
+        mock_be: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from pr_split.cli import console
+
+        self._use_template(tmp_path, monkeypatch, "{title.nope}")
+        with console.capture() as capture, pytest.raises(typer.Exit):
+            _validate_inputs("feature", "main")
+        assert "Invalid PR template" in " ".join(capture.get().split())
+        # a dry run never opens PRs, so the template is not consulted
+        _validate_inputs("feature", "main", dry_run=True)
+
+    @patch("pr_split.cli._create_branches_and_commits")
+    @patch("pr_split.cli.typer.confirm", return_value=True)
+    @patch("pr_split.cli.check_gh_auth", return_value=True)
+    @patch("pr_split.cli.is_worktree_clean", return_value=True)
+    @patch("pr_split.cli.commit_exists", return_value=True)
+    @patch("pr_split.cli.branch_exists", return_value=True)
+    @patch("pr_split.cli.load_plan")
+    @patch("pr_split.cli.plan_exists", return_value=True)
+    def test_execute_rejects_a_bad_template_before_creating_branches(
+        self,
+        mock_pe: MagicMock,
+        mock_load: MagicMock,
+        mock_be: MagicMock,
+        mock_commit: MagicMock,
+        mock_clean: MagicMock,
+        mock_auth: MagicMock,
+        mock_confirm: MagicMock,
+        mock_create: MagicMock,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._use_template(tmp_path, monkeypatch, "{added[0]}")
+        mock_plan_file = MagicMock()
+        mock_plan_file.git_state.branches = []
+        mock_plan_file.git_state.prs = []
+        mock_plan_file.plan.raw_diff = "some diff"
+        mock_plan_file.plan.merge_base_sha = "abc123"
+        mock_load.return_value = mock_plan_file
+        result = runner.invoke(app, ["execute"])
+        assert result.exit_code == 1
+        assert "Invalid PR template" in " ".join(result.output.split())
+        mock_confirm.assert_not_called()
+        mock_create.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # _send_webhook
 # ---------------------------------------------------------------------------
@@ -1362,6 +1451,26 @@ class TestRichEscapingOfMergeSummary:
         assert "Merged (1): [pr-1]" in flat
         assert "Skipped (1): [pr-2] (draft)" in flat
         assert "Failed (1): [pr-3]" in flat
+
+
+class TestPrBodyFileListCap:
+    def test_long_file_lists_are_summarised(self) -> None:
+        from pr_split.cli import _PR_BODY_FILE_LIST_LIMIT, _build_pr_body
+
+        n = 2000
+        g = _group("pr-1", "mass rename", files=[f"pkg/mod_{i}/handler.py" for i in range(n)])
+        body = _build_pr_body(g, [g])
+        assert body.count("- `pkg/") == _PR_BODY_FILE_LIST_LIMIT
+        assert f"… and {n - _PR_BODY_FILE_LIST_LIMIT} more files" in body
+        assert len(body) < 65_536
+
+    def test_short_file_lists_are_complete(self) -> None:
+        from pr_split.cli import _build_pr_body
+
+        g = _group("pr-1", "t", files=["a.py", "b.py"])
+        body = _build_pr_body(g, [g])
+        assert "- `a.py`\n- `b.py`" in body
+        assert "more files" not in body
 
 
 class TestExecuteRetriesAfterFailedPush:

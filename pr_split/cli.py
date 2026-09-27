@@ -177,6 +177,14 @@ def _render_dag_markdown(groups: list[Group], current_id: str) -> str:
     return f"## Dependency graph\n\nMerge in this order:\n\n```\n{tree_block}\n```"
 
 
+def _check_pr_template() -> None:
+    try:
+        validate_pr_template()
+    except PRSplitError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+
 def _require_local_branch(base: str) -> None:
     """Exit unless ``base`` names a local branch head.
 
@@ -234,6 +242,8 @@ def _validate_inputs(
     if not dry_run and not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    if not dry_run:
+        _check_pr_template()
     if not dry_run and stacked:
         _require_gh_stack()
 
@@ -560,13 +570,72 @@ def _pr_template_path() -> Path:
     return plan_dir() / "template.md"
 
 
+# GitHub rejects PR bodies over 65 536 characters; a group holding thousands
+# of files (mass rename, formatter run) blows past that with its file list
+# alone, and the failure only surfaced after every branch had been pushed.
+_PR_BODY_FILE_LIST_LIMIT = 200
+
+
+def _format_file_list(files: list[str]) -> str:
+    shown = files[:_PR_BODY_FILE_LIST_LIMIT]
+    lines = [f"- `{f}`" for f in shown]
+    if len(files) > len(shown):
+        lines.append(f"- … and {len(files) - len(shown)} more files")
+    return "\n".join(lines)
+
+
+_PR_TEMPLATE_PLACEHOLDERS = (
+    "description",
+    "files",
+    "added",
+    "removed",
+    "loc",
+    "dependencies",
+    "dag",
+    "id",
+    "title",
+)
+
+
+def _render_pr_template(template_vars: dict[str, object]) -> str:
+    template_path = _pr_template_path()
+    try:
+        template = template_path.read_text(encoding="utf-8")
+        return template.format(**template_vars)
+    except (KeyError, ValueError, IndexError, AttributeError, TypeError) as exc:
+        # AttributeError/TypeError cover "{title.nope}" and "{added[0]}",
+        # which str.format raises as plain attribute/subscript errors.
+        available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
+        raise PRSplitError(
+            f"Invalid PR template at {template_path}: {exc}. "
+            f"Available placeholders: {available}. "
+            "Escape literal braces with {{ and }}."
+        ) from exc
+    except OSError as exc:
+        raise PRSplitError(f"Could not read PR template at {template_path}: {exc}") from exc
+
+
+def validate_pr_template() -> None:
+    """Render the custom template against placeholder values.
+
+    The template is otherwise first used when the PRs are opened, i.e. after
+    every branch has been created and pushed; a typo in it must fail before
+    that. Raises PRSplitError with the same message the real render would.
+    """
+    if not _pr_template_path().exists():
+        return
+    sample: dict[str, object] = {k: k for k in _PR_TEMPLATE_PLACEHOLDERS}
+    sample.update({"added": 0, "removed": 0, "loc": 0})
+    _render_pr_template(sample)
+
+
 def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
     template_path = _pr_template_path()
     if template_path.exists():
         files = [a.file_path for a in group.assignments]
-        template_vars = {
+        template_vars: dict[str, object] = {
             "description": group.description,
-            "files": "\n".join(f"- `{f}`" for f in files),
+            "files": _format_file_list(files),
             "added": group.estimated_added,
             "removed": group.estimated_removed,
             "loc": group.estimated_loc,
@@ -575,24 +644,12 @@ def _build_pr_body(group: Group, all_groups: list[Group]) -> str:
             "id": group.id,
             "title": group.title,
         }
-        try:
-            template = template_path.read_text(encoding="utf-8")
-            return template.format(**template_vars)
-        except (KeyError, ValueError, IndexError) as exc:
-            available = ", ".join(f"{{{k}}}" for k in sorted(template_vars))
-            raise PRSplitError(
-                f"Invalid PR template at {template_path}: {exc}. "
-                f"Available placeholders: {available}. "
-                "Escape literal braces with {{ and }}."
-            ) from exc
-        except OSError as exc:
-            raise PRSplitError(f"Could not read PR template at {template_path}: {exc}") from exc
+        return _render_pr_template(template_vars)
 
     files = [a.file_path for a in group.assignments]
     sections = [group.description]
     if files:
-        file_list = "\n".join(f"- `{f}`" for f in files)
-        sections.append(f"## Files changed\n\n{file_list}")
+        sections.append(f"## Files changed\n\n{_format_file_list(files)}")
     sections.append(
         f"## Diff stats\n\n"
         f"**+{group.estimated_added}** additions, "
@@ -2070,6 +2127,7 @@ def execute(
     if not check_gh_auth():
         console.print(f"[red]{ErrorMsg.GH_AUTH_FAILED()}[/red]")
         raise typer.Exit(1)
+    _check_pr_template()
     if plan.stacked:
         _require_gh_stack()
 
