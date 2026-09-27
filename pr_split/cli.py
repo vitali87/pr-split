@@ -371,12 +371,17 @@ def _report_oversized_groups(
         for g in oversized
         if sum(len(a.covered_indices(hunk_counts.get(a.file_path, 0))) for a in g.assignments) == 1
     ]
-    irreducible = (
-        f" {', '.join(escape(gid) for gid in single_hunk)} hold a single hunk each and"
-        " cannot be split below the limit."
-        if single_hunk
-        else ""
-    )
+    if len(single_hunk) == 1:
+        irreducible = (
+            f" {escape(single_hunk[0])} holds a single hunk and cannot be split below the limit."
+        )
+    elif single_hunk:
+        irreducible = (
+            f" {', '.join(escape(gid) for gid in single_hunk)} each hold a single hunk and"
+            " cannot be split below the limit."
+        )
+    else:
+        irreducible = ""
     console.print(
         f"[yellow]{len(oversized)} of {len(groups)} groups exceed --max-loc {max_loc}"
         f" (largest: {escape(largest.id)} at {largest.estimated_loc} LOC).{irreducible}"
@@ -1274,6 +1279,21 @@ def _stdin_is_interactive() -> bool:
     return sys.stdin.isatty()
 
 
+_EDITOR_HELP = (
+    "\n[cyan]Interactive editor. Commands:[/cyan]\n"
+    "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
+    "  [bold]movefile[/bold] <file> <from_group> <to_group>\n"
+    "  [bold]dep[/bold] <child> <parent>  /  [bold]undep[/bold] <child> <parent>\n"
+    "  [bold]title[/bold] <group_id> <text>  /  [bold]desc[/bold] <group_id> <text>\n"
+    "  [bold]new[/bold] <group_id>  /  [bold]merge[/bold] <keep_id> <absorb_id>\n"
+    "  [bold]show[/bold] <group_id>\n"
+    "  [bold]plan[/bold]  — redisplay the plan table\n"
+    "  [bold]help[/bold]  — show these commands again\n"
+    "  [bold]done[/bold]  — proceed\n"
+    "  [bold]abort[/bold] — cancel\n"
+)
+
+
 def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Group]:
     if not _stdin_is_interactive():
         # Scripts and CI (`split --dry-run < /dev/null`) have no one to answer
@@ -1281,18 +1301,7 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
         # before the plan is ever saved. Accept the plan as-is instead.
         console.print("[yellow]Non-interactive stdin; accepting the plan as-is.[/yellow]")
         return groups
-    console.print(
-        "\n[cyan]Interactive editor. Commands:[/cyan]\n"
-        "  [bold]move[/bold] <file>:<hunk> <from_group> <to_group>\n"
-        "  [bold]movefile[/bold] <file> <from_group> <to_group>\n"
-        "  [bold]dep[/bold] <child> <parent>  /  [bold]undep[/bold] <child> <parent>\n"
-        "  [bold]title[/bold] <group_id> <text>  /  [bold]desc[/bold] <group_id> <text>\n"
-        "  [bold]new[/bold] <group_id>  /  [bold]merge[/bold] <keep_id> <absorb_id>\n"
-        "  [bold]show[/bold] <group_id>\n"
-        "  [bold]plan[/bold]  — redisplay the plan table\n"
-        "  [bold]done[/bold]  — proceed\n"
-        "  [bold]abort[/bold] — cancel\n"
-    )
+    console.print(_EDITOR_HELP)
     while True:
         try:
             cmd = typer.prompt("edit", default="done")
@@ -1375,9 +1384,12 @@ def _interactive_edit(groups: list[Group], parsed_diff: ParsedDiff) -> list[Grou
                 continue
             if _merge_groups(groups, parsed_diff, parts[1], parts[2]):
                 recompute_estimated_loc(groups, parsed_diff)
+        elif action in ("help", "?"):
+            console.print(_EDITOR_HELP)
         else:
             console.print(
-                "[yellow]Unknown command. Type 'done' to proceed or 'abort' to cancel.[/yellow]"
+                "[yellow]Unknown command. Type 'help' for the commands, 'done' to proceed"
+                " or 'abort' to cancel.[/yellow]"
             )
 
 

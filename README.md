@@ -194,6 +194,7 @@ edit> desc pr-3 Adds the parser and its tests.  # set the PR body text
 edit> new pr-9           # create an empty group to move hunks into
 edit> merge pr-1 pr-2    # fold pr-2 (hunks, parents, dependants) into pr-1
 edit> plan               # redisplay the plan table
+edit> help               # list the commands again
 edit> done               # proceed (default — just press Enter)
 edit> abort              # cancel
 ```
