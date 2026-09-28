@@ -146,6 +146,39 @@ class TestPartitionDiffGraphExtensive:
         assert all(len(group.assignments) == 1 for group in groups)
         _assert_valid_plan(groups, UNRELATED_DIFF, 10)
 
+    def test_orthogonal_keeps_related_files_together(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Two small files in one package are related: orthogonal keeps only
+        # unrelated files apart, so they share a PR rather than making two tiny ones.
+        pytest.importorskip("ortools.sat.python.cp_model")
+        diff = """\
+diff --git a/pkg/alpha.py b/pkg/alpha.py
+new file mode 100644
+--- /dev/null
++++ b/pkg/alpha.py
+@@ -0,0 +1,2 @@
++ALPHA = 1
++BETA = 2
+diff --git a/pkg/gamma.py b/pkg/gamma.py
+new file mode 100644
+--- /dev/null
++++ b/pkg/gamma.py
+@@ -0,0 +1,2 @@
++GAMMA = 3
++DELTA = 4
+"""
+        settings = _settings(
+            monkeypatch,
+            max_loc=10,
+            partition_strategy=PartitionStrategy.CP_SAT,
+            priority=Priority.ORTHOGONAL,
+        )
+        groups = partition_diff(parse_diff(diff), settings)
+        assert len(groups) == 1
+        assert len(groups[0].assignments) == 2
+        _assert_valid_plan(groups, diff, 10)
+
     def test_logical_groups_related_files_together(self, monkeypatch: pytest.MonkeyPatch) -> None:
         settings = _settings(
             monkeypatch,

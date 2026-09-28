@@ -388,7 +388,11 @@ def _group_units_cp_sat(
     if not units:
         return []
 
-    group_slots = len(units)
+    # The graph plan is a good starting point: it seeds the search and bounds
+    # how many groups the model needs room for. Starting from all singletons,
+    # the solver could stall on a plan with one tiny PR per file.
+    hint = _group_units_graph(units, settings=settings)
+    group_slots = min(len(units), len(hint) + max(2, len(hint) // 4))
     max_total_loc = max(settings.max_loc, sum(unit.loc for unit in units), 1)
 
     model = cp_model.CpModel()
@@ -430,28 +434,6 @@ def _group_units_cp_sat(
     for group_idx in range(group_slots - 1):
         model.Add(y[group_idx] >= y[group_idx + 1])
 
-    pair_terms: list[tuple[int, int, IntVar]] = []
-    for left in range(len(units)):
-        for right in range(left + 1, len(units)):
-            affinity = _affinity_score(units[left], units[right], settings.priority)
-            same_group_terms = []
-            for group_idx in range(group_slots):
-                pair_var = model.NewBoolVar(f"pair_{left}_{right}_{group_idx}")
-                model.Add(pair_var <= x[(left, group_idx)])
-                model.Add(pair_var <= x[(right, group_idx)])
-                model.Add(pair_var >= x[(left, group_idx)] + x[(right, group_idx)] - 1)
-                same_group_terms.append(pair_var)
-            same_group = model.NewBoolVar(f"same_{left}_{right}")
-            model.Add(sum(same_group_terms) == same_group)
-            is_cross_file = int(units[left].file_path != units[right].file_path)
-            pair_terms.append((affinity, is_cross_file, same_group))
-
-    overflow_weight = _CP_SAT_OVERFLOW_WEIGHT
-    group_weight = (
-        _CP_SAT_GROUP_WEIGHT_LOGICAL
-        if settings.priority == Priority.LOGICAL
-        else _CP_SAT_GROUP_WEIGHT_ORTHOGONAL
-    )
     cross_file_penalty = (
         _CP_SAT_CROSS_FILE_PENALTY_LOGICAL
         if settings.priority == Priority.LOGICAL
@@ -462,19 +444,54 @@ def _group_units_cp_sat(
         if settings.priority == Priority.LOGICAL
         else _CP_SAT_AFFINITY_DIVISOR_ORTHOGONAL
     )
+    # One variable per pair that the objective cares about: rewarded when two
+    # related units share a group, penalised when two unrelated files do.
+    # Only unrelated files are kept apart; related ones (same directory,
+    # shared symbols, a test and its module) may share a PR.
+    rewards: list[tuple[int, IntVar]] = []
+    penalties: list[IntVar] = []
+    for left in range(len(units)):
+        for right in range(left + 1, len(units)):
+            affinity = _affinity_score(units[left], units[right], settings.priority)
+            reward = affinity // affinity_divisor if affinity > 0 else 0
+            penalised = (
+                cross_file_penalty > 0
+                and affinity <= 0
+                and units[left].file_path != units[right].file_path
+            )
+            if not reward and not penalised:
+                continue
+            same_group = model.NewBoolVar(f"same_{left}_{right}")
+            for group_idx in range(group_slots):
+                a, b = x[(left, group_idx)], x[(right, group_idx)]
+                if penalised:
+                    # Minimising pushes it down; it must be 1 when both are here.
+                    model.Add(same_group >= a + b - 1)
+                if reward:
+                    # Maximising pushes it up; it must be 0 unless both are here.
+                    model.Add(same_group <= 1 - a + b)
+            if penalised:
+                penalties.append(same_group)
+            if reward:
+                rewards.append((reward, same_group))
 
+    for group_idx, group_units in enumerate(hint[:group_slots]):
+        members = {unit.id for unit in group_units}
+        for unit_idx, unit in enumerate(units):
+            model.AddHint(x[(unit_idx, group_idx)], unit.id in members)
+
+    group_weight = (
+        _CP_SAT_GROUP_WEIGHT_LOGICAL
+        if settings.priority == Priority.LOGICAL
+        else _CP_SAT_GROUP_WEIGHT_ORTHOGONAL
+    )
     underflow_cost = _CP_SAT_UNDERFLOW_WEIGHT * sum(underflow) if underflow else 0
     model.Minimize(
         group_weight * sum(y)
-        + overflow_weight * sum(overflow)
+        + _CP_SAT_OVERFLOW_WEIGHT * sum(overflow)
         + underflow_cost
-        + cross_file_penalty
-        * sum(same_group for _, is_cross_file, same_group in pair_terms if is_cross_file)
-        - sum(
-            (affinity // affinity_divisor) * same_group
-            for affinity, _, same_group in pair_terms
-            if affinity > 0
-        )
+        + cross_file_penalty * sum(penalties)
+        - sum(reward * same_group for reward, same_group in rewards)
     )
 
     solver = cp_model.CpSolver()
@@ -501,6 +518,8 @@ def _group_units_cp_sat(
         for _, group_units in sorted(assignments.items())
         if group_units
     ]
+    # Slot order is arbitrary; number the groups in diff order instead.
+    grouped.sort(key=lambda group_units: group_units[0].position)
     if status == cp_model.FEASIBLE:
         # The solver ran out of time before proving optimality; on larger
         # diffs the plan it returns can be far from the best one (many
