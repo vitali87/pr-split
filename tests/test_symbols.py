@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from pr_split.constants import AssignmentType
 from pr_split.diff_ops.parser import parse_diff
 from pr_split.graph import PlanDAG
-from pr_split.planner.partitioning import _add_symbol_dependencies
+from pr_split.planner.coherence import make_groups_standalone
 from pr_split.planner.symbols import symbol_dependencies
 from pr_split.planner.validator import detect_symbol_order_violations
 from pr_split.schemas import Group, GroupAssignment
@@ -62,25 +60,43 @@ def test_graph_edges_make_the_test_build_on_the_module() -> None:
     parsed = parse_diff(DIFF)
     groups = [_whole("pr-1", "tests/test_pruning.py"), _whole("pr-2", "pkg/context_pruning.py")]
 
-    _add_symbol_dependencies(groups, parsed)
+    # 10 LOC together; a limit of 8 keeps them apart, the test after the module.
+    groups = make_groups_standalone(groups, parsed, max_loc=8)
 
-    assert groups[0].depends_on == ["pr-2"]
-    assert groups[1].depends_on == []
+    assert [g.depends_on for g in groups] == [["pr-2"], []]
 
 
-def test_edge_that_would_close_a_cycle_is_skipped() -> None:
+def test_a_test_group_rejoins_the_module_it_tests_when_that_fits() -> None:
+    parsed = parse_diff(DIFF)
+    groups = [_whole("pr-1", "tests/test_pruning.py"), _whole("pr-2", "pkg/context_pruning.py")]
+
+    groups = make_groups_standalone(groups, parsed, max_loc=400)
+
+    assert [g.id for g in groups] == ["pr-2"]
+    assert {a.file_path for a in groups[0].assignments} == {
+        "pkg/context_pruning.py",
+        "tests/test_pruning.py",
+    }
+
+
+def test_groups_that_need_each_other_are_combined() -> None:
+    # The module already builds on the test group, and the test uses the
+    # module: no order works, so the two become one group.
     parsed = parse_diff(DIFF)
     groups = [
         _whole("pr-1", "tests/test_pruning.py"),
         _whole("pr-2", "pkg/context_pruning.py", depends_on=["pr-1"]),
     ]
 
-    with patch("pr_split.planner.partitioning.logger") as mock_logger:
-        _add_symbol_dependencies(groups, parsed)
+    groups = make_groups_standalone(groups, parsed)
 
+    assert len(groups) == 1
+    assert {a.file_path for a in groups[0].assignments} == {
+        "tests/test_pruning.py",
+        "pkg/context_pruning.py",
+    }
     assert groups[0].depends_on == []
     PlanDAG(groups).validate_acyclic()
-    assert "would create a cycle" in mock_logger.warning.call_args.args[0]
 
 
 def test_definition_in_a_child_of_its_user_is_reported() -> None:
@@ -131,13 +147,13 @@ new file mode 100644
 def test_graph_partition_links_the_test_group_to_the_module_group() -> None:
     from pr_split.config import Settings
     from pr_split.constants import PartitionStrategy
-    from pr_split.planner.partitioning import partition_diff
+    from pr_split.planner.client import plan_split
 
     parsed = parse_diff(DIFF)
     # 10 LOC in total; a limit of 8 forces the two files into separate groups.
     settings = Settings(partition_strategy=PartitionStrategy.GRAPH, max_loc=8, min_loc=1)
 
-    groups = partition_diff(parsed, settings)
+    groups = plan_split(parsed, settings)
 
     owner = {a.file_path: g for g in groups for a in g.assignments}
     test_group = owner["tests/test_pruning.py"]
@@ -164,26 +180,75 @@ def test_graph_groups_a_test_file_with_the_module_it_imports() -> None:
     assert "review-slice" not in groups[0].title
 
 
-def test_multi_file_group_is_named_after_its_shared_directory() -> None:
-    from pr_split.planner.partitioning import PartitionUnit, _build_group_title
+def _title_of(diff: str, files: list[list[str]]) -> list[str]:
+    from pr_split.planner.partitioning import retitle_groups
 
-    units = [
-        PartitionUnit(
-            id="a", file_path="pkg/edit/rename.py", hunk_indices=(0,), loc=5, position=0
-        ),
-        PartitionUnit(id="b", file_path="pkg/edit/move.py", hunk_indices=(0,), loc=9, position=1),
+    parsed = parse_diff(diff)
+    counts = {pf.path: len(pf) for pf in parsed.patch_set}
+    groups = [
+        Group(
+            id=f"pr-{i}",
+            title="",
+            description="",
+            assignments=[
+                GroupAssignment(
+                    file_path=path,
+                    assignment_type=AssignmentType.WHOLE_FILE,
+                    hunk_indices=list(range(counts[path])),
+                )
+                for path in paths
+            ],
+        )
+        for i, paths in enumerate(files, start=1)
     ]
-    assert _build_group_title(3, units) == "chore(split): review edit-3"
+    retitle_groups(groups, parsed)
+    return [g.title for g in groups]
 
 
-def test_multi_file_group_without_a_shared_directory_names_its_largest_file() -> None:
-    from pr_split.planner.partitioning import PartitionUnit, _build_group_title
+def test_title_names_the_main_file_and_counts_the_rest() -> None:
+    titles = _title_of(DIFF, [["pkg/context_pruning.py", "tests/test_pruning.py"]])
+    assert titles == ["Add pkg/context_pruning.py and 1 test file"]
 
-    units = [
-        PartitionUnit(id="a", file_path="README.md", hunk_indices=(0,), loc=2, position=0),
-        PartitionUnit(
-            id="b", file_path="src/parser_core.py", hunk_indices=(0,), loc=40, position=1
-        ),
-        PartitionUnit(id="c", file_path="setup.cfg", hunk_indices=(0,), loc=1, position=2),
+
+def test_title_of_a_single_file_group_has_no_group_number() -> None:
+    titles = _title_of(DIFF, [["tests/test_pruning.py"], ["pkg/context_pruning.py"]])
+    assert titles == ["Add tests/test_pruning.py", "Add pkg/context_pruning.py"]
+
+
+def test_title_says_which_part_of_a_shared_file_a_group_holds() -> None:
+    diff = """\
+diff --git a/pkg/core.py b/pkg/core.py
+--- a/pkg/core.py
++++ b/pkg/core.py
+@@ -1,2 +1,3 @@
+ a = 1
++b = 2
+ c = 3
+@@ -20,2 +21,3 @@
+ x = 1
++y = 2
+ z = 3
+"""
+    from pr_split.planner.partitioning import retitle_groups
+
+    parsed = parse_diff(diff)
+    groups = [
+        Group(
+            id=gid,
+            title="",
+            description="",
+            assignments=[
+                GroupAssignment(
+                    file_path="pkg/core.py",
+                    assignment_type=AssignmentType.PARTIAL_HUNKS,
+                    hunk_indices=[idx],
+                )
+            ],
+        )
+        for gid, idx in (("pr-1", 1), ("pr-2", 0))
     ]
-    assert _build_group_title(2, units) == "chore(split): review parser-core and 2 more-2"
+    retitle_groups(groups, parsed)
+    assert [g.title for g in groups] == [
+        "Update pkg/core.py (part 2 of 2)",
+        "Update pkg/core.py (part 1 of 2)",
+    ]

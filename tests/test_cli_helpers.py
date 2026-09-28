@@ -999,7 +999,22 @@ class TestOversizedGroupsReport:
         with console.capture() as capture:
             _report_oversized_groups([big_file], 400, {"tests/test_big.py": 1})
         out = " ".join(capture.get().split())
-        assert "pr-1 hold a single hunk each and cannot be split below the limit" in out
+        assert "pr-1 holds a single hunk and cannot be split below the limit" in out
+
+    def test_several_single_hunk_groups_each_hold_one(self) -> None:
+        from pr_split.cli import _report_oversized_groups, console
+
+        groups = []
+        for gid, path in (("pr-1", "a.py"), ("pr-2", "b.py")):
+            group = self._sized(gid, 500)
+            group.assignments = [
+                GroupAssignment(file_path=path, assignment_type=AssignmentType.WHOLE_FILE)
+            ]
+            groups.append(group)
+        with console.capture() as capture:
+            _report_oversized_groups(groups, 400, {"a.py": 1, "b.py": 1})
+        out = " ".join(capture.get().split())
+        assert "pr-1, pr-2 each hold a single hunk and cannot be split" in out
 
     def test_whole_file_assignments_count_the_hunks_they_cover(self) -> None:
         from pr_split.cli import _report_oversized_groups, console
@@ -1018,8 +1033,8 @@ class TestOversizedGroupsReport:
         with console.capture() as capture:
             _report_oversized_groups([new_file, edited], 400, {"big.py": 1, "multi.py": 3})
         out = " ".join(capture.get().split())
-        assert "pr-1 hold a single hunk each" in out
-        assert "pr-2 hold" not in out and "pr-1, pr-2" not in out
+        assert "pr-1 holds a single hunk" in out
+        assert "pr-2 holds" not in out and "pr-1, pr-2" not in out
 
     def test_nothing_printed_within_the_limit(self) -> None:
         from pr_split.cli import _report_oversized_groups, console

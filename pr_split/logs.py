@@ -157,9 +157,13 @@ BASE_ALREADY_MERGED = (
     "The split's base branch {base} has already merged; run 'pr-split retarget' to move"
     " the split onto the new base before merging"
 )
-SYMBOL_EDGE_SKIPPED = (
-    "Group '{user}' uses {names} from group '{definer}', but depending on it would"
-    " create a cycle; the edge was not added"
+TEST_UPDATES_ATTACHED = (
+    "Moved {count} changed existing test hunk(s) into the PR whose code change they follow,"
+    " so that PR's own tests still pass"
+)
+GROUPS_COMBINED = (
+    "Combined {others} into {keep}: they need each other's code, so neither would work"
+    " on its own ({reasons})"
 )
 SYMBOL_ORDER_VIOLATION = (
     "Group '{user}' uses {names} defined in group '{definer}', which it does not build on;"

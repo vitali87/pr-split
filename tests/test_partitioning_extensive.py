@@ -11,8 +11,8 @@ from pr_split.diff_ops.parser import parse_diff
 from pr_split.exceptions import PRSplitError
 from pr_split.graph import PlanDAG
 from pr_split.planner.partitioning import (
-    _derive_merge_order_dependencies,
     _test_pair_bonus,
+    derive_file_order_dependencies,
     partition_diff,
 )
 from pr_split.planner.scoring import score_plan
@@ -379,7 +379,7 @@ class TestPartitioningHeuristics:
             ),
         ]
 
-        _derive_merge_order_dependencies(groups)
+        derive_file_order_dependencies(groups)
 
         assert groups[0].depends_on == ["pr-1"]
         assert groups[1].depends_on == []

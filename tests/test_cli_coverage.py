@@ -2497,6 +2497,17 @@ class TestEditorPlanCommands:
         assert groups[1].depends_on == []
 
     @patch("pr_split.cli.typer.prompt")
+    def test_help_lists_the_commands_again(self, mock_prompt: MagicMock) -> None:
+        from pr_split.cli import console
+
+        mock_prompt.side_effect = ["help", "done"]
+        with console.capture() as capture:
+            _interactive_edit(self._two_groups(), parse_diff(TWO_HUNK_DIFF))
+        out = capture.get()
+        assert out.count("Interactive editor. Commands:") == 2
+        assert "Unknown command" not in out
+
+    @patch("pr_split.cli.typer.prompt")
     def test_dep_that_would_cycle_is_refused(self, mock_prompt: MagicMock) -> None:
         groups = self._two_groups()
         groups[1].depends_on = ["pr-1"]
