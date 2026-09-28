@@ -222,7 +222,7 @@ def symbol_dependencies(
     owner = {name: next(iter(by.items())) for name, by in defined_by.items() if len(by) == 1}
     # A new field is only useful once something fills it: readers also need
     # every group that writes it (``name=`` or ``"name":``).
-    fields = {name for name in owner if name in _new_fields(added)}
+    fields = set(owner) & _new_fields(added)
     writers: dict[str, set[str]] = defaultdict(set)
     for group in groups:
         for path, lines in added.get(group.id, {}).items():
