@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 from pathlib import Path
@@ -179,3 +180,8 @@ def plan_exists() -> bool:
         return plan_path().exists()
     except PRSplitError:
         return True  # several plans: let load_plan report which to pick
+    except OSError as exc:
+        if exc.errno != errno.ENAMETOOLONG:
+            raise
+        # The branch name is too long to be a file name, so no plan is stored under it.
+        return False
