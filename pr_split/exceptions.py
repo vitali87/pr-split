@@ -41,6 +41,14 @@ class ErrorMsg(StrEnum):
     PLAN_LOAD_FAILED = (
         "Cannot load split plan from '{path}': {detail}; delete it and run 'pr-split split' again"
     )
+    PLAN_NAME_TOO_LONG = (
+        "Branch name '{branch}' is too long to keep a split plan for: its plan file name"
+        " needs {length} bytes and the file system allows {limit}"
+    )
+    LEGACY_PLAN_NOT_MIGRATED = (
+        "Cannot move the old plan file '{path}' to its per-branch file: {detail};"
+        " move or delete that file to go on"
+    )
     LLM_PARSE_ERROR = "Failed to parse LLM response: {detail}"
     CLAUDE_CLI_NOT_FOUND = "Provider 'claude-cli' needs the Claude Code CLI ('claude') on PATH"
     LOCAL_MODEL_REQUIRED = (

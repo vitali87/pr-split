@@ -133,7 +133,7 @@ def _choose_plan(
     ] = None,
 ) -> None:
     # Plans are saved per dev branch; without --branch the only saved plan is used.
-    select_plan(branch)
+    _select_plan_or_exit(branch)
 
 
 def _reachable_from_roots(groups: list[Group]) -> set[str]:
@@ -312,6 +312,16 @@ def _validate_inputs(
         _check_pr_template()
     if not dry_run and stacked:
         _require_gh_stack()
+
+
+def _select_plan_or_exit(branch: str | None) -> None:
+    """Choose the plan a command works on; a branch that cannot have a plan
+    file stops the command here, before it creates anything."""
+    try:
+        select_plan(branch)
+    except PRSplitError as exc:
+        console.print(f"[red]{escape(str(exc))}[/red]")
+        raise typer.Exit(1) from exc
 
 
 def _load_plan_or_exit() -> PlanFile:
@@ -1532,7 +1542,7 @@ def split(
     dev_branch_arg = dev_branch
     author: str | None = None
     fork_info: ForkPRInfo | None = None
-    select_plan(dev_branch_arg)
+    _select_plan_or_exit(dev_branch_arg)
 
     # Say "git/gh is not installed" before any helper turns that into a
     # misleading "branch not found" or "authentication failed".
@@ -1927,7 +1937,7 @@ def adopt(
         console.print("[red]Each branch may appear only once.[/red]")
         raise typer.Exit(1)
     # The adopted stack's plan is filed under its top branch, like a split's dev branch.
-    select_plan(branches[-1])
+    _select_plan_or_exit(branches[-1])
     if plan_exists():
         existing = _load_plan_or_exit()
         if existing.git_state.branches or existing.git_state.prs:
@@ -2737,16 +2747,16 @@ def recover(
     force: Annotated[bool, typer.Option("--force", help="Replace an existing plan")] = False,
 ) -> None:
     # The recovered plan is this dev branch's; other branches' plans are left alone.
-    select_plan(dev_branch)
-    if plan_exists() and not force:
-        console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
-        raise typer.Exit(1)
+    _select_plan_or_exit(dev_branch)
     try:
+        if plan_exists() and not force:
+            console.print(f"[red]{ErrorMsg.RECOVER_PLAN_EXISTS(path=plan_path())}[/red]")
+            raise typer.Exit(1)
         plan_file = recover_plan(dev_branch, base=base, stacked=stack)
+        save_plan(plan_file)
     except PRSplitError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
-    save_plan(plan_file)
     git_state = plan_file.git_state
     table = Table(title=f"Recovered plan for {dev_branch} onto {plan_file.plan.base_branch}")
     table.add_column("ID")

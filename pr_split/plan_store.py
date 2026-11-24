@@ -38,9 +38,38 @@ def plan_key(dev_branch: str) -> str:
     return quote(dev_branch, safe="")
 
 
+# A plan is written to `<key>.json.tmp` and renamed to `<key>.json`, so the
+# temporary file's is the longest name a plan needs.
+_LONGEST_PLAN_SUFFIX = ".json.tmp"
+
+
+def _max_file_name() -> int:
+    """The longest file name, in bytes, the file system holding the plans allows."""
+    try:
+        return os.pathconf(repo_root(), "PC_NAME_MAX")
+    except (AttributeError, OSError, ValueError):
+        return 255  # Windows has no pathconf; its limit is 255 as well
+
+
+def _storable_key(dev_branch: str) -> str:
+    """The plan key of a branch whose plan file can actually be written.
+
+    A name that is too long is refused here, when the branch is chosen, and
+    not by an OSError when the plan is saved: by then `split` has created the
+    branches and PRs that only the plan records.
+    """
+    key = plan_key(dev_branch)
+    length = len(key) + len(_LONGEST_PLAN_SUFFIX)
+    limit = _max_file_name()
+    if length > limit:
+        shown = dev_branch if len(dev_branch) <= 60 else f"{dev_branch[:57]}..."
+        raise PRSplitError(ErrorMsg.PLAN_NAME_TOO_LONG(branch=shown, length=length, limit=limit))
+    return key
+
+
 def select_plan(dev_branch: str | None) -> None:
     global _selected
-    _selected = plan_key(dev_branch) if dev_branch else None
+    _selected = _storable_key(dev_branch) if dev_branch else None
 
 
 def plan_dir() -> Path:
@@ -76,7 +105,13 @@ def _migrate_legacy_plan() -> bool:
         branch = plan.get("dev_branch_arg") or plan["dev_branch"]
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return True
-    target = _plans_dir() / f"{plan_key(str(branch))}.json"
+    try:
+        key = _storable_key(str(branch))
+    except PRSplitError as exc:
+        # This plan loads, so unlike an unreadable one it must not be left to
+        # stand in for the selected branch's; say which file is in the way.
+        raise PRSplitError(ErrorMsg.LEGACY_PLAN_NOT_MIGRATED(path=legacy, detail=exc)) from exc
+    target = _plans_dir() / f"{key}.json"
     if target.exists():
         # That branch already has a per-branch plan; the legacy file is left
         # alone and never used in its place.
@@ -144,7 +179,7 @@ def save_plan(plan_file: PlanFile) -> None:
     if _selected is None:
         # No branch chosen for this command: file the plan under its own branch.
         branch = plan_file.plan.dev_branch_arg or plan_file.plan.dev_branch
-        target = _plans_dir() / f"{plan_key(branch)}.json"
+        target = _plans_dir() / f"{_storable_key(branch)}.json"
     else:
         target = plan_path()
     target.parent.mkdir(parents=True, exist_ok=True)
