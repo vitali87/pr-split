@@ -52,13 +52,14 @@ def _max_file_name() -> int:
 
 
 def _escaped(name: str) -> str:
-    """A name that is not UTF-8, safe to print: its stray bytes as `\\xNN`."""
+    """A name that is not UTF-8, safe to print whatever the output encoding:
+    ASCII, with every other byte of the name as `\\xNN`."""
     try:
         raw = name.encode("utf-8", "surrogateescape")
     except UnicodeEncodeError:
         # A surrogate that stands for no byte, as a plan file could hold.
-        return name.encode("utf-8", "backslashreplace").decode("utf-8")
-    return raw.decode("utf-8", "backslashreplace")
+        return name.encode("ascii", "backslashreplace").decode("ascii")
+    return raw.decode("ascii", "backslashreplace")
 
 
 def _storable_key(dev_branch: str) -> str:
