@@ -51,6 +51,16 @@ def _max_file_name() -> int:
         return 255  # Windows has no pathconf; its limit is 255 as well
 
 
+def _escaped(name: str) -> str:
+    """A name that is not UTF-8, safe to print: its stray bytes as `\\xNN`."""
+    try:
+        raw = name.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        # A surrogate that stands for no byte, as a plan file could hold.
+        return name.encode("utf-8", "backslashreplace").decode("utf-8")
+    return raw.decode("utf-8", "backslashreplace")
+
+
 def _storable_key(dev_branch: str) -> str:
     """The plan key of a branch whose plan file can actually be written.
 
@@ -64,8 +74,7 @@ def _storable_key(dev_branch: str) -> str:
         key = plan_key(dev_branch)
     except UnicodeEncodeError as exc:
         # Show the bytes as escapes: the name itself would fail again when printed.
-        shown = dev_branch.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
-        raise PRSplitError(ErrorMsg.PLAN_NAME_NOT_UTF8(branch=shown)) from exc
+        raise PRSplitError(ErrorMsg.PLAN_NAME_NOT_UTF8(branch=_escaped(dev_branch))) from exc
     length = len(key) + len(_LONGEST_PLAN_SUFFIX)
     limit = _max_file_name()
     if length > limit:

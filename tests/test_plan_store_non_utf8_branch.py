@@ -21,11 +21,22 @@ def _repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(plan_store, "_selected", None)
 
 
-def test_a_branch_name_that_is_not_utf8_is_refused_with_a_printable_message() -> None:
+@pytest.mark.parametrize(
+    ("name", "shown"),
+    [
+        (NOT_UTF8, r"'caf\xe9'"),
+        # A surrogate no byte stands behind, which a hand-edited plan file can hold.
+        ("caf\ud800", r"'caf\ud800'"),
+        (NOT_UTF8 + "\ud800", r"'caf\udce9\ud800'"),
+    ],
+)
+def test_a_branch_name_that_is_not_utf8_is_refused_with_a_printable_message(
+    name: str, shown: str
+) -> None:
     with pytest.raises(PRSplitError, match="not valid UTF-8") as refused:
-        select_plan(NOT_UTF8)
+        select_plan(name)
     message = str(refused.value)
-    assert r"'caf\xe9'" in message
+    assert shown in message
     message.encode("utf-8")  # the name is shown as escapes, so this can be printed
 
 
