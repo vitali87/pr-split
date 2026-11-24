@@ -56,9 +56,16 @@ def _storable_key(dev_branch: str) -> str:
 
     A name that is too long is refused here, when the branch is chosen, and
     not by an OSError when the plan is saved: by then `split` has created the
-    branches and PRs that only the plan records.
+    branches and PRs that only the plan records. So is a name that is not
+    UTF-8: the shell hands its stray bytes over as lone surrogates, which
+    quote() cannot encode and the console cannot print.
     """
-    key = plan_key(dev_branch)
+    try:
+        key = plan_key(dev_branch)
+    except UnicodeEncodeError as exc:
+        # Show the bytes as escapes: the name itself would fail again when printed.
+        shown = dev_branch.encode("utf-8", "surrogateescape").decode("utf-8", "backslashreplace")
+        raise PRSplitError(ErrorMsg.PLAN_NAME_NOT_UTF8(branch=shown)) from exc
     length = len(key) + len(_LONGEST_PLAN_SUFFIX)
     limit = _max_file_name()
     if length > limit:
