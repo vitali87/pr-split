@@ -45,6 +45,9 @@ class ErrorMsg(StrEnum):
         "Branch name '{branch}' is too long to keep a split plan for: its plan file name"
         " needs {length} bytes and the file system allows {limit}"
     )
+    PLAN_NAME_NOT_UTF8 = (
+        "Branch name '{branch}' is not valid UTF-8, so no split plan can be kept for it"
+    )
     LEGACY_PLAN_NOT_MIGRATED = (
         "Cannot move the old plan file '{path}' to its per-branch file: {detail};"
         " move or delete that file to go on"

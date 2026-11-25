@@ -51,14 +51,31 @@ def _max_file_name() -> int:
         return 255  # Windows has no pathconf; its limit is 255 as well
 
 
+def _escaped(name: str) -> str:
+    """A name that is not UTF-8, safe to print whatever the output encoding:
+    ASCII, with every other byte of the name as `\\xNN`."""
+    try:
+        raw = name.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:
+        # A surrogate that stands for no byte, as a plan file could hold.
+        return name.encode("ascii", "backslashreplace").decode("ascii")
+    return raw.decode("ascii", "backslashreplace")
+
+
 def _storable_key(dev_branch: str) -> str:
     """The plan key of a branch whose plan file can actually be written.
 
     A name that is too long is refused here, when the branch is chosen, and
     not by an OSError when the plan is saved: by then `split` has created the
-    branches and PRs that only the plan records.
+    branches and PRs that only the plan records. So is a name that is not
+    UTF-8: the shell hands its stray bytes over as lone surrogates, which
+    quote() cannot encode and the console cannot print.
     """
-    key = plan_key(dev_branch)
+    try:
+        key = plan_key(dev_branch)
+    except UnicodeEncodeError as exc:
+        # Show the bytes as escapes: the name itself would fail again when printed.
+        raise PRSplitError(ErrorMsg.PLAN_NAME_NOT_UTF8(branch=_escaped(dev_branch))) from exc
     length = len(key) + len(_LONGEST_PLAN_SUFFIX)
     limit = _max_file_name()
     if length > limit:
